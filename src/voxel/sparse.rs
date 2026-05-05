@@ -3,6 +3,8 @@ use crate::utils::*;
 use ash::vk;
 use gpu_allocator::vulkan::Allocator;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use vek::Clamp;
+use vek::num_traits::Float;
 use crate::buffer::{self, Buffer};
 use super::{SVO_DEPTH, TOTAL_SIZE, BOTTOM_NODE, FULL_NODE};
 use super::chunk::Chunk;
@@ -339,6 +341,9 @@ struct TraversalNode<'a> {
 }
 
 fn pack_aabb_bounds(vek::Aabb { min, max }: vek::Aabb<u32>, represents_cuboid: bool) -> u64 {
+    let min = min.clamped(0, TOTAL_SIZE-1);
+    let max = max.clamped(0, TOTAL_SIZE-1);
+
     let min = (min.x | min.y << 10 | min.z << 20) as u64;
     let max = (max.x | max.y << 10 | max.z << 20) as u64;
     let mut flags = 0u64;
@@ -360,13 +365,17 @@ pub fn convert_to_buffers(nodes: &[FlatNode]) -> SparseVoxelTreeBuildResultGpuBu
     queue.push_back(TraversalNode { node: &nodes[0], height: SVO_DEPTH, parent_base_child_index: None, self_packed_child_offset: 0 });
 
     let mut bitmask_vec = Vec::<u64>::new();
-    let mut num_bits_set_total = 0u128;
     let mut index_vec = Vec::<u32>::new();
     let mut aabb_vec = Vec::<u64>::new();
     
-    let mut total_coarse_volume = 0f64;
-    let mut total_tight_aabb_volume = 0f64;
-    
+    // metrics stuff
+    let mut total_tight_to_coarse_volume_ratio = 0f64;
+    let mut total_num_bits_set_total = 0u128;
+    let mut num_bits_set_percentage_histogram = [0u128; 4]; // 25%, 50%, 75%, 100%
+    let mut total_num_cuboid_nodes = 0u128;
+    let mut total_num_full_nodes = 0u128;
+    let mut total_num_full_bitmask_nodes = 0u128;
+
     let mut nodes_visited = 0;
     let mut test_count = 0u32;
     let mut base_indices_for_height = vec![0u32; SVO_DEPTH as usize + 1];
@@ -382,48 +391,74 @@ pub fn convert_to_buffers(nodes: &[FlatNode]) -> SparseVoxelTreeBuildResultGpuBu
         }
 
         // creates a 64 bit mask that contains which children are enabled
-        let mut bitmask = node.children.as_ref().map(|children| children.iter()
+        let bitmask = node.children.as_ref().map(|children| children.iter()
             .enumerate()
             .filter_map(|(i, x)| x.as_ref().map(|_| i))
             .fold(0u64, |prev, i| (1u64 << i) | prev)
         ).unwrap_or_default();
         
+
+        // index of the FIRST child of this node
+        // top bits also store some flag information ig
+        // entire thing can be set to FULL_NODE to specify that it doesn't have any children but that it IS full
         let mut base_child_index = test_count + 1;
 
         // metrics stuff...
-        num_bits_set_total += bitmask.count_ones() as u128;
-        total_coarse_volume += 2u32.pow(SVO_DEPTH * 2) as f64;
+        let num_bits_set = bitmask.count_ones();
+        let num_bits_set_percentage = num_bits_set as f32 / 64f32;
+        total_num_bits_set_total += num_bits_set as u128;
+        num_bits_set_percentage_histogram[(num_bits_set_percentage * 3f32).ceil() as usize] += 1;
+        
+        let coarse_volume = 2u32.pow(SVO_DEPTH * 2) as f64;
         let size = node.bounds.max - node.bounds.min;
         let tight_volume = size.x * size.y * size.z;
-        total_tight_aabb_volume += tight_volume as f64;
+        total_tight_to_coarse_volume_ratio += tight_volume as f64 / coarse_volume;
+
+        if bitmask == u64::MAX {
+            total_num_full_bitmask_nodes += 1;
+        }
 
         // we can avoid doing DDA for the bottom-most nodes if we KNOW that they represents cuboids
         // since we already do a ray-AABB test to check for collision, we can use the result of that to get the hit output stuff and avoid doing DDA completely
-        let represents_cuboid = bitmask.count_ones() == tight_volume; // if number of set voxels is equal to AABB volume, then AABB volume is tight around a cuboid (this only holds correctly for the leaf nodes)
+        let represents_cuboid = bitmask.count_ones() == tight_volume && height == 1; // if number of set voxels is equal to AABB volume, then AABB volume is tight around a cuboid (this only holds correctly for the leaf nodes)
+        if represents_cuboid {
+            total_num_cuboid_nodes += 1;
+        }
 
         // check if we are handling the base case
         if height == 0 {
+            // should never reach this point, because the nodes at height 0 are handled by their parent anyways
+            /*
             base_child_index = BOTTOM_NODE;
+            bitmask = 0x351AB13;
             if node.children.is_none() {
-                bitmask = u64::MAX;
             }
+            */
         } else {
             if node.full {
                 // node is full, discard children nodes, and store a specialized magic value that indicates that this node is full
                 base_child_index = FULL_NODE;
+                total_num_full_nodes += 1;
             } else {
+                // if bitmask is full, then there's no need to do the bitmask buffer fetch in the shader
+                if bitmask == u64::MAX {
+                    base_child_index |= 1 << 30;
+                }
+
                 // node is not full, we must compute bitmask of children and stuff
                 if let Some(children) = node.children.as_ref() {
                     for (pci, (ci, child)) in children.iter().enumerate().filter_map(|(ci, x)| x.as_ref().map(|x| (ci, x))).enumerate() {
-                        // `self_packed_child_offset = pci` assumes that we are doing this in BFS order. with DFS order, that is no longer the case
-                        queue.push_back(TraversalNode { node: &nodes[*child], height: height - 1, parent_base_child_index: Some(base_child_index as usize), self_packed_child_offset: pci });
-                        test_count += 1;
+                        if height > 1 {
+                            // `self_packed_child_offset = pci` assumes that we are doing this in BFS order. with DFS order, that is no longer the case
+                            queue.push_back(TraversalNode { node: &nodes[*child], height: height - 1, parent_base_child_index: Some(base_child_index as usize), self_packed_child_offset: pci });
+                            test_count += 1;
 
-                        // VERIFY: makes sure that the packed child index matches up
-                        let mask = (1u64 << ci) - 1;
-                        let masked = bitmask & mask;
-                        let test = masked.count_ones();
-                        debug_assert_eq!(test, pci as u32);
+                            // VERIFY: makes sure that the packed child index matches up
+                            let mask = (1u64 << ci) - 1;
+                            let masked = bitmask & mask;
+                            let test = masked.count_ones();
+                            debug_assert_eq!(test, pci as u32);
+                        }
                     }
                 }
             }
@@ -466,8 +501,16 @@ pub fn convert_to_buffers(nodes: &[FlatNode]) -> SparseVoxelTreeBuildResultGpuBu
     
     let end = Instant::now();
     log::debug!(" - time taken: {}ms", (end-start).as_millis());
-    log::debug!(" - num bits set per node: {}bits/node on avg", num_bits_set_total as f64 / nodes_visited as f64);
-    log::debug!(" - tight volume / coarse volume: {}", total_tight_aabb_volume / total_coarse_volume);
+    log::debug!(" - num bits set per node: {}bits/node on avg", total_num_bits_set_total as f64 / nodes_visited as f64);
+    log::debug!(" - tight volume / coarse volume: {}", total_tight_to_coarse_volume_ratio / nodes_visited as f64);
+    log::debug!(" - number of classified full nodes: {}", total_num_full_nodes);
+    log::debug!(" - number of cuboids nodes: {}", total_num_cuboid_nodes);
+    log::debug!(" - number of nodes with full bitmask: {}", total_num_full_bitmask_nodes);
+    log::debug!(" - bitmask fullness histogram: ");
+    
+    for (i, val) in num_bits_set_percentage_histogram.iter().enumerate() {
+        log::debug!("   - fullness in range ({}%  -  {}%): {}", i*25, (i+1)*25, val);    
+    }
 
     /*
     for k in aabb_vec.iter().take(32) {

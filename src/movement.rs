@@ -8,6 +8,13 @@ use winit::keyboard::KeyCode;
 pub struct Snapshot {
     pub position: vek::Vec3<f32>,
     pub rotation: vek::Quaternion<f32>,
+    
+    #[serde(default = "default_fov")]
+    pub fov: f32,
+}
+
+fn default_fov() -> f32 {
+    80f32
 }
 
 #[derive(Default)]
@@ -32,8 +39,8 @@ impl Movement {
         let snapshots: Vec<Snapshot> = serde_json::from_str(include_str!("snapshots.json")).unwrap();
 
         Self {
-            fov: 80f32,
-            target_fov: 80f32,
+            fov: default_fov(),
+            target_fov: default_fov(),
             position: vek::Vec3::new(40.5f32, 80f32, 40.5f32),
             rotation : vek::Quaternion::rotation_y(-130f32.to_radians()),
             fixed_mode_snapshot_index: None,
@@ -94,18 +101,14 @@ impl Movement {
         }
         
 
-        let uhh = 1f32 / ratio;
-        
-        // TODO: fix the weird radian fov?
         if !boosted {
-            self.target_fov += input.get_axis(Axis::Mouse(MouseAxis::ScrollDelta)) * 5f32;
+            self.target_fov -= input.get_axis(Axis::Mouse(MouseAxis::ScrollDelta)) * 5f32;
         }
+
         self.target_fov = self.target_fov.clamp(0.05, 179.5);
         self.fov += (self.target_fov-self.fov).clamp(-100f32, 100f32) * delta * 20f32;
 
-
-        self.proj_matrix =
-            vek::Mat4::<f32>::perspective_rh_no((self.fov).to_radians(), uhh, 0.001f32, 1000f32);
+        self.proj_matrix = vek::Mat4::<f32>::infinite_perspective_rh(horizontal_to_vertical(self.fov, ratio), ratio, 1.0f32);
         let rot = vek::Mat4::from(self.rotation);
 
         let forward = rot.mul_direction(-vek::Vec3::unit_z());
@@ -129,6 +132,7 @@ impl Movement {
             let snap = Snapshot {
                 position: self.position,
                 rotation: self.rotation,
+                fov: self.target_fov,
             };
 
             let str = serde_json::to_string_pretty(&snap).unwrap();

@@ -415,9 +415,7 @@ impl InternalApp {
 
     pub unsafe fn pre_render(&mut self, delta: f32) -> ControlFlow<()> {
         let size = self.window.inner_size().cast::<f32>();
-        self
-            .movement
-            .update(&self.input, size.width / size.height, delta);
+        self.movement.update(&self.input, size.width / size.height, delta);
         if self.input.get_button(KeyCode::F5).pressed() {
             if self.window.fullscreen().is_none() {
                 self
@@ -667,10 +665,11 @@ impl InternalApp {
         let height_group_size = (size.y as f32 / group_size).ceil() as u32;
         let size_f32 = size.map(|x| x as f32);
 
+        let matrix = self.movement.proj_matrix.inverted() * self.movement.view_matrix;
         let push_constants = pipeline::PushConstants {
             screen_resolution: size_f32,
             _padding: Default::default(),
-            matrix: self.movement.proj_matrix * self.movement.view_matrix,
+            matrix,
             position: self.movement.position.with_w(0f32),
             sun: self.sun.normalized().with_w(0f32),
             debug_type: self.debug_type,

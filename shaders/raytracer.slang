@@ -103,7 +103,8 @@ void main(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID, uint3 gid:
     screen_uvs.y = -screen_uvs.y;
     screen_uvs.x = -screen_uvs.x;
 
-    float3 ray_dir = normalize((mul(mat, float4(screen_uvs, 1, 0))).xyz);
+    let ndc = float4(screen_uvs, -1, 1);
+    float3 ray_dir = normalize(mul(mat, ndc).xyz);
     float3 ray_pos = position.xyz;
     
     SparseVoxelOctree svo = SparseVoxelOctree(svo_indices_buffer, svo_bitmasks_buffer, svo_aabbs_buffer);
@@ -116,6 +117,16 @@ void main(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID, uint3 gid:
     float3 nth_world = 0.0;
     
     float3 color = 1.0;
+
+    //let start = clock2x32ARB();
+
+    //var ray = trace_shi<int.maxValue>(iterative_ray_pos, iterative_ray_dir, svo, stats);
+    
+    //let end = clock2x32ARB();
+    //output[id.xy] = float4(ray.world - ray.block_pos, 0);
+    //output[id.xy] = float4((end.x - start.x) / (4096*16) + length(ray.world - ray.block_pos) * 0.001);
+    
+    //return;
         
     [loop]
     for (int i = 0; i < MAX_ITERATIONS; i++) {

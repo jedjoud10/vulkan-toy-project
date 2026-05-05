@@ -11,6 +11,7 @@ struct Statistics {
     int iterations;
     int buffer_fetches;
     int exit_type;
+    int exit_node_height;
     int active_threads_per_call;
     int calls;
 }
@@ -107,7 +108,6 @@ struct DdaTraversalOutput {
 DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_DISTANCE : int>(
     uint32_t base_index,
     uint32_t actual_child_index,
-    uint64_t bounds,
     float3 ray_dir,
     float3 ray_pos,
     float3 inv_dir,
@@ -118,33 +118,45 @@ DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_DISTANC
     uint8_t face,
     inout Statistics stats,
 ) {
-    uint16_t3 aabb_min = (uint16_t3)uint64_t3(bounds & 0b1111111111, (bounds >> 10) & 0b1111111111, (bounds >> 20) & 0b1111111111);
-    uint16_t3 aabb_max = (uint16_t3)uint64_t3((bounds >> 30) & 0b1111111111, (bounds >> 40) & 0b1111111111, (bounds >> 50) & 0b1111111111);                     
-
     float tmin = 0;
     int face2 = 0;
-    if (ray_box_intersection3(inv_dir, dir_sign, ray_pos, aabb_min, aabb_max, tmin, face2)) {
-        // make sure we are dealing with leaf nodes and that they represent volume cuboids
-        // FIXME: this, however, causes a lot of shadowing issues for some reason
-        /*
-        if (K == 0 && ((bounds >> 60) & 1) == 1) {
-            float3 world = ray_pos + ray_dir * (tmin - EPS);
-            uint3 block_pos = floor(world);
-               
-            // apply "accurate" block pos since we know the bounds of the full node and input face
-            int3 tmp_sign = max(0, -dir_sign);
-            block_pos[face2] = aabb_max[face2] - 1;
-            stats.exit_type = 4;
-            return DdaTraversalOutput(true, world, block_pos, tmin, face2);
+    if (K < 4) {
+        uint64_t bounds = svo.aabbs_buffer[actual_child_index];  
+        uint16_t3 aabb_min = (uint16_t3)uint64_t3(bounds, (bounds >> 10), (bounds >> 20)) & 0b1111111111;
+        uint16_t3 aabb_max = (uint16_t3)uint64_t3((bounds >> 30), (bounds >> 40), (bounds >> 50)) & 0b1111111111;       
+
+        stats.buffer_fetches += 1;
+        if (ray_box_intersection3(inv_dir, dir_sign, ray_pos, aabb_min, aabb_max, tmin, face2)) {
+            /*
+            // make sure we are dealing with leaf nodes and that they represent volume cuboids
+            // FIXME: this, however, causes a lot of shadowing issues for some reason
+            if (K == 0 && ((bounds >> 60) & 1) == 1) {
+                float3 world = ray_pos + ray_dir * (tmin - EPS);
+                uint3 block_pos = floor(world);
+
+                // apply "accurate" block pos since we know the bounds of the full node and input face
+                int3 tmp_sign = max(0, -dir_sign);
+                block_pos[face2] = aabb_max[face2] - 1;
+                stats.exit_type = 4;
+                return DdaTraversalOutput(true, world, block_pos, tmin, face2);
+            }
+            */
+        } else {
+            return DdaTraversalOutput(false);
         }
-        */
-    } else {
-        return DdaTraversalOutput(false);
     }
 
+
     uint64_t raw = 0;
-    raw = svo.bitmasks_buffer[actual_child_index];
-    stats.buffer_fetches += 1;
+
+    if (((base_index >> 30) & 1) == 0) {
+        raw = svo.bitmasks_buffer[actual_child_index];
+        stats.buffer_fetches += 1;
+    } else {
+        raw = uint64_t.maxValue;
+    }
+
+    //base_index &= ~(1 << 30); // get rid of flag bits
 
     /*
     if (WaveActiveCountBits(true) < 16) {
@@ -180,8 +192,6 @@ DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_DISTANC
         uint8_t3 local = (uint8_t3)floored_pos;
         uint8_t bit_index = local.x | local.y << 2 | local.z << 4; 
 
-        // world space position of the node origin
-        uint16_t3 origin = parent_world_space_origin + floored_pos * voxel_size;
 
         stats.calls += 1;
         stats.active_threads_per_call += WaveActiveCountBits((((raw >> bit_index) & 1) == 1));
@@ -190,9 +200,8 @@ DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_DISTANC
 
         [branch]
         if ((((raw >> bit_index) & 1) == 1)) {  
-            // still need an offset though, for the normals :(((
-            float distance_offset = length(select(eqs, (side_dist - inv_dir) * voxel_size, 0));
-            float distance_to_surface = distance + distance_offset;
+            // world space position of the node origin
+            uint16_t3 origin = parent_world_space_origin + floored_pos * voxel_size;
 
             // check if we have reached the bottom most node and exit if so
             [branch]
@@ -213,6 +222,9 @@ DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_DISTANC
 
                 // check if we reached a full node and if we did, we must somehow calculate block position and world position accurately 
                 if (new_base_index == FULL_NODE || K <= END) {
+                    stats.exit_type = 2;
+                    stats.exit_node_height = K;
+
                     float tmin = 0;
                     ray_box_intersection(inv_dir, dir_sign, ray_pos, origin, origin+voxel_size, tmin);
                     float3 world = ray_pos + ray_dir * (tmin - EPS);
@@ -225,17 +237,17 @@ DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_DISTANC
                     return DdaTraversalOutput(true, world, block_pos, tmin, face);
                 }
                 
-                uint64_t bounds = svo.aabbs_buffer[actual_child_index];  
-                stats.buffer_fetches += 1;
-
-                var result = dda_trace_recurse<K - 1, END, MAX_DISTANCE>(new_base_index, actual_child_index, bounds, ray_dir, ray_pos, inv_dir, dir_sign, distance_to_surface, svo, origin, face, stats);
+                float distance_to_surface = distance + length(select(eqs, (side_dist - inv_dir) * voxel_size, 0));
+                var result = dda_trace_recurse<K - 1, END, MAX_DISTANCE>(new_base_index, actual_child_index, ray_dir, ray_pos, inv_dir, dir_sign, distance_to_surface, svo, origin, face, stats);
                 if (result.hit) {
                     return result;
                 }
                 
-            } else {
+            } else {           
+                float distance_to_surface = distance + length(select(eqs, (side_dist - inv_dir) * voxel_size, 0));     
                 float3 world = ray_pos + ray_dir * (distance_to_surface - EPS);
                 stats.exit_type = 3;
+                stats.exit_node_height = K;
 
                 /*
                 for (int i = 0; i < 8; i++) {
@@ -270,10 +282,10 @@ DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_DISTANC
             }
         }
 
-        eqs = min3(side_dist.x, side_dist.y, side_dist.z) == side_dist;
+        eqs = side_dist.xyz <= min(side_dist.yzx, side_dist.zxy);
         face = (uint8_t)firstbithigh(eqs.x | eqs.y << 1 | eqs.z << 2);
-        side_dist += select(eqs, inv_dir, 0.0);
-        floored_pos += select(eqs, (int16_t3)dir_sign, int16_t3(0));
+        side_dist += eqs * inv_dir;
+        floored_pos += eqs * dir_sign;
 
         // exit early if we leave the space
         if (any(floored_pos < 0 | floored_pos > 3)) {
@@ -410,7 +422,7 @@ DdaTraversalOutput trace_shi<let MAX_DISTANCE: uint>(
 
     float3 inv_dir = 1.0 / abs(ray_dir);
     int8_t3 dir_sign = (int8_t3)sign(ray_dir);
-    return dda_trace_recurse<DEPTH - 1, 0, MAX_DISTANCE>(1, 0, svo.aabbs_buffer[0], ray_dir, ray_pos, inv_dir, dir_sign, 0.0, svo, 0, 0, iter);
+    return dda_trace_recurse<DEPTH - 1, 0, MAX_DISTANCE>(1, 0, ray_dir, ray_pos, inv_dir, dir_sign, 0.0, svo, 0, 0, iter);
 }
 
 

@@ -57,7 +57,7 @@ pub unsafe fn create_sparse_structures(
         let mut extra = noise::Fbm::<noise::Billow::<noise::Simplex>>::new(0); 
         extra.frequency = 0.005;
         
-        let num_chunks = (util::TOTAL_SIZE as usize / 64).min(8);
+        let num_chunks = (util::TOTAL_SIZE as usize / 64).min(16);
         let chunks = (0..(num_chunks*num_chunks*num_chunks)).into_par_iter().map(|index| {
             let chunk_position = index_to_offset(index, num_chunks);
 
@@ -68,7 +68,7 @@ pub unsafe fn create_sparse_structures(
                 let world_position = local_position + chunk_position * 64;
                 let pos = world_position.as_::<f64>();
 
-                let height = fbm.get([pos.x, pos.z]) * 300.0f64 + 80.0f64;
+                let height = fbm.get([pos.x, pos.z]) * 700.0f64 + 80.0f64;
 
                 let stepped = (height / 10f64).floor() * 10f64;
                 let diff = (height - stepped).abs() / 5.0f64;
