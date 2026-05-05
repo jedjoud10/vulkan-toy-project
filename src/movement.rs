@@ -45,18 +45,8 @@ impl Movement {
             rotation : vek::Quaternion::rotation_y(-130f32.to_radians()),
             fixed_mode_snapshot_index: None,
             snapshots,
-            //position: vek::Vec3::new(crate::voxel::SIZE as f32 / 2f32, 60f32, crate::voxel::SIZE as f32 / 2f32),
             ..Default::default()
         }
-
-        /*
-        Self {
-            position: vek::Vec3::new(crate::voxel::SIZE as f32 / 2f32 - 80f32, 30f32, crate::voxel::SIZE as f32 / 2f32 - 80f32),
-            rotation : vek::Quaternion::identity(),
-            //position: vek::Vec3::new(crate::voxel::SIZE as f32 / 2f32, 60f32, crate::voxel::SIZE as f32 / 2f32),
-            ..Default::default()
-        }
-        */
     }
     pub fn update(&mut self, input: &Input, ratio: f32, delta: f32) {
         self.local_velocity = vek::Vec2::<f32>::zero();

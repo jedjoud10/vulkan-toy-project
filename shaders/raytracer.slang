@@ -89,7 +89,11 @@ float3 sun_colour(float3 light) {
 float4 clouds(float3 sun_dir, float3 ray_dir, float3 ray_pos, Sampler2D<float4> clouds_sampler) {
     float4 clouds_colour_opacity = 0;
     if (let pos = ray_plane_intersect(ray_dir, ray_pos, 800)) {
-        clouds_colour_opacity = clouds_sampler.Sample(pos.xy / 8000 - 0.5);
+        let uvs = pos.xy / 8000 + 0.5;
+
+        if (all(uvs >= 0 & uvs <= 1)) {
+            clouds_colour_opacity = clouds_sampler.Sample(uvs);
+        }
     }
     return clouds_colour_opacity;
 }
@@ -361,8 +365,9 @@ void main(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID, uint3 gid:
             output[id.xy] = float4((nth_world % 16) / 16, 0);
             break;
         case DebugType::ExitType:
+            output[id.xy] = float4(heatmap(stats.num_entered_but_missed / 64.0), 0);
             //output[id.xy] = float4(heatmap(1 - (stats.active_threads_per_call / stats.calls) / 64.0), 0);
-            output[id.xy] = float4(stats.exit_type / 4.0);
+            //output[id.xy] = float4(stats.exit_type / 4.0);
             break;
         default:
             break;

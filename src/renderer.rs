@@ -189,7 +189,7 @@ impl InternalApp {
             }
         }
 
-        let (swapchain_loader, swapchain, images, swapchain_format) = swapchain::create_swapchain(
+        let (swapchain_loader, swapchain, swapchain_images, swapchain_format) = swapchain::create_swapchain(
             &instance,
             &surface_loader,
             surface_khr,
@@ -198,30 +198,10 @@ impl InternalApp {
             extent,
             &debug_marker,
         );
-        log::info!("created swapchain with {} in-flight images", images.len());
+        log::info!("created swapchain with {} in-flight images", swapchain_images.len());
 
-        let rt_images: Vec<(vk::Image, Allocation)> = (0..images.len())
-            .into_iter()
-            .map(|_| {
-                swapchain::create_temporary_target_render_image(
-                    &instance,
-                    &surface_loader,
-                    surface_khr,
-                    physical_device,
-                    &device,
-                    &mut allocator,
-                    queue_family_index,
-                    extent,
-                    &debug_marker,
-                    args.downscale_factor,
-                    c"temporary render target image"
-                )
-            })
-            .collect();
-        log::info!("created {} in-flight render texture images", images.len());
-
-        swapchain::transfer_rt_images(&device, queue_family_index, &rt_images, pool, queue);
-        log::info!("transferred layout of render texture images");
+        // swapchain::transfer_rt_images(&device, queue_family_index, &rt_images, pool, queue);
+        // log::info!("transferred layout of render texture images");
 
         let descriptor_pool = others::create_descriptor_pool(&device);
         log::info!("created descriptor pool");
@@ -263,9 +243,12 @@ impl InternalApp {
         log::info!("created skybox");
 
         let mut frames_in_flight = Vec::<PerFrameData>::new();
-        for ((rt_image, rt_image_allocation), swapchain_image) in rt_images.into_iter().zip(images) {
-            frames_in_flight.push(PerFrameData::create_per_frame_data(&device, pool, swapchain_format, descriptor_pool, &render_compute_pipeline, rt_image, rt_image_allocation, swapchain_image));
+        for swapchain_image in swapchain_images {
+            let mut per_frame_data = PerFrameData::create_per_frame_data(&device, pool, descriptor_pool, &render_compute_pipeline, swapchain_image);
+            per_frame_data.recreate_rt_images_and_image_views_and_update_descriptor_sets(&device, swapchain_format, swapchain_image, &mut allocator, queue_family_index, extent, &debug_marker, args.downscale_factor);
+            frames_in_flight.push(per_frame_data);
         }
+        crate::per_frame_data::transfer_rt_images(&device, queue_family_index, &frames_in_flight, pool, queue);
         log::info!("created frames in flight structures");
 
         let lights_buffer = buffer::create_buffer(&device, &mut allocator, size_of::<vek::Vec4<f32>>() * 10, &debug_marker, "lights buffer", vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
@@ -370,36 +353,11 @@ impl InternalApp {
         self.swapchain_format = swapchain_format;
         self.swapchain = swapchain;
 
-        let rt_images: Vec<(vk::Image, Allocation)> = (0..self.frames_in_flight.len())
-            .into_iter()
-            .map(|_| {
-                swapchain::create_temporary_target_render_image(
-                    &self.instance,
-                    &self.surface_loader,
-                    self.surface_khr,
-                    self.physical_device,
-                    &self.device,
-                    &mut self.allocator,
-                    self.queue_family_index,
-                    extent,
-                    &self.debug_marker,
-                    self.args.downscale_factor,
-                    c"temporary render target image"
-                )
-            })
-            .collect();
-        swapchain::transfer_rt_images(
-            &self.device,
-            self.queue_family_index,
-            &rt_images,
-            self.pool,
-            self.queue,
-        );
-
-        for ((frame, (rt_image, rt_image_allocation)), swapchain_image) in self.frames_in_flight.iter_mut().zip(rt_images).zip(images) {
-            frame.recreate_image_views_and_update_descriptor_sets(&self.device, swapchain_format, rt_image, rt_image_allocation, swapchain_image);
+        for (per_frame_data, swapchain_image) in self.frames_in_flight.iter_mut().zip(images) {
+            per_frame_data.recreate_rt_images_and_image_views_and_update_descriptor_sets(&self.device, swapchain_format, swapchain_image, &mut self.allocator, self.queue_family_index, extent, &self.debug_marker, self.args.downscale_factor);
         }
-        
+        crate::per_frame_data::transfer_rt_images(&self.device, self.queue_family_index, &self.frames_in_flight, self.pool, self.queue);
+                
         for frame in self.frames_in_flight.iter_mut() {
             self.device.destroy_semaphore(frame.present_complete_semaphore, None);
             self.device.destroy_semaphore(frame.render_finished_semaphore, None);

@@ -30,7 +30,6 @@ pub const OFFSETS: [vek::Vec3::<i32>; 6] = [
     vek::Vec3::new(0, 0, 1),
 ];
 
-
 #[macro_export]
 macro_rules! asset {
     ($file:expr, $assets:expr) => {{

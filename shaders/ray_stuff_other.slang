@@ -9,6 +9,8 @@ struct SparseVoxelOctree {
 
 struct Statistics {
     int iterations;
+    int num_entered_but_missed;
+    
     int buffer_fetches;
     int exit_type;
     int exit_node_height;
@@ -241,8 +243,9 @@ DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_DISTANC
                 var result = dda_trace_recurse<K - 1, END, MAX_DISTANCE>(new_base_index, actual_child_index, ray_dir, ray_pos, inv_dir, dir_sign, distance_to_surface, svo, origin, face, stats);
                 if (result.hit) {
                     return result;
+                } else {
+                    stats.num_entered_but_missed++;
                 }
-                
             } else {           
                 float distance_to_surface = distance + length(select(eqs, (side_dist - inv_dir) * voxel_size, 0));     
                 float3 world = ray_pos + ray_dir * (distance_to_surface - EPS);

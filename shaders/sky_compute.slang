@@ -19,20 +19,19 @@ void write_clouds(uint3 id: SV_DispatchThreadID, uniform float4 sun_and_time) {
     float3 sun = sun_and_time.xyz;
     float time = sun_and_time.w;
 
-    float2 pos = (uv - 0.5) * 8000;
+    float2 pos = (uv-0.5) * 8000;
 
     float amplitude = 0.7;
     float scale = 2.3;
     float3 value = 0;
 
     for (int i = 0; i < 4; i++) {
-        value += sdnoise(pos * pow(scale, i) * 0.0015 + time * 0.03) * pow(amplitude, i);
+        let noised = sdnoise(pos * pow(scale, i) * 0.0015 + time * 0.03) * pow(amplitude, i);
+        value += noised;
     }
 
-    //value *= smoothstep(0, 1, snoise(pos * 0.0005) * 1.5 - 0.2);
-
-    // scale opacity by distance
-    float opacity = value.x;
+    // scale opacity by another noisy function
+    float opacity = value.x * smoothstep(0, 1, snoise(pos * 0.0005) * 1.5 - 0.2) * 0.8;
     float2 derivatives = value.yz;
 
     //opacity *= saturate(3000-length(pos));
@@ -42,12 +41,21 @@ void write_clouds(uint3 id: SV_DispatchThreadID, uniform float4 sun_and_time) {
     float3 bottom_normals = normalize(float3(derivatives.x, -1, derivatives.y));
     float3 top_normals = normalize(float3(-derivatives.x, 1, -derivatives.y));
 
-    float3 col = lerp(saturate(dot(sun, top_normals)), 0.05, 1-smoothstep(0, 0.2, sun.y));
+    // factor to use to "grey out" the clouds when the sun is down
+    float sun_strength = smoothstep(0, 0.2, sun.y);
 
-    int2 offset = (int2)((hash22(pos * 0.554684) * 2.0 - 1.0) * 1);
-    float4 old = clouds_image[(uint2)(id.xy+offset)];
-    AllMemoryBarrier();
-    clouds_image[id.xy] = lerp(float4(col, clamp(opacity, 0, 1)), old, 0.95);
+    // backlight from the sun that passes through the clouds
+    float3 scattered = saturate(pow(saturate(dot(ray_dir, sun)) + 0.3, 4)) * sun_strength;
+
+    // some specular "silver lining"
+    float3 reflected = reflect(sun, bottom_normals);
+    float3 silver_lining = pow(saturate(dot(ray_dir, reflected)), 0.5) * sun_strength;
+
+    float3 ambient = sky(sun, top_normals, 0, false, false);
+
+    // final composition
+    float3 col = (lerp(silver_lining * 0.3, 3.6, scattered) + 0.2) * (ambient * 3.0 + 0.2);
+    clouds_image[id.xy] = float4(col, saturate(opacity));
 }
 
 [shader("compute")]
