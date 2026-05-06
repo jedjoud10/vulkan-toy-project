@@ -58,9 +58,24 @@ float3 heatmap(float t) {
     ), 0.0, 1.0);
 }
 
+// https://stackoverflow.com/questions/23975555/how-to-calculate-a-ray-plane-intersection#23976134
+Optional<float> ray_plane_intersect_generic(float3 ray_dir, float3 ray_pos, float3 plane_normal, float3 plane_pos) {
+    float denom = dot(ray_dir, plane_normal);
+    if (abs(denom) > 0.0001f) // your favorite epsilon
+    {
+        float t = dot((plane_pos - ray_pos), plane_normal) / denom;
+
+        if (t >= 0) {
+            return Optional<float>(t);
+        } else {
+            return none;
+        }
+    }
+    return none;
+}
 
 // https://stackoverflow.com/questions/23975555/how-to-calculate-a-ray-plane-intersection#23976134
-Optional<float2> ray_plane_intersect(float3 ray_dir, float3 ray_pos, float plane_height) {
+Optional<float2> ray_plane_intersect_for_clouds(float3 ray_dir, float3 ray_pos, float plane_height) {
     float denom = -ray_dir.y;
     if (abs(denom) > 0.0001f) // your favorite epsilon
     {
@@ -86,9 +101,32 @@ float3 sun_colour(float3 light) {
     return lerp(sunset_colour, midday_colour, smoothstep(0, 0.2, light.y));
 }
 
+float4 clouds_interesting(float3 sun_dir, float3 ray_dir, float3 ray_pos, Sampler2D<float4> clouds_sampler) {
+    float4 clouds_colour_opacity = 0;
+    if (let pos = ray_plane_intersect_for_clouds(ray_dir, ray_pos, 800)) {
+        if (let pos2 = ray_plane_intersect_for_clouds(ray_dir, ray_pos, 840)) {
+            let uvs = pos.xy / 8000 + 0.5;
+            let uvs2 = pos2.xy / 8000 + 0.5;
+            let p1 = float3(pos.x, 800, pos.y);
+            let p2 = float3(pos2.x, 840, pos2.y);
+            let depth = distance(p1, p2);
+
+            if (all(uvs >= 0 & uvs <= 1)) {
+                for (int i = 0; i < 64; i++) {
+                    float factor = i / 64.0;
+                    float2 lerped = lerp(uvs, uvs2, factor);
+                    clouds_colour_opacity += clouds_sampler.Sample(lerped) / 64.0;
+                }
+            }
+
+        }   
+    }
+    return clouds_colour_opacity;
+}
+
 float4 clouds(float3 sun_dir, float3 ray_dir, float3 ray_pos, Sampler2D<float4> clouds_sampler) {
     float4 clouds_colour_opacity = 0;
-    if (let pos = ray_plane_intersect(ray_dir, ray_pos, 800)) {
+    if (let pos = ray_plane_intersect_for_clouds(ray_dir, ray_pos, 800)) {
         let uvs = pos.xy / 8000 + 0.5;
 
         if (all(uvs >= 0 & uvs <= 1)) {
@@ -128,13 +166,30 @@ void main(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID, uint3 gid:
     
     //let end = clock2x32ARB();
     //output[id.xy] = float4(ray.world - ray.block_pos, 0);
+    //return;
     //output[id.xy] = float4((end.x - start.x) / (4096*16) + length(ray.world - ray.block_pos) * 0.001);
     
-    //return;
-        
+    //bool inwater = false;
+    
     [loop]
     for (int i = 0; i < MAX_ITERATIONS; i++) {
         var ray = trace_shi<int.maxValue>(iterative_ray_pos, iterative_ray_dir, svo, stats);
+
+        /*
+        let water = ray_plane_intersect_generic(iterative_ray_dir, iterative_ray_pos, float3(0, 1, 0), float3(0, 30, 0));
+        if (water.hasValue && !inwater) {
+            if (water.value < ray.distance || !ray.hit) {
+                float3 testst = iterative_ray_pos+iterative_ray_dir*water.value;
+                float3 water_normal = normalize(float3(snoise(testst.xz * 0.08)*.2, 1, snoise(testst.xz * 0.08 + 32.31212)*.2));
+                iterative_ray_dir = refract(iterative_ray_dir, water_normal, 0.98);
+                iterative_ray_pos = testst - float3(0, 0.1, 0);
+                color *= 0.30;
+                color += pow(saturate(dot(reflect(sun.xyz, water_normal), iterative_ray_dir)), 13);
+                inwater = true;
+                continue;
+            }
+        }
+        */
         
         // improve the accuracy of the world position by utilizing the face (assumption we can make since we are dealing with pure cubic voxels)
         ray.world = get_accurate_world_position_with_face(ray.world, ray.block_pos, ray.face, sign(iterative_ray_dir));
@@ -164,6 +219,7 @@ void main(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID, uint3 gid:
             float special = 0;
             float metallic = 0;
             
+            /*
             // pick random colour
             if (block_pos.x > TOTAL_SIZE / 2) {
                 diffuse = lerp(per_block_unique_colour(block_pos), 1, 0.5);
@@ -179,6 +235,7 @@ void main(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID, uint3 gid:
             if (block_pos.y > 4) {
                 special = hash13(floor(block_pos / 8));
             }
+            */
 
             if (special > 0.8 && metallic > 0.0) {
                 

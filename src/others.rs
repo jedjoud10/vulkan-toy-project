@@ -32,8 +32,6 @@ pub unsafe fn create_query_pool(
         .query_count(2);
     let query = device.create_query_pool(&create_info, None).unwrap();
 
-    // TODO: requires hostQueryReset
-    //device.reset_query_pool(query, 0, 2);
     query
 }
 

@@ -759,7 +759,8 @@ impl InternalApp {
 
         // FIXME: there's still something wrong with frames in flight presenting. lots of stuttering and weird shit happening wtf
         // remove this when shit is fixed pls thx
-        //self.device.wait_for_fences(&[end_fence], true, u64::MAX).unwrap(); 
+        // also this fixes issues with OBS recording stuff :(
+        self.device.wait_for_fences(&[end_fence], true, u64::MAX).unwrap(); 
        
         self.stats.end_of_frame(self.frame_count);
         self.frame_count += 1;

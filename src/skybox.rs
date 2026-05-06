@@ -34,6 +34,8 @@ impl Skybox {
 
 pub const SKYBOX_RESOLUTION: u32 = 256;
 pub const CLOUDS_RESOLUTION: u32 = 512;
+const FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
+const FILTER: vk::Filter = vk::Filter::NEAREST;
 
 
 
@@ -45,17 +47,15 @@ pub unsafe fn create_skybox(
     pool: vk::CommandPool,
     queue_family_index: u32,
 ) -> Skybox {
-    let filter = vk::Filter::NEAREST;
     let queue_family_indices = [queue_family_index];
-    let format = vk::Format::R32G32B32A32_SFLOAT;
-
+    
     let skybox_image_create_info = vk::ImageCreateInfo::default()
         .extent(vk::Extent3D {
             width: SKYBOX_RESOLUTION,
             height: SKYBOX_RESOLUTION,
             depth: 1,
         })
-        .format(format)
+        .format(FORMAT)
         .image_type(vk::ImageType::TYPE_2D)
         .initial_layout(vk::ImageLayout::UNDEFINED)
         .mip_levels(1)
@@ -87,7 +87,7 @@ pub unsafe fn create_skybox(
             height: CLOUDS_RESOLUTION,
             depth: 1,
         })
-        .format(format)
+        .format(FORMAT)
         .image_type(vk::ImageType::TYPE_2D)
         .initial_layout(vk::ImageLayout::UNDEFINED)
         .mip_levels(1)
@@ -186,7 +186,7 @@ pub unsafe fn create_skybox(
     let image_view_create_info = vk::ImageViewCreateInfo::default()
         .components(vk::ComponentMapping::default())
         .flags(vk::ImageViewCreateFlags::empty())
-        .format(format)
+        .format(FORMAT)
         .image(skybox_image)
         .subresource_range(skybox_subresource_range)
         .view_type(vk::ImageViewType::CUBE);
@@ -197,7 +197,7 @@ pub unsafe fn create_skybox(
     let array_image_view_create_info = vk::ImageViewCreateInfo::default()
         .components(vk::ComponentMapping::default())
         .flags(vk::ImageViewCreateFlags::empty())
-        .format(format)
+        .format(FORMAT)
         .image(skybox_image)
         .subresource_range(skybox_subresource_range)
         .view_type(vk::ImageViewType::TYPE_2D_ARRAY);
@@ -209,7 +209,7 @@ pub unsafe fn create_skybox(
     let clouds_image_view_create_info = vk::ImageViewCreateInfo::default()
         .components(vk::ComponentMapping::default())
         .flags(vk::ImageViewCreateFlags::empty())
-        .format(format)
+        .format(FORMAT)
         .image(clouds_image)
         .subresource_range(clouds_subresource_range)
         .view_type(vk::ImageViewType::TYPE_2D);
@@ -218,8 +218,8 @@ pub unsafe fn create_skybox(
         .unwrap();
 
     let sampler_create_info = vk::SamplerCreateInfo::default()
-        .mag_filter(filter)
-        .min_filter(filter)
+        .mag_filter(FILTER)
+        .min_filter(FILTER)
         .address_mode_u(vk::SamplerAddressMode::REPEAT)
         .address_mode_v(vk::SamplerAddressMode::REPEAT)
         .address_mode_w(vk::SamplerAddressMode::REPEAT);

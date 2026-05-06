@@ -1,8 +1,6 @@
 use std::collections::VecDeque;
-
 use fixedbitset::FixedBitSet;
-
-use crate::voxel::{self, sparse::ChunkLevelAccelerationStructureNode, util::offset_to_index};
+use crate::voxel::{sparse::ChunkLevelAccelerationStructureNode, util::offset_to_index};
 
 pub const CHUNK_SIZE: usize = 64;
 pub const CHUNK_VOLUME: usize = 64*64*64;
@@ -219,20 +217,20 @@ struct NotSoSimpleTraversalNode {
     index_within_mip: usize,
     height: u32,
     origin: vek::Vec3<u32>,
-    bounds: vek::Aabb<u32>,
+    local_chunk_bounds: vek::Aabb<u32>,
 }
 
 // mip 0 is bottom most mip
 // mip N-1 is one node (top mip)
 pub fn convert_mips_to_nodes<const MIP_COUNT: usize>(chunk_world_space_origin: vek::Vec3<u32>, all_mips: &[FixedBitSet; MIP_COUNT], any_mips: &[FixedBitSet; MIP_COUNT], all_bounds: &[Vec<vek::Aabb<u32>>; MIP_COUNT]) -> Vec<ChunkLevelAccelerationStructureNode> {
     let mut queue = VecDeque::<NotSoSimpleTraversalNode>::new();
-    queue.push_back(NotSoSimpleTraversalNode { mip_index: MIP_COUNT-1, index_within_mip: 0, height: MIP_COUNT as u32-1, origin: vek::Vec3::zero(), bounds: all_bounds[MIP_COUNT - 1][0] });
+    queue.push_back(NotSoSimpleTraversalNode { mip_index: MIP_COUNT-1, index_within_mip: 0, height: MIP_COUNT as u32-1, origin: vek::Vec3::zero(), local_chunk_bounds: all_bounds[MIP_COUNT - 1][0] });
 
     let mut nodes = Vec::<ChunkLevelAccelerationStructureNode>::new();
 
     let mut estimated_next_index = 0usize;
 
-    while let Some(NotSoSimpleTraversalNode { mip_index, index_within_mip, height, origin, bounds: local_chunk_bounds }) = queue.pop_front() {
+    while let Some(NotSoSimpleTraversalNode { mip_index, index_within_mip, height, origin, local_chunk_bounds }) = queue.pop_front() {
         let voxel_size: u32 = 4u32.pow(height);
         let mip_size: usize = CHUNK_SIZE / voxel_size as usize;
 
@@ -296,7 +294,7 @@ pub fn convert_mips_to_nodes<const MIP_COUNT: usize>(chunk_world_space_origin: v
                                     index_within_mip: child_index_in_next_mip,
                                     height: height-1,
                                     origin: child_origin_chunk_space,
-                                    bounds: all_bounds[mip_index-1][child_index_in_next_mip]
+                                    local_chunk_bounds: all_bounds[mip_index-1][child_index_in_next_mip]
                                 });
                                 estimated_next_index += 1;
                                 flat_node_children[child_index] = Some(estimated_next_index);
@@ -319,10 +317,6 @@ pub fn convert_mips_to_nodes<const MIP_COUNT: usize>(chunk_world_space_origin: v
             children,
             full: is_node_all,
         });
-    }
-
-    for node in nodes.iter() {
-        //log::debug!("bounds: {:?}, children: {:?}, full: {}", node.bounds, node.children, node.full);
     }
 
     log::debug!("num generated chunk level nodes {}", nodes.len());
@@ -401,7 +395,6 @@ KEEPING THIS HERE IF WE WANT TO OPTIMIZE CHUNK ACCEL STRUCTURE REBUILDING SPEED 
         }
     } 
     
-    // TODO: unshittify
     pub fn set(&mut self, pos: vek::Vec3<u32>, voxel: bool) {
         if pos.cmplt(&vek::Vec3::broadcast(0u32)).reduce_or() || pos.cmpge(&vek::Vec3::broadcast(TOTAL_SIZE)).reduce_or() {
             log::trace!("voxel at {pos} is OOB, ignoring");

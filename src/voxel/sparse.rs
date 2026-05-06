@@ -1,14 +1,12 @@
-use std::collections::HashMap;
-use std::{collections::VecDeque, ops::ControlFlow, time::Instant};
+use std::{collections::VecDeque, time::Instant};
 use crate::utils::*;
 use crate::voxel::chunk::CHUNK_SIZE;
 use ash::vk;
 use gpu_allocator::vulkan::Allocator;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use vek::Clamp;
-use vek::num_traits::Float;
 use crate::buffer::{self, Buffer};
-use super::{SVO_DEPTH, TOTAL_SIZE, BOTTOM_NODE, FULL_NODE};
+use super::{SVO_DEPTH, TOTAL_SIZE, FULL_NODE};
 use super::chunk::Chunk;
 
 pub struct SparseVoxelOctree {
@@ -126,16 +124,6 @@ impl SparseVoxelOctree {
                     *child_mut_ref = Some(chunk.sparse_representation);
                     break;
                 }
-                
-                /*
-                if node.height > target_height {
-                    current = Some(TopDownTraversalNode {
-                        index: child_index_absolute,
-                        height: node.height - 1,
-                        origin: child_offset * size + node.origin,
-                    });
-                }
-                */
             } else {
                 // top level acceleration structure node
                 let children = match node.node.children.as_mut().unwrap() {
@@ -155,34 +143,7 @@ impl SparseVoxelOctree {
                     };
                     *child_mut_ref = Some(Box::new(new_child));
                 }
-            
-                /*
-                // nodes at height 4 have chunk level children
-                if node.height == 4 {
-                    match chunk.voxel_data {
-                        crate::voxel::chunk::ChunkData::Full => {
-                            // set bottom most child as FULL
-                            child_mut_ref.as_mut().unwrap().full = true;
-                        },
-                        crate::voxel::chunk::ChunkData::Empty => {
-                            // remove bottom most child
-                            child_mut_ref.take().unwrap();
-                        },
-                        crate::voxel::chunk::ChunkData::Partial(fixed_bit_set) => {
-                            /*
-                            child_mut_ref.as_mut().unwrap() = TopLevelAccelerationStructureNode {
-                                bounds: chunk.bounds,
-                                children: Some(TopLevelAccelerationStructureNodeChildren::ChunkNodeChildren {
-                                    children: ()
-                                }),
-                                full: todo!(),
-                            }
-                            */
-                        },
-                    }
-                }
-                */
-            
+
                 // if the parent (node.index) was full, then the just added node must ALSO be full so that we can recursively set its children as full until we reach the bottom
                 if chunk.is_full() && node.node.full {
                     node.node.full = false;
@@ -229,30 +190,6 @@ struct TopDownTraversalNode2<'a> {
     height: u32,
     origin: vek::Vec3<u32>,
 }
-
-
-struct TopDownTraversalNode {
-    index: usize,
-    height: u32,
-    origin: vek::Vec3<u32>,
-}
-
-/*
-// TODO: optimize space using NonZero and bitmasks for full
-pub struct FlatNode {
-    pub bounds: vek::Aabb<u32>,
-    pub children: Option<Box<[Option<usize>; 64]>>,
-    pub full: bool,
-}
-
-    
-impl FlatNode {
-    pub fn root() -> Self {
-        Self { children: None, full: false, bounds: vek::Aabb::new_empty(vek::Vec3::zero()) }
-    }
-}
-
-*/
 
 #[derive(minicbor::Encode, minicbor::Decode)]
 pub struct SparseVoxelTreeBuildResultGpuBuffers {
