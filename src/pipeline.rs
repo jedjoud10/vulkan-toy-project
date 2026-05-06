@@ -62,6 +62,7 @@ impl<const ENTRY_POINTS: usize, const DESCRIPTOR_SETS: usize> MultiComputePipeli
 }
 
 pub type RenderPipeline = MultiComputePipeline<1, 2>;
+pub type CompositingPipeline = MultiComputePipeline<1, 2>;
 pub type SkyPipeline = MultiComputePipeline<2, 1>;
 
 #[derive(Pod, Zeroable, Copy, Clone)]
@@ -203,7 +204,7 @@ pub unsafe fn create_sky_pipeline(
         .unwrap();
     crate::debug::set_object_name(descriptor_set_layout, binder, "sky compute descriptor set layout");
 
-    let render_compute_descriptor_set_layouts = [descriptor_set_layout];
+    let descriptor_set_layouts = [descriptor_set_layout];
 
     let size = size_of::<SkyComputePushConstants>();
 
@@ -212,13 +213,83 @@ pub unsafe fn create_sky_pipeline(
     let spec_constants = spec_constant_fields.iter().map(|x| SpecConstant { bytes: bytemuck::bytes_of(x) }).collect::<Vec<_>>();
 
 
-    let clouds_entry_point = create_single_entry_point_pipeline(device, binder, shader_module, "write_clouds", &render_compute_descriptor_set_layouts, Some(size), Some(&spec_constants));
-    let skybox_entry_point = create_single_entry_point_pipeline(device, binder, shader_module, "write_skybox", &render_compute_descriptor_set_layouts, Some(size), Some(&spec_constants));
+    let clouds_entry_point = create_single_entry_point_pipeline(device, binder, shader_module, "write_clouds", &descriptor_set_layouts, Some(size), Some(&spec_constants));
+    let skybox_entry_point = create_single_entry_point_pipeline(device, binder, shader_module, "write_skybox", &descriptor_set_layouts, Some(size), Some(&spec_constants));
     
     MultiComputePipeline {
         module: shader_module,
-        descriptor_set_layout: render_compute_descriptor_set_layouts,
+        descriptor_set_layout: descriptor_set_layouts,
         entry_points: [clouds_entry_point, skybox_entry_point],
+    }
+}
+
+
+pub unsafe fn create_compositing_pipeline(
+    raw: &[u32],
+    device: &ash::Device,
+    binder: &Option<ash::ext::debug_utils::Device>,
+) -> CompositingPipeline {
+    let shader_module = create_shader_module(raw, device, binder, "compositing compute shader module");
+
+    let rendered_image = vk::DescriptorSetLayoutBinding::default()
+        .binding(0)
+        .stage_flags(vk::ShaderStageFlags::COMPUTE)
+        .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+        .descriptor_count(1);
+    let rt_image = vk::DescriptorSetLayoutBinding::default()
+        .binding(1)
+        .stage_flags(vk::ShaderStageFlags::COMPUTE)
+        .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+        .descriptor_count(1);
+    let bindings = [
+        rendered_image,
+        rt_image
+    ];
+
+    let descriptor_set_layout_create_info = vk::DescriptorSetLayoutCreateInfo::default()
+        .flags(vk::DescriptorSetLayoutCreateFlags::empty())
+        .bindings(&bindings);
+    let descriptor_set_layout = device
+        .create_descriptor_set_layout(&descriptor_set_layout_create_info, None)
+        .unwrap();
+    crate::debug::set_object_name(descriptor_set_layout, binder, "compositing compute descriptor set layout 1 (per frame)");
+
+    let lights_buffer = vk::DescriptorSetLayoutBinding::default()
+        .binding(0)
+        .stage_flags(vk::ShaderStageFlags::COMPUTE)
+        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+        .descriptor_count(1);
+    let skybox_sampler = vk::DescriptorSetLayoutBinding::default()
+        .binding(1)
+        .stage_flags(vk::ShaderStageFlags::COMPUTE)
+        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+        .descriptor_count(1);
+    let clouds_sampler = vk::DescriptorSetLayoutBinding::default()
+        .binding(2)
+        .stage_flags(vk::ShaderStageFlags::COMPUTE)
+        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+        .descriptor_count(1);
+    let bindings = [
+        lights_buffer,
+        skybox_sampler,
+        clouds_sampler,
+    ];
+    let second_descriptor_set_layout_create_info = vk::DescriptorSetLayoutCreateInfo::default()
+        .flags(vk::DescriptorSetLayoutCreateFlags::empty())
+        .bindings(&bindings);
+    let second_descriptor_set_layout = device
+        .create_descriptor_set_layout(&second_descriptor_set_layout_create_info, None)
+        .unwrap();
+    crate::debug::set_object_name(second_descriptor_set_layout, binder, "compositing compute descriptor set layout 2 (constant stuff)");
+
+    let descriptor_set_layouts = [descriptor_set_layout, second_descriptor_set_layout];
+    let push_constant_size = Some(size_of::<PushConstants>());
+    let entry_point = create_single_entry_point_pipeline(device, binder, shader_module, "write_render_texture", &descriptor_set_layouts, push_constant_size, None);
+    
+    CompositingPipeline {
+        module: shader_module,
+        descriptor_set_layout: descriptor_set_layouts,
+        entry_points: [entry_point],
     }
 }
 

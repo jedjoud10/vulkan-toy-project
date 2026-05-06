@@ -98,8 +98,9 @@ bool ray_box_intersection2(
 
 struct DdaTraversalOutput {
     bool hit;
-    float3 world; // this is not entirely accurate as there can be floating point issues here and there. DO NOT TRUST THIS FOR EXACT RESULTS!!
-    uint3 block_pos; // this is always 100% accurate when we reach the bottom most node of the acceleration structure
+    //float3 world; // this is not entirely accurate as there can be floating point issues here and there. DO NOT TRUST THIS FOR EXACT RESULTS!!
+    //uint3 block_pos; // this is always 100% accurate when we reach the bottom most node of the acceleration structure
+    uint specific_block_axis_thing;
     float distance;
     uint8_t face;
 }
@@ -231,14 +232,15 @@ DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_DISTANC
 
                     float tmin = 0;
                     ray_box_intersection(inv_dir, dir_sign, ray_pos, origin, origin+voxel_size, tmin);
-                    float3 world = ray_pos + ray_dir * (tmin - EPS);
-                    uint3 block_pos = floor(world);
+                    //float3 world = ray_pos + ray_dir * (tmin - EPS);
+                    //uint3 block_pos = floor(world);
 
                     // apply "accurate" block pos since we know the bounds of the full node and input face
+                    //block_pos[face] = origin[face] + tmp_sign[face] * (voxel_size-1);
+                    
                     int3 tmp_sign = max(0, -dir_sign);
-                    block_pos[face] = origin[face] + tmp_sign[face] * (voxel_size-1);
-
-                    return DdaTraversalOutput(true, world, block_pos, tmin, face);
+                    return DdaTraversalOutput(true, origin[face] + tmp_sign[face] * (voxel_size-1), tmin - EPS, face);
+                    //return DdaTraversalOutput(true, world, block_pos, tmin, face);
                 }
                 
                 float distance_to_surface = distance + length(eqs * (side_dist - inv_dir) * voxel_size);
@@ -250,7 +252,7 @@ DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_DISTANC
                 }
             } else { 
                 float distance_to_surface = distance + length(eqs * (side_dist - inv_dir) * voxel_size);     
-                float3 world = ray_pos + ray_dir * (distance_to_surface - EPS);
+                //float3 world = ray_pos + ray_dir * (distance_to_surface - EPS);
                 stats.exit_type = 3;
                 stats.exit_node_height = K;
 
@@ -283,7 +285,9 @@ DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_DISTANC
                 */
                 // TODO: i have removed this as it does nothing: clamp(world, parent_world_space_origin, parent_world_space_origin+voxel_size*4)
                 // if something goes wrong add it again 
-                return DdaTraversalOutput(true, world, origin, distance_to_surface - EPS, face);
+                //return DdaTraversalOutput(true, world, origin, distance_to_surface - EPS, face);
+                int3 tmp_sign = max(0, -dir_sign);
+                return DdaTraversalOutput(true, origin[face] + tmp_sign[face] * (voxel_size-1), distance_to_surface - EPS, face);
             }
         }
 

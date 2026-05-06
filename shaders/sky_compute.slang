@@ -13,7 +13,7 @@ RWTexture2D<float4> clouds_image;
 [SpecializationConstant] const uint CLOUDS_RESOLUTION = 32;
 
 [shader("compute")]
-[numthreads(32, 32, 1)]
+[numthreads(8, 8, 1)]
 void write_clouds(uint3 id: SV_DispatchThreadID, uniform float4 sun_and_time) {
     float2 uv = id.xy / (float)CLOUDS_RESOLUTION;
     float3 sun = sun_and_time.xyz;
@@ -59,7 +59,7 @@ void write_clouds(uint3 id: SV_DispatchThreadID, uniform float4 sun_and_time) {
 }
 
 [shader("compute")]
-[numthreads(32, 32, 1)]
+[numthreads(8, 8, 1)]
 void write_skybox(uint3 id: SV_DispatchThreadID, uniform float4 sun_and_time) {
     float2 uv = ((id.xy / (float)SKYBOX_RESOLUTION) * 2.0 - 1.0);
     float3 sun = sun_and_time.xyz;
