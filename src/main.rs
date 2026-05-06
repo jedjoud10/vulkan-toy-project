@@ -33,7 +33,7 @@ use renderer::InternalApp;
 #[command(about = "Vulkan DDA Voxel Raytracer", long_about = None)]
 struct Args {
     /// Factor to use to decrease the screen resolution
-    #[arg(long, default_value_t = 2, value_parser = clap::value_parser!(u32).range(1..=4))]
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=4))]
     downscale_factor: u32,
 
     /// Number of shadow samples to use. Set to 0 to disable shadows completely. Set to 1 to use hard-shadows.
@@ -138,6 +138,9 @@ impl ApplicationHandler for App {
 pub fn main() {
     let args = Args::parse();
     env_logger::Builder::from_default_env()
+        .format_timestamp_millis()
+        .format_file(true)
+        .format_line_number(true)
         .filter_level(log::LevelFilter::Debug)
         .init();
     let event_loop = EventLoop::new().unwrap();

@@ -5,7 +5,6 @@ use noise::NoiseFn;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use crate::{buffer::{self}};
 
-mod recursive;
 mod sparse;
 mod util;
 mod chunk;
@@ -52,12 +51,14 @@ pub unsafe fn create_sparse_structures(
         // regenerate chunks and save to file
         log::warn!("cache file not found (or was forced to regenerate), regenerating chunks...");
         let mut fbm = noise::Fbm::<noise::Perlin>::new(0); 
+        fbm.octaves = 2;
         fbm.frequency = 0.001;
         
         let mut extra = noise::Fbm::<noise::Billow::<noise::Simplex>>::new(0); 
+        extra.octaves = 2;
         extra.frequency = 0.005;
         
-        let num_chunks = (util::TOTAL_SIZE as usize / 64).min(16);
+        let num_chunks = (util::TOTAL_SIZE as usize / 64).min(4);
         let chunks = (0..(num_chunks*num_chunks*num_chunks)).into_par_iter().map(|index| {
             let chunk_position = index_to_offset(index, num_chunks);
 
@@ -68,16 +69,19 @@ pub unsafe fn create_sparse_structures(
                 let world_position = local_position + chunk_position * 64;
                 let pos = world_position.as_::<f64>();
 
+                voxel_bit_set.set(index, pos.y < fbm.get([pos.x, pos.z]) * 90f64 + 30f64);
+                /*
                 let height = fbm.get([pos.x, pos.z]) * 700.0f64 + 80.0f64;
 
                 let stepped = (height / 10f64).floor() * 10f64;
                 let diff = (height - stepped).abs() / 5.0f64;
 
                 voxel_bit_set.set(index, pos.y < (stepped + diff * extra.get([pos.x,pos.z]) * 5.0f64));
+                */
             }
 
             let mut chunk = chunk::Chunk::new(chunk_position.as_::<u32>(), voxel_bit_set);
-            chunk.rebuild();
+            //chunk.rebuild();
             log::info!("generated chunk at {chunk_position}");
             chunk
         }).collect::<Vec<_>>();
@@ -86,7 +90,7 @@ pub unsafe fn create_sparse_structures(
             svo.register_chunk(chunk);
         }
 
-        let res: SparseVoxelTreeBuildResultGpuBuffers = convert_to_buffers(&svo.nodes);
+        let res: SparseVoxelTreeBuildResultGpuBuffers = convert_to_buffers(&svo);
         svo.apply_update_gpu_buffers(device, pool, queue, allocator, &res);
         log::info!("created & updated sparse voxel tree buffers");
 

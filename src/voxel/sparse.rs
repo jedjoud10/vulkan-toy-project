@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::{collections::VecDeque, ops::ControlFlow, time::Instant};
 use crate::utils::*;
 use ash::vk;
@@ -13,7 +14,7 @@ pub struct SparseVoxelOctree {
     pub bitmask_buffer: Buffer,
     pub index_buffer: Buffer,
     pub aabb_buffer: Buffer,
-    pub nodes: Vec<FlatNode>,
+    pub root: TopLevelAccelerationStructureNode,
 }
 
 impl SparseVoxelOctree {
@@ -35,12 +36,12 @@ impl SparseVoxelOctree {
             bitmask_buffer,
             index_buffer,
             aabb_buffer,
-            nodes: vec![FlatNode::root()]
+            root: TopLevelAccelerationStructureNode::root(),
         }
     }
 
     // TODO: impl
-    pub fn register_chunk(&mut self, chunk: Chunk) {
+    pub fn register_chunk(&mut self, mut chunk: Chunk) {
         log::debug!("registering chunk {}", chunk.position);
 
         if chunk.is_empty() {
@@ -48,78 +49,18 @@ impl SparseVoxelOctree {
             return;
         }
 
-        /*
-        let full = chunk.all();
-        let empty = chunk.any();
-
-        const CHUNK_64_HEIGHT: u32 = 3;
-
-        let mut tmp_nodes = Vec::<FlatNode>::new();
-
-        // bottom up approach: do multiple passes, starting from the bottom
-        let mut any_mip = chunk.clone();
-        let mut all_mip = chunk;
-        for pass in 0..3 {
-            let mip_size = 64 / (1 << ((1+pass)*2));
-            let mut next_any_mip = BitVec::from_fn((mip_size as usize).pow(3), |_| false);
-            let mut next_all_mip = BitVec::from_fn((mip_size as usize).pow(3), |_| false);
-
-            for x in 0..mip_size {
-                for y in 0..mip_size {
-                    for z in 0..mip_size {
-                        let mut any = false;
-                        let mut all = true;
-
-                        for local_x in 0..4 {
-                            for local_y in 0..4 {
-                                for local_z in 0..4 {
-                                    let offset = vek::Vec3::new(x,y,z);
-                                    let local_offset = vek::Vec3::new(local_x, local_y, local_z);
-                                    let position: vek::Vec3<i32> = local_offset * 4 + offset;
-                                    let i = (position.x + position.y * 4 + position.z * 4 * 4) as usize; 
-                                    any |= any_mip.get(i).unwrap();
-                                    all &= all_mip.get(i).unwrap();
-                                }
-                            }
-                        }
-
-                        let i = (x + y * 4 + z * 4 * 4) as usize; 
-                        next_any_mip.set(i, any);
-                        next_all_mip.set(i, all);
-
-                    }
-                }
-            }
-
-            any_mip = next_any_mip;
-            all_mip = next_all_mip; 
-        }
-
-        */
+        chunk.rebuild();
+        let pos = chunk.position * 64;
         
-
-        // holy fucking cursed but works for protyping
-        for i in 0..(64*64*64) {
-            let pos = crate::voxel::util::index_to_offset(i, 64);
-
-            if chunk.get(i) {
-                self.set(pos.as_::<u32>() + chunk.position * 64, true);
-            }
-        }
-    }
-
-    fn traverse<A: FnMut(&mut Vec<FlatNode>, &TopDownTraversalNode, u32) -> ControlFlow<(), ()>, B: FnMut(&mut Vec<FlatNode>, &TopDownTraversalNode, usize, u32) -> ControlFlow<(), ()>>(&mut self, pos: vek::Vec3<u32>, target_height: u32, mut prefire_callback: A, mut postfire_callback: B) {
-        assert!(pos.cmpge(&vek::Vec3::broadcast(0u32)).reduce_and());
-        assert!(pos.cmplt(&vek::Vec3::broadcast(TOTAL_SIZE)).reduce_and());
-        
-        let mut current = Some(TopDownTraversalNode { index: 0, height: SVO_DEPTH-1, origin: vek::Vec3::zero() });
+        log::debug!("boogaloo time for chunk with origin world pos : {pos} and chunk pos : {}", chunk.position);
+        let mut current = Some(TopDownTraversalNode2 { node: &mut self.root, height: SVO_DEPTH-1, origin: vek::Vec3::zero() });
 
         while let Some(node) = current.take() {
             let size = 1 << (node.height*2);
             
-            log::trace!("depth: {}, origin: {}, size: {}", node.height, node.origin, size);
+            log::debug!("height: {}, origin: {}, size: {}", node.height, node.origin, size);
             let child_offset = (pos - node.origin) / vek::Vec3::broadcast(size);
-            log::trace!("child offset: {}", child_offset);
+            log::debug!("child offset: {}", child_offset);
 
             assert!(child_offset.cmpge(&vek::Vec3::broadcast(0u32)).reduce_and());
             assert!(child_offset.cmplt(&vek::Vec3::broadcast(4u32)).reduce_and());
@@ -127,136 +68,139 @@ impl SparseVoxelOctree {
 
             let child_index_relative = x + y * 4 + z * 4 * 4;
 
-            self.nodes[node.index].bounds.expand_to_contain(vek::Aabb {
-                min: pos,
-                max: pos+1,
+            node.node.bounds.expand_to_contain(chunk.bounds);
+
+
+            // no need to do anything if we are trying to add a voxel to an already full sub-tree
+            if chunk.is_full() && node.node.full {
+                log::info!("node was already full and chunk was already full too. exiting early");
+                break;
+            }
+
+            node.node.children.get_or_insert_with(|| {
+                if node.height == 3 {
+                    log::info!("adding chunk node children");
+                    TopLevelAccelerationStructureNodeChildren::ChunkNodeChildren { children: Box::new([const { None }; 64]) }
+                } else {
+                    log::info!("adding recursive node children");
+                    TopLevelAccelerationStructureNodeChildren::RecursiveNodeChildren { children: Box::new([const { None }; 64]) }
+                }
             });
 
-
-            let r = prefire_callback(&mut self.nodes, &node, child_index_relative);
-            if r.is_break() {
-                break;
+            // if we are removing a voxel from a full node, we must add all of its OTHER children that must be full, except the one we are modifying
+            if !chunk.is_full() && node.node.full {
+                log::info!("replacing siblings with full recursive nodes");
+                for i in 0..64 {
+                    if i != child_index_relative as usize /* && self.nodes[node.index].children.as_ref().unwrap()[i].is_none() */ {
+                        let new_full_child = TopLevelAccelerationStructureNode {
+                            children: None,
+                            full: true,
+                            bounds: vek::Aabb::new_empty(vek::Vec3::zero())
+                        };
+                        let k = node.node.children.as_mut().unwrap();
+                        match k {
+                            TopLevelAccelerationStructureNodeChildren::RecursiveNodeChildren { children } => {
+                                children[i] = Some(Box::new(new_full_child));
+                            },
+                            TopLevelAccelerationStructureNodeChildren::ChunkNodeChildren { children } => unreachable!(),
+                        } 
+                    }
+                }
             }
 
-            let child_index_absolute = if let Some(idx) = self.nodes[node.index].children.as_mut().unwrap()[child_index_relative as usize] {
-                self.nodes[idx].bounds.expand_to_contain(vek::Aabb {
-                    min: pos,
-                    max: pos+1,
-                });
-                idx
+            if node.height == 3 {
+                // this node is the parent of the chunk level acceleration structure nodes
+                let children = match node.node.children.as_mut().unwrap() {
+                    TopLevelAccelerationStructureNodeChildren::RecursiveNodeChildren { children } => unreachable!(),
+                    TopLevelAccelerationStructureNodeChildren::ChunkNodeChildren { children } => children,
+                };
+
+                let child_mut_ref = &mut children[child_index_relative as usize];
+
+                if let Some(valid_child) = child_mut_ref {
+                    // overwrite?
+                    log::info!("overwrite chunk child node sparse representation");
+                    *valid_child = chunk.sparse_representation; 
+                    break;
+                } else {
+                    log::info!("first write chunk child node sparse representation");
+                    *child_mut_ref = Some(chunk.sparse_representation);
+                    break;
+                }
+                
+                /*
+                if node.height > target_height {
+                    current = Some(TopDownTraversalNode {
+                        index: child_index_absolute,
+                        height: node.height - 1,
+                        origin: child_offset * size + node.origin,
+                    });
+                }
+                */
             } else {
-                self.nodes.push(FlatNode {
-                    children: None,
-                    full: false,
-                    bounds: vek::Aabb {
-                        min: pos,
-                        max: pos+1,
-                    },
-                });
-                let idx = self.nodes.len()-1;
-                self.nodes[node.index].children.as_mut().unwrap()[child_index_relative as usize] = Some(idx);
-                idx
-            };
+                // top level acceleration structure node
+                let children = match node.node.children.as_mut().unwrap() {
+                    TopLevelAccelerationStructureNodeChildren::RecursiveNodeChildren { children } => children,
+                    TopLevelAccelerationStructureNodeChildren::ChunkNodeChildren { children } => unreachable!(),
+                };
             
-            let r = postfire_callback(&mut self.nodes, &node, child_index_absolute, child_index_relative);
-            if r.is_break() {
-                break;
-            }
-
-            if node.height > target_height {
-                current = Some(TopDownTraversalNode {
-                    index: child_index_absolute,
+                let child_mut_ref = &mut children[child_index_relative as usize];
+                
+                if let Some(valid_child) = child_mut_ref {
+                    valid_child.bounds.expand_to_contain(chunk.bounds);
+                } else {
+                    let new_child = TopLevelAccelerationStructureNode {
+                        children: None,
+                        full: false,
+                        bounds: chunk.bounds,
+                    };
+                    *child_mut_ref = Some(Box::new(new_child));
+                }
+            
+                /*
+                // nodes at height 4 have chunk level children
+                if node.height == 4 {
+                    match chunk.voxel_data {
+                        crate::voxel::chunk::ChunkData::Full => {
+                            // set bottom most child as FULL
+                            child_mut_ref.as_mut().unwrap().full = true;
+                        },
+                        crate::voxel::chunk::ChunkData::Empty => {
+                            // remove bottom most child
+                            child_mut_ref.take().unwrap();
+                        },
+                        crate::voxel::chunk::ChunkData::Partial(fixed_bit_set) => {
+                            /*
+                            child_mut_ref.as_mut().unwrap() = TopLevelAccelerationStructureNode {
+                                bounds: chunk.bounds,
+                                children: Some(TopLevelAccelerationStructureNodeChildren::ChunkNodeChildren {
+                                    children: ()
+                                }),
+                                full: todo!(),
+                            }
+                            */
+                        },
+                    }
+                }
+                */
+            
+                // if the parent (node.index) was full, then the just added node must ALSO be full so that we can recursively set its children as full until we reach the bottom
+                if chunk.is_full() && node.node.full {
+                    node.node.full = false;
+                    child_mut_ref.as_mut().unwrap().full = true;
+                }
+            
+                current = Some(TopDownTraversalNode2 {
+                    node: child_mut_ref.as_mut().unwrap(),
                     height: node.height - 1,
                     origin: child_offset * size + node.origin,
                 });
             }
         }
-    } 
-    
-    // TODO: unshittify
-    pub fn set(&mut self, pos: vek::Vec3<u32>, voxel: bool) {
-        if pos.cmplt(&vek::Vec3::broadcast(0u32)).reduce_or() || pos.cmpge(&vek::Vec3::broadcast(TOTAL_SIZE)).reduce_or() {
-            log::trace!("voxel at {pos} is OOB, ignoring");
-            return;
-        }
-
-        log::trace!("setting voxel at {pos} to {voxel}");
-
-        let mut path = Vec::<BottomUpPath>::new();
-
-        let prefire_callback = |nodes: &mut Vec<FlatNode>, node: &TopDownTraversalNode, child_index_relative: u32| -> ControlFlow<(), ()> {
-            // no need to do anything if we are trying to add a voxel to an already full sub-tree
-            if voxel && nodes[node.index].full {
-                return ControlFlow::Break(());
-            }
-
-            nodes[node.index].children.get_or_insert_with(|| Box::new([const { None }; 64]));
-
-            // if we are removing a voxel from a full node, we must add all of its OTHER children that must be full, except the one we are modifying
-            if !voxel && nodes[node.index].full {
-                for i in 0..64 {
-                    if i != child_index_relative as usize /* && self.nodes[node.index].children.as_ref().unwrap()[i].is_none() */ {
-                        nodes.push(FlatNode {
-                            children: None,
-                            full: true,
-                            bounds: vek::Aabb::new_empty(vek::Vec3::zero())
-                        });
-                        let idx = nodes.len()-1;
-                        nodes[node.index].children.as_mut().unwrap()[i] = Some(idx);
-                    }
-                }
-            }
-
-            ControlFlow::Continue(())
-        };
-
-
-        let postfire_callback = |nodes: &mut Vec<FlatNode>, node: &TopDownTraversalNode, child_index_absolute: usize, child_index_relative: u32| -> ControlFlow<(), ()> {
-            path.push(BottomUpPath { parent_index: node.index, child_index_relative, child_index_absolute });
-
-            // set bottom most child as FULL
-            if node.height == 0 && voxel {
-                nodes[child_index_absolute].full = true;
-            }
-            
-            // remove bottom most child
-            if node.height == 0 && !voxel {            
-                // TODO: also remove the node in the array, but that requires shifting all indices and recalculating them... :(
-                // need to use a slotmap....
-                nodes[node.index].children.as_mut().unwrap()[child_index_relative as usize].take().unwrap();
-            }
-
-            // if the parent (node.index) was full, then the just added node must ALSO be full so that we can recursively set its children as full until we reach the bottom
-            if !voxel && nodes[node.index].full {
-                nodes[node.index].full = false;
-                nodes[child_index_absolute].full = true;
-            }
-
-            ControlFlow::Continue(())
-        };
-
-        self.traverse(pos, 0, prefire_callback, postfire_callback);
-
-        // BOTTOM UP
-        for (_, node) in path.iter().enumerate().rev() {
-            if voxel {
-                // recalculate node fullness based on children fullness
-                if let Some(children) = self.nodes[node.child_index_absolute].children.as_ref() {
-                    let full = children.iter().all(|child| child.as_ref().map(|c| self.nodes[*c ].full).unwrap_or_default());
-                    self.nodes[node.child_index_absolute].full = full;
-                }
-            } else {
-                // get rid of node if all children are missing
-                let borrowed = &self.nodes[node.child_index_absolute];
-                if (borrowed.children.is_none() && !borrowed.full) || borrowed.children.as_ref().map(|children| children.iter().all(|opt_child| opt_child.is_none())).unwrap_or_default() {
-                    self.nodes[node.parent_index].children.as_mut().unwrap()[node.child_index_relative as usize] = None;
-                }
-            }
-        }
     }
 
     pub unsafe fn rebuild(&mut self, device: &ash::Device, pool: vk::CommandPool, queue: vk::Queue, allocator: &mut Allocator) {
-        let res = convert_to_buffers(&self.nodes);
+        let res = convert_to_buffers(self);
         self.apply_update_gpu_buffers(device, pool, queue, allocator, &res);
     }
 
@@ -279,18 +223,35 @@ impl SparseVoxelOctree {
     }
 }
 
+struct TopDownTraversalNode2<'a> {
+    node: &'a mut TopLevelAccelerationStructureNode,
+    height: u32,
+    origin: vek::Vec3<u32>,
+}
+
+
 struct TopDownTraversalNode {
     index: usize,
     height: u32,
     origin: vek::Vec3<u32>,
 }
 
+/*
 // TODO: optimize space using NonZero and bitmasks for full
 pub struct FlatNode {
     pub bounds: vek::Aabb<u32>,
     pub children: Option<Box<[Option<usize>; 64]>>,
     pub full: bool,
 }
+
+    
+impl FlatNode {
+    pub fn root() -> Self {
+        Self { children: None, full: false, bounds: vek::Aabb::new_empty(vek::Vec3::zero()) }
+    }
+}
+
+*/
 
 #[derive(minicbor::Encode, minicbor::Decode)]
 pub struct SparseVoxelTreeBuildResultGpuBuffers {
@@ -299,32 +260,34 @@ pub struct SparseVoxelTreeBuildResultGpuBuffers {
     #[n(2)] pub aabbs: Vec<u64>,
 }
 
-impl FlatNode {
+impl TopLevelAccelerationStructureNode {
     pub fn root() -> Self {
         Self { children: None, full: false, bounds: vek::Aabb::new_empty(vek::Vec3::zero()) }
     }
 }
 
-pub enum Node2Children {
-    Recursive {
-        children: Option<Box<[Option<Box<Node2>>; 64]>>,
+pub enum TopLevelAccelerationStructureNodeChildren {
+    RecursiveNodeChildren {
+        children: Box<[Option<Box<TopLevelAccelerationStructureNode>>; 64]>,
     },
 
-    FlatRoot {
-        flatvec: Vec<Node2>,
-        children: Option<Box<[Option<usize>; 64]>>,
+    ChunkNodeChildren {
+        children: Box<[Option<Vec<ChunkLevelAccelerationStructureNode>>; 64]>,
     },
-
-    FlatSubtree {
-        children: Option<Box<[Option<usize>; 64]>>,
-    }
 }
 
-pub struct Node2 {
+pub struct TopLevelAccelerationStructureNode {
     pub bounds: vek::Aabb<u32>,
-    pub children: Node2Children,
+    pub children: Option<TopLevelAccelerationStructureNodeChildren>,
     pub full: bool,
 }
+
+pub struct ChunkLevelAccelerationStructureNode {
+    pub bounds: vek::Aabb<u32>,
+    pub children: Option<Box<[Option<usize>; 64]>>,
+    pub full: bool,
+}
+
 
 struct BottomUpPath {
     pub parent_index: usize,
@@ -332,9 +295,58 @@ struct BottomUpPath {
     pub child_index_absolute: usize,
 }
 
+enum TraversalNodeType<'a> {
+    TopLevel {
+        node: &'a TopLevelAccelerationStructureNode,
+    },
+
+    ChunkLevel {
+        chunk_flat_array: &'a [ChunkLevelAccelerationStructureNode],
+        node: &'a ChunkLevelAccelerationStructureNode,
+    }
+}
+
+fn array_of_options_to_bitmask<T>(arr: &[Option<T>; 64]) -> u64 {
+    arr.iter()
+        .enumerate()
+        .filter_map(|(i, x)| x.as_ref().map(|_| i))
+        .fold(0u64, |prev, i| (1u64 << i) | prev)
+}
+
+impl<'a> TraversalNodeType<'a> {
+    fn get_children_bitmask(&self) -> u64 {
+        match self {
+            TraversalNodeType::TopLevel { node } => {
+                node.children.as_ref().map(|children| {
+                    match children {
+                        TopLevelAccelerationStructureNodeChildren::RecursiveNodeChildren { children } => array_of_options_to_bitmask(children),
+                        TopLevelAccelerationStructureNodeChildren::ChunkNodeChildren { children } => array_of_options_to_bitmask(children),
+                    }
+                }).unwrap_or_default()
+            },
+            TraversalNodeType::ChunkLevel { node, .. } => {
+                node.children.as_ref().map(|children| array_of_options_to_bitmask(children)).unwrap_or_default()
+            },
+        }
+    }
+
+    fn is_full(&self) -> bool {
+        match self {
+            TraversalNodeType::TopLevel { node } => node.full,
+            TraversalNodeType::ChunkLevel { node, .. } => node.full,
+        }
+    }
+    
+    fn bounds(&self) -> vek::Aabb<u32> {
+        match self {
+            TraversalNodeType::TopLevel { node } => node.bounds,
+            TraversalNodeType::ChunkLevel { node, .. } => node.bounds,
+        }
+    }
+}
 
 struct TraversalNode<'a> {
-    node: &'a FlatNode,
+    node_type: TraversalNodeType<'a>,
     height: u32,
     parent_base_child_index: Option<usize>,
     self_packed_child_offset: usize,
@@ -359,10 +371,11 @@ fn pack_aabb_bounds(vek::Aabb { min, max }: vek::Aabb<u32>, represents_cuboid: b
 // FIXME: very very bad! does a full rebuild of the AS even though we might have only modified a few nodes here and there
 // unfortunately, as the AS is using packed buffer and packed nodes, *adding* a new node will require you to shift all nodes after that
 // depending on the child indexing order, this could be very cheap (i.e inserting near the end) or very expensive (i.e inserting near the front and having to shift all elements after that)
-pub fn convert_to_buffers(nodes: &[FlatNode]) -> SparseVoxelTreeBuildResultGpuBuffers {
+pub fn convert_to_buffers(svo: &SparseVoxelOctree) -> SparseVoxelTreeBuildResultGpuBuffers {
     let start = Instant::now();
     let mut queue = VecDeque::<TraversalNode>::new();
-    queue.push_back(TraversalNode { node: &nodes[0], height: SVO_DEPTH, parent_base_child_index: None, self_packed_child_offset: 0 });
+    let root = &svo.root;
+    queue.push_back(TraversalNode { node_type: TraversalNodeType::TopLevel { node: root }, height: SVO_DEPTH, parent_base_child_index: None, self_packed_child_offset: 0 });
 
     let mut bitmask_vec = Vec::<u64>::new();
     let mut index_vec = Vec::<u32>::new();
@@ -381,7 +394,7 @@ pub fn convert_to_buffers(nodes: &[FlatNode]) -> SparseVoxelTreeBuildResultGpuBu
     let mut base_indices_for_height = vec![0u32; SVO_DEPTH as usize + 1];
 
     // first pass that will create the index vec and bitmask vec
-    while let Some(TraversalNode { node, height, parent_base_child_index: parent_index, self_packed_child_offset  }) = queue.pop_front() {
+    while let Some(TraversalNode { node_type, height, parent_base_child_index: parent_index, self_packed_child_offset  }) = queue.pop_front() {
         let self_index = index_vec.len();
         base_indices_for_height[height as usize] += 1;
         
@@ -390,13 +403,10 @@ pub fn convert_to_buffers(nodes: &[FlatNode]) -> SparseVoxelTreeBuildResultGpuBu
             debug_assert_eq!(self_index, parent + self_packed_child_offset);
         }
 
+        log::debug!("height: {height}");
+
         // creates a 64 bit mask that contains which children are enabled
-        let bitmask = node.children.as_ref().map(|children| children.iter()
-            .enumerate()
-            .filter_map(|(i, x)| x.as_ref().map(|_| i))
-            .fold(0u64, |prev, i| (1u64 << i) | prev)
-        ).unwrap_or_default();
-        
+        let bitmask = node_type.get_children_bitmask();
 
         // index of the FIRST child of this node
         // top bits also store some flag information ig
@@ -409,6 +419,7 @@ pub fn convert_to_buffers(nodes: &[FlatNode]) -> SparseVoxelTreeBuildResultGpuBu
         total_num_bits_set_total += num_bits_set as u128;
         num_bits_set_percentage_histogram[(num_bits_set_percentage * 3f32).ceil() as usize] += 1;
         
+        /*
         let coarse_volume = 2u32.pow(SVO_DEPTH * 2) as f64;
         let size = node.bounds.max - node.bounds.min;
         let tight_volume = size.x * size.y * size.z;
@@ -417,13 +428,14 @@ pub fn convert_to_buffers(nodes: &[FlatNode]) -> SparseVoxelTreeBuildResultGpuBu
         if bitmask == u64::MAX {
             total_num_full_bitmask_nodes += 1;
         }
-
+        
         // we can avoid doing DDA for the bottom-most nodes if we KNOW that they represents cuboids
         // since we already do a ray-AABB test to check for collision, we can use the result of that to get the hit output stuff and avoid doing DDA completely
         let represents_cuboid = bitmask.count_ones() == tight_volume && height == 1; // if number of set voxels is equal to AABB volume, then AABB volume is tight around a cuboid (this only holds correctly for the leaf nodes)
         if represents_cuboid {
             total_num_cuboid_nodes += 1;
         }
+        */
 
         // check if we are handling the base case
         if height == 0 {
@@ -435,38 +447,74 @@ pub fn convert_to_buffers(nodes: &[FlatNode]) -> SparseVoxelTreeBuildResultGpuBu
             }
             */
         } else {
-            if node.full {
+            if node_type.is_full() {
                 // node is full, discard children nodes, and store a specialized magic value that indicates that this node is full
                 base_child_index = FULL_NODE;
                 total_num_full_nodes += 1;
-            } else {
+            } else if height > 1 {
                 // if bitmask is full, then there's no need to do the bitmask buffer fetch in the shader
                 if bitmask == u64::MAX {
                     base_child_index |= 1 << 30;
                 }
 
                 // node is not full, we must compute bitmask of children and stuff
-                if let Some(children) = node.children.as_ref() {
-                    for (pci, (ci, child)) in children.iter().enumerate().filter_map(|(ci, x)| x.as_ref().map(|x| (ci, x))).enumerate() {
-                        if height > 1 {
-                            // `self_packed_child_offset = pci` assumes that we are doing this in BFS order. with DFS order, that is no longer the case
-                            queue.push_back(TraversalNode { node: &nodes[*child], height: height - 1, parent_base_child_index: Some(base_child_index as usize), self_packed_child_offset: pci });
-                            test_count += 1;
+                match node_type {
+                    TraversalNodeType::TopLevel { node } => {
+                        if let Some(children) = node.children.as_ref() {
+                            match children {
+                                TopLevelAccelerationStructureNodeChildren::RecursiveNodeChildren { children } => {
+                                    for (pci, (ci, child)) in children.iter().enumerate().filter_map(|(ci, x)| x.as_ref().map(|x| (ci, x))).enumerate() {
+                                        // `self_packed_child_offset = pci` assumes that we are doing this in BFS order. with DFS order, that is no longer the case
+                                        queue.push_back(TraversalNode { node_type: TraversalNodeType::TopLevel { node: &child }, height: height - 1, parent_base_child_index: Some(base_child_index as usize), self_packed_child_offset: pci });
+                                        test_count += 1;
 
-                            // VERIFY: makes sure that the packed child index matches up
-                            let mask = (1u64 << ci) - 1;
-                            let masked = bitmask & mask;
-                            let test = masked.count_ones();
-                            debug_assert_eq!(test, pci as u32);
+                                        // VERIFY: makes sure that the packed child index matches up
+                                        let mask = (1u64 << ci) - 1;
+                                        let masked = bitmask & mask;
+                                        let test = masked.count_ones();
+                                        debug_assert_eq!(test, pci as u32);
+                                    }
+                                },
+                                TopLevelAccelerationStructureNodeChildren::ChunkNodeChildren { children } => {
+                                    for (pci, (ci, chunk_flat_array)) in children.iter().enumerate().filter_map(|(ci, x)| x.as_ref().map(|x| (ci, x))).enumerate() {
+                                        // `self_packed_child_offset = pci` assumes that we are doing this in BFS order. with DFS order, that is no longer the case
+                                        queue.push_back(TraversalNode { node_type: TraversalNodeType::ChunkLevel { chunk_flat_array, node: &chunk_flat_array[0] }, height: height - 1, parent_base_child_index: Some(base_child_index as usize), self_packed_child_offset: pci });
+                                        test_count += 1;
+                                    
+                                        // VERIFY: makes sure that the packed child index matches up
+                                        let mask = (1u64 << ci) - 1;
+                                        let masked = bitmask & mask;
+                                        let test = masked.count_ones();
+                                        debug_assert_eq!(test, pci as u32);
+                                    }
+                                },
+                            }
+                            
                         }
-                    }
+                    },
+                    TraversalNodeType::ChunkLevel { chunk_flat_array, node } => {
+                        if let Some(children) = node.children.as_ref() {
+                            for (pci, (ci, child)) in children.iter().enumerate().filter_map(|(ci, x)| x.as_ref().map(|x| (ci, x))).enumerate() {
+                                // `self_packed_child_offset = pci` assumes that we are doing this in BFS order. with DFS order, that is no longer the case
+                                queue.push_back(TraversalNode { node_type: TraversalNodeType::ChunkLevel { chunk_flat_array, node: &chunk_flat_array[*child] }, height: height - 1, parent_base_child_index: Some(base_child_index as usize), self_packed_child_offset: pci });
+                                test_count += 1;
+                            
+                                // VERIFY: makes sure that the packed child index matches up
+                                let mask = (1u64 << ci) - 1;
+                                let masked = bitmask & mask;
+                                let test = masked.count_ones();
+                                debug_assert_eq!(test, pci as u32);
+                            }
+                        }
+                    },
                 }
+                
             }
         }
 
         bitmask_vec.push(bitmask);
         index_vec.push(base_child_index);
-        aabb_vec.push(pack_aabb_bounds(node.bounds, represents_cuboid));
+        aabb_vec.push(pack_aabb_bounds(node_type.bounds(), false));
         nodes_visited += 1;
     }
 

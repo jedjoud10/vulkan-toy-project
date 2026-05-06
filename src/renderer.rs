@@ -314,8 +314,10 @@ impl InternalApp {
     pub unsafe fn click(&mut self, add: bool) {
         let position = (self.movement.forward() * 5.0f32 + self.movement.position).floor().as_::<u32>();
 
+        /*
         self.svo.set(position, add);
         self.svo.rebuild(&self.device, self.pool, self.queue, &mut self.allocator);
+        */
     }
 
     pub unsafe fn recreate_swapchain(&mut self) {

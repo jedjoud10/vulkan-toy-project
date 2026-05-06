@@ -239,15 +239,15 @@ DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_DISTANC
                     return DdaTraversalOutput(true, world, block_pos, tmin, face);
                 }
                 
-                float distance_to_surface = distance + length(select(eqs, (side_dist - inv_dir) * voxel_size, 0));
+                float distance_to_surface = distance + length(eqs * (side_dist - inv_dir) * voxel_size);
                 var result = dda_trace_recurse<K - 1, END, MAX_DISTANCE>(new_base_index, actual_child_index, ray_dir, ray_pos, inv_dir, dir_sign, distance_to_surface, svo, origin, face, stats);
                 if (result.hit) {
                     return result;
                 } else {
                     stats.num_entered_but_missed++;
                 }
-            } else {           
-                float distance_to_surface = distance + length(select(eqs, (side_dist - inv_dir) * voxel_size, 0));     
+            } else { 
+                float distance_to_surface = distance + length(eqs * (side_dist - inv_dir) * voxel_size);     
                 float3 world = ray_pos + ray_dir * (distance_to_surface - EPS);
                 stats.exit_type = 3;
                 stats.exit_node_height = K;
@@ -287,6 +287,8 @@ DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_DISTANC
 
         eqs = side_dist.xyz <= min(side_dist.yzx, side_dist.zxy);
         face = (uint8_t)firstbithigh(eqs.x | eqs.y << 1 | eqs.z << 2);
+
+        // reason these are faster than select is because FMA. thanks d4rkpl4y3r
         side_dist += eqs * inv_dir;
         floored_pos += eqs * dir_sign;
 
