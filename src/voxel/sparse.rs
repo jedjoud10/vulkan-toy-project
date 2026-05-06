@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::{collections::VecDeque, ops::ControlFlow, time::Instant};
 use crate::utils::*;
+use crate::voxel::chunk::CHUNK_SIZE;
 use ash::vk;
 use gpu_allocator::vulkan::Allocator;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
@@ -40,17 +41,15 @@ impl SparseVoxelOctree {
         }
     }
 
-    // TODO: impl
-    pub fn register_chunk(&mut self, mut chunk: Chunk) {
+    pub fn register_chunk(&mut self, chunk: Chunk) {
         log::debug!("registering chunk {}", chunk.position);
 
         if chunk.is_empty() {
-            log::warn!("chunk was empty, ignoring");
+            log::debug!("chunk was empty, ignoring");
             return;
         }
 
-        chunk.rebuild();
-        let pos = chunk.position * 64;
+        let pos = chunk.position * CHUNK_SIZE as u32;
         
         log::debug!("boogaloo time for chunk with origin world pos : {pos} and chunk pos : {}", chunk.position);
         let mut current = Some(TopDownTraversalNode2 { node: &mut self.root, height: SVO_DEPTH-1, origin: vek::Vec3::zero() });
@@ -73,23 +72,23 @@ impl SparseVoxelOctree {
 
             // no need to do anything if we are trying to add a voxel to an already full sub-tree
             if chunk.is_full() && node.node.full {
-                log::info!("node was already full and chunk was already full too. exiting early");
+                log::debug!("node was already full and chunk was already full too. exiting early");
                 break;
             }
 
             node.node.children.get_or_insert_with(|| {
                 if node.height == 3 {
-                    log::info!("adding chunk node children");
+                    log::debug!("adding chunk node children");
                     TopLevelAccelerationStructureNodeChildren::ChunkNodeChildren { children: Box::new([const { None }; 64]) }
                 } else {
-                    log::info!("adding recursive node children");
+                    log::debug!("adding recursive node children");
                     TopLevelAccelerationStructureNodeChildren::RecursiveNodeChildren { children: Box::new([const { None }; 64]) }
                 }
             });
 
             // if we are removing a voxel from a full node, we must add all of its OTHER children that must be full, except the one we are modifying
             if !chunk.is_full() && node.node.full {
-                log::info!("replacing siblings with full recursive nodes");
+                log::debug!("replacing siblings with full recursive nodes");
                 for i in 0..64 {
                     if i != child_index_relative as usize /* && self.nodes[node.index].children.as_ref().unwrap()[i].is_none() */ {
                         let new_full_child = TopLevelAccelerationStructureNode {
@@ -102,7 +101,7 @@ impl SparseVoxelOctree {
                             TopLevelAccelerationStructureNodeChildren::RecursiveNodeChildren { children } => {
                                 children[i] = Some(Box::new(new_full_child));
                             },
-                            TopLevelAccelerationStructureNodeChildren::ChunkNodeChildren { children } => unreachable!(),
+                            TopLevelAccelerationStructureNodeChildren::ChunkNodeChildren { .. } => unreachable!(),
                         } 
                     }
                 }
@@ -111,7 +110,7 @@ impl SparseVoxelOctree {
             if node.height == 3 {
                 // this node is the parent of the chunk level acceleration structure nodes
                 let children = match node.node.children.as_mut().unwrap() {
-                    TopLevelAccelerationStructureNodeChildren::RecursiveNodeChildren { children } => unreachable!(),
+                    TopLevelAccelerationStructureNodeChildren::RecursiveNodeChildren { .. } => unreachable!(),
                     TopLevelAccelerationStructureNodeChildren::ChunkNodeChildren { children } => children,
                 };
 
@@ -119,11 +118,11 @@ impl SparseVoxelOctree {
 
                 if let Some(valid_child) = child_mut_ref {
                     // overwrite?
-                    log::info!("overwrite chunk child node sparse representation");
+                    log::debug!("overwrite chunk child node sparse representation");
                     *valid_child = chunk.sparse_representation; 
                     break;
                 } else {
-                    log::info!("first write chunk child node sparse representation");
+                    log::debug!("first write chunk child node sparse representation");
                     *child_mut_ref = Some(chunk.sparse_representation);
                     break;
                 }
@@ -141,7 +140,7 @@ impl SparseVoxelOctree {
                 // top level acceleration structure node
                 let children = match node.node.children.as_mut().unwrap() {
                     TopLevelAccelerationStructureNodeChildren::RecursiveNodeChildren { children } => children,
-                    TopLevelAccelerationStructureNodeChildren::ChunkNodeChildren { children } => unreachable!(),
+                    TopLevelAccelerationStructureNodeChildren::ChunkNodeChildren { .. } => unreachable!(),
                 };
             
                 let child_mut_ref = &mut children[child_index_relative as usize];
@@ -197,6 +196,8 @@ impl SparseVoxelOctree {
                 });
             }
         }
+    
+        // TODO: only thing missing here is getting rid of walks in the tree that solely consist of empty nodes
     }
 
     pub unsafe fn rebuild(&mut self, device: &ash::Device, pool: vk::CommandPool, queue: vk::Queue, allocator: &mut Allocator) {
@@ -403,8 +404,6 @@ pub fn convert_to_buffers(svo: &SparseVoxelOctree) -> SparseVoxelTreeBuildResult
             debug_assert_eq!(self_index, parent + self_packed_child_offset);
         }
 
-        log::debug!("height: {height}");
-
         // creates a 64 bit mask that contains which children are enabled
         let bitmask = node_type.get_children_bitmask();
 
@@ -419,9 +418,8 @@ pub fn convert_to_buffers(svo: &SparseVoxelOctree) -> SparseVoxelTreeBuildResult
         total_num_bits_set_total += num_bits_set as u128;
         num_bits_set_percentage_histogram[(num_bits_set_percentage * 3f32).ceil() as usize] += 1;
         
-        /*
         let coarse_volume = 2u32.pow(SVO_DEPTH * 2) as f64;
-        let size = node.bounds.max - node.bounds.min;
+        let size = node_type.bounds().max - node_type.bounds().min;
         let tight_volume = size.x * size.y * size.z;
         total_tight_to_coarse_volume_ratio += tight_volume as f64 / coarse_volume;
 
@@ -435,17 +433,11 @@ pub fn convert_to_buffers(svo: &SparseVoxelOctree) -> SparseVoxelTreeBuildResult
         if represents_cuboid {
             total_num_cuboid_nodes += 1;
         }
-        */
 
         // check if we are handling the base case
         if height == 0 {
             // should never reach this point, because the nodes at height 0 are handled by their parent anyways
-            /*
-            base_child_index = BOTTOM_NODE;
-            bitmask = 0x351AB13;
-            if node.children.is_none() {
-            }
-            */
+            unreachable!();
         } else {
             if node_type.is_full() {
                 // node is full, discard children nodes, and store a specialized magic value that indicates that this node is full

@@ -129,6 +129,8 @@ DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_DISTANC
 
         stats.buffer_fetches += 1;
         if (ray_box_intersection3(inv_dir, dir_sign, ray_pos, aabb_min, aabb_max, tmin, face2)) {
+            // cheating a bit :3
+            distance = max(tmin - 0.2, distance);
             /*
             // make sure we are dealing with leaf nodes and that they represent volume cuboids
             // FIXME: this, however, causes a lot of shadowing issues for some reason

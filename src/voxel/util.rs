@@ -11,10 +11,15 @@ pub const SVO_DEPTH: u32 = 5;
 pub const TOTAL_SIZE: u32 = 1 << (SVO_DEPTH * 2);
 
 pub fn offset_to_index(offset: vek::Vec3<usize>, size: usize) -> usize {
+    assert!(offset.cmpge(&vek::Vec3::broadcast(0)).reduce_and());
+    assert!(offset.cmplt(&vek::Vec3::broadcast(size)).reduce_and());
+    
     offset.x + offset.y * size + offset.z * size * size
 }
 
 pub fn index_to_offset(index: usize, size: usize) -> vek::Vec3<usize> {
+    assert!(index < (size*size*size));
+    
     let x: usize = index % size;
     let y = (index / size) % size;
     let z = index / (size*size);
