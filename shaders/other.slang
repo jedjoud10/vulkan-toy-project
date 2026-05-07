@@ -33,6 +33,15 @@ float3 get_accurate_world_position_with_face(float3 world, uint3 block_pos, int 
     return world;
 }
 
+// face: x, y, z
+float3 get_accurate_world_position_with_face2(float3 world, int blockthingyfuck, int face, int3 sign) {
+    // sign is either -1 or 1, we need 0 or 1
+    sign = max(0, -sign);
+
+    world[face] = blockthingyfuck + sign[face];
+    return world;
+}
+
 // MUST be shared between the ray tracer and the shader, otherwise their ray directions will mismatch
 float3 get_interesting_normal(float3 world, float3 normal) {
     return normal;

@@ -5,7 +5,7 @@
 #include <noises.slang>
 
 [[vk::binding(0, 0)]]
-RWTexture2D<uint32_t2> output;
+RWTexture2D<float4> output;
 
 [[vk::binding(0, 1)]]
 RWTexture3D<uint8_t> svt;
@@ -58,9 +58,89 @@ float3 heatmap(float t) {
     ), 0.0, 1.0);
 }
 
+// https://stackoverflow.com/questions/23975555/how-to-calculate-a-ray-plane-intersection#23976134
+Optional<float> ray_plane_intersect_generic(float3 ray_dir, float3 ray_pos, float3 plane_normal, float3 plane_pos) {
+    float denom = dot(ray_dir, plane_normal);
+    if (abs(denom) > 0.0001f) // your favorite epsilon
+    {
+        float t = dot((plane_pos - ray_pos), plane_normal) / denom;
+
+        if (t >= 0) {
+            return Optional<float>(t);
+        } else {
+            return none;
+        }
+    }
+    return none;
+}
+
+// https://stackoverflow.com/questions/23975555/how-to-calculate-a-ray-plane-intersection#23976134
+Optional<float2> ray_plane_intersect_for_clouds(float3 ray_dir, float3 ray_pos, float plane_height) {
+    float denom = -ray_dir.y;
+    if (abs(denom) > 0.0001f) // your favorite epsilon
+    {
+        float t = -(plane_height - ray_pos.y) / denom;
+        float3 pos = t * ray_dir + ray_pos;
+
+        if (t >= 0) {
+            return Optional<float2>(pos.xz);
+        } else {
+            return none;
+        }
+    }
+    return none;
+}
+
+
+// extra func to calculate sun colour
+float3 sun_colour(float3 light) {
+    // TODO: use atmo sky scattering instead of this
+    float3 midday_colour = pow(float3(252, 232, 212) / 255.0, 1/2.2);
+    float3 sunset_colour = pow(float3(249, 128, 7) / 255.0, 1/2.2);
+
+    return lerp(sunset_colour, midday_colour, smoothstep(0, 0.2, light.y));
+}
+
+float4 clouds_interesting(float3 sun_dir, float3 ray_dir, float3 ray_pos, Sampler2D<float4> clouds_sampler) {
+    float4 clouds_colour_opacity = 0;
+    if (let pos = ray_plane_intersect_for_clouds(ray_dir, ray_pos, 800)) {
+        if (let pos2 = ray_plane_intersect_for_clouds(ray_dir, ray_pos, 840)) {
+            let uvs = pos.xy / 8000 + 0.5;
+            let uvs2 = pos2.xy / 8000 + 0.5;
+            let p1 = float3(pos.x, 800, pos.y);
+            let p2 = float3(pos2.x, 840, pos2.y);
+            let depth = distance(p1, p2);
+
+            if (all(uvs >= 0 & uvs <= 1)) {
+                for (int i = 0; i < 64; i++) {
+                    float factor = i / 64.0;
+                    float2 lerped = lerp(uvs, uvs2, factor);
+                    clouds_colour_opacity += clouds_sampler.Sample(lerped) / 64.0;
+                }
+            }
+
+        }   
+    }
+    return clouds_colour_opacity;
+}
+
+float4 clouds(float3 sun_dir, float3 ray_dir, float3 ray_pos, Sampler2D<float4> clouds_sampler) {
+    float4 clouds_colour_opacity = 0;
+    if (let pos = ray_plane_intersect_for_clouds(ray_dir, ray_pos, 800)) {
+        let uvs = pos.xy / 8000 + 0.5;
+
+        if (all(uvs >= 0 & uvs <= 1)) {
+            clouds_colour_opacity = clouds_sampler.Sample(uvs);
+        }
+    }
+    return clouds_colour_opacity;
+}
+
+//#define DEBUG
+
 [shader("compute")]
 [numthreads(GROUP_SIZE, GROUP_SIZE, 1)]
-void main(uint3 id: SV_DispatchThreadID, uniform float2 screen, uniform matrix<float,4,4> mat, uniform float4 position, uniform float4 sun, uniform DebugType debug_type, uniform float time) {
+void main(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID, uint3 gid: SV_GroupID, uniform float2 screen, uniform matrix<float,4,4> mat, uniform float4 position, uniform float4 sun, uniform DebugType debug_type, uniform float time) {
     float2 screen_uvs = (float2)id.xy / screen;
     screen_uvs *= 2.0;
     screen_uvs -= 1.0;
@@ -74,305 +154,299 @@ void main(uint3 id: SV_DispatchThreadID, uniform float2 screen, uniform matrix<f
     SparseVoxelOctree svo = SparseVoxelOctree(svo_indices_buffer, svo_bitmasks_buffer, svo_aabbs_buffer);
     Statistics stats = Statistics(0, 0);
     
-    var primary_ray = trace_shi<int.maxValue>(ray_pos, ray_dir, svo, stats);
-    uint32_t distance = reinterpret<uint32_t>(primary_ray.distance);
-    uint32_t flags = 0;
+    float3 iterative_ray_dir = ray_dir;
+    float3 iterative_ray_pos = ray_pos;
+
+#ifdef DEBUG
+    float3 nth_normals = 0.0;
+    float3 nth_world = 0.0;
+#endif
     
-    // set flag shits (32 bits yay!!!)
-    flags |= (uint32_t)primary_ray.hit; // 1 bit
-    flags |= primary_ray.face << 1; // 2 bits
-    flags |= (primary_ray.specific_block_axis_thing & 0b1111111111) << 3; // 10 bits for specific axis value
+    float3 color = 1.0;
+    float alpha = 0.0;
 
-    if (primary_ray.hit) {
-        float3 world_pos = ray_pos + ray_dir * primary_ray.distance;
+    //let start = clock2x32ARB();
 
-        // why does this break?
-        //world_pos[primary_ray.face] = primary_ray.specific_block_axis_thing;
-
-        var shadow_ray_hit = trace_shi<int.maxValue>(world_pos + sun.xyz * 0.001, sun.xyz, svo, stats).hit;
-        //flags |= shadow_ray_hit << 13;
-
-
-        float3 normal = get_interesting_normal(world_pos, get_face_normal(primary_ray.face, sign(ray_dir)));
-        float3 reflected = reflect(ray_dir, normal);
-        var secondary_ray = trace_shi<int.maxValue>(world_pos + reflected*0.05, reflected, svo, stats);
-        flags |= secondary_ray.hit << 13;
-        flags |= secondary_ray.face << 15; // 2 bits
-        flags |= (secondary_ray.specific_block_axis_thing & 0b1111111111) << 17; // 10 bits for specific axis value
-    }
-    output[id.xy] = uint32_t2(distance, flags);
-    //output[id.xy] = block_pos.x | block_pos.y << 10 | block_pos.z << 20 | (uint32_t1)primary_ray.hit << 30;
-    return;
-}
-
-
-
-
-    // float3 iterative_ray_dir = ray_dir;
-    // float3 iterative_ray_pos = ray_pos;
-
-    // float3 nth_normals = 0.0;
-    // float3 nth_world = 0.0;
+    //var ray = trace_shi<int.maxValue>(iterative_ray_pos, iterative_ray_dir, svo, stats);
     
-    // float3 color = 1.0;
+    //let end = clock2x32ARB();
+    //output[id.xy] = float4(ray.world - ray.block_pos, 0);
+    //return;
+    //output[id.xy] = float4((end.x - start.x) / (4096*16) + length(ray.world - ray.block_pos) * 0.001);
+    
+    bool inwater = false;
+    
+    [loop]
+    for (int i = 0; i < MAX_ITERATIONS; i++) {
+        var ray = trace_shi<int.maxValue>(iterative_ray_pos, iterative_ray_dir, svo, stats);
 
-    // [loop]
-    // for (int i = 0; i < MAX_ITERATIONS; i++) {
-    //     var ray = trace_shi<int.maxValue>(iterative_ray_pos, iterative_ray_dir, svo, stats);
+        let water = ray_plane_intersect_generic(iterative_ray_dir, iterative_ray_pos, float3(0, 1, 0), float3(0, 80, 0));
+        if (water.hasValue && !inwater) {
+            if (water.value < ray.distance || !ray.hit) {
+                float3 testst = iterative_ray_pos+iterative_ray_dir*water.value;
+                float3 water_normal = normalize(float3(snoise(testst.xz * 0.08)*.2, 8, snoise(testst.xz * 0.08 + 32.31212)*.2));
+                iterative_ray_dir = reflect(iterative_ray_dir, water_normal);
+                iterative_ray_pos = testst + float3(0, 0.1, 0);
+                color *= 0.30;
+                color += pow(saturate(dot(reflect(sun.xyz, water_normal), iterative_ray_dir)), 13);
+                inwater = true;
+                alpha += 0.3;
+                continue;
+            }
+        }
 
-    //     /*
-    //     let water = ray_plane_intersect_generic(iterative_ray_dir, iterative_ray_pos, float3(0, 1, 0), float3(0, 30, 0));
-    //     if (water.hasValue && !inwater) {
-    //         if (water.value < ray.distance || !ray.hit) {
-    //             float3 testst = iterative_ray_pos+iterative_ray_dir*water.value;
-    //             float3 water_normal = normalize(float3(snoise(testst.xz * 0.08)*.2, 1, snoise(testst.xz * 0.08 + 32.31212)*.2));
-    //             iterative_ray_dir = refract(iterative_ray_dir, water_normal, 0.98);
-    //             iterative_ray_pos = testst - float3(0, 0.1, 0);
-    //             color *= 0.30;
-    //             color += pow(saturate(dot(reflect(sun.xyz, water_normal), iterative_ray_dir)), 13);
-    //             inwater = true;
-    //             continue;
-    //         }
-    //     }
-    //     */
-        
-    //     // improve the accuracy of the world position by utilizing the face (assumption we can make since we are dealing with pure cubic voxels)
-    //     ray.world = get_accurate_world_position_with_face(ray.world, ray.block_pos, ray.face, sign(iterative_ray_dir));
-        
-    //     float3 temp_color = 0.0;
-    //     if (ray.hit) {
-    //         float3 world = ray.world;
-    //         uint3 block_pos = ray.block_pos;
-    //         float3 normal = get_face_normal(ray.face, sign(iterative_ray_dir));
+        float3 temp_color = 0.0;
+        if (ray.hit) {
+            float3 normal = get_face_normal(ray.face, sign(iterative_ray_dir));
 
-    //         // fetch the nth normal and world position
-    //         if (i == 0) {
-    //             nth_normals = normal;
-    //             nth_world = block_pos;
-    //         }
+            // we can solve for the missing UV coordinates without needing the distance!!!
+            float3 k = 0;
+            k[ray.face] = ray.specific_block_axis_thing;
+            float32_t distance = ray_plane_intersect_generic(iterative_ray_dir, iterative_ray_pos, normal, k+max(normal, 0)).value;
+            float3 world = iterative_ray_pos + iterative_ray_dir * distance;
+            world = get_accurate_world_position_with_face2(world, ray.specific_block_axis_thing, ray.face, sign(iterative_ray_dir));
+            uint3 block_pos = floor(world);
 
-    //         if (ROUND_NORMALS) {
-    //             normal = normalize(world - ray.block_pos - 0.5);
-    //         }
+            if (inwater) {
+                alpha = distance / 200;
+            }
 
-    //         normal = normalize(normal + (hash33(floor(world * 16)) - 0.5) * 0.3);
+#ifdef DEBUG
+            // fetch the nth normal and world position
+            if (i == 0) {
+                nth_normals = normal;
+                nth_world = world;
+            }
+#endif
+
+            if (ROUND_NORMALS) {
+                //normal = normalize(world - ray.block_pos - 0.5);
+            }
+
+
+            //normal = normalize(normal + (hash33(floor(world * 16)) - 0.5) * 0.3);
             
 
-    //         float3 diffuse = 1.0;
+            float3 diffuse = 1.0;
 
-    //         float roughness = 0.50;
-    //         float special = 0;
-    //         float metallic = 0;
+            float roughness = 0.80;
+            float special = 0;
+            float metallic = 0;
             
-    //         /*
-    //         // pick random colour
-    //         if (block_pos.x > TOTAL_SIZE / 2) {
-    //             diffuse = lerp(per_block_unique_colour(block_pos), 1, 0.5);
-    //         }
+            // pick random colour
+            if (block_pos.x > TOTAL_SIZE / 2) {
+                diffuse = lerp(per_block_unique_colour(block_pos), 1, 0.5);
+            }
 
-    //         // pick random roughness + metallic
-    //         if (block_pos.z > TOTAL_SIZE / 2) {
-    //             roughness = hash13(block_pos * float3(3.23123, 5.23423, -5.234234));
-    //             metallic = hash13(block_pos * float3(132.12312, -2321.32132, 3.2132));
-    //         }
+            // pick random roughness + metallic
+            if (block_pos.z > TOTAL_SIZE / 2) {
+                roughness = hash13(block_pos * float3(3.23123, 5.23423, -5.234234));
+                metallic = hash13(block_pos * float3(132.12312, -2321.32132, 3.2132));
+            }
 
-    //         // pick random special mirror block
-    //         if (block_pos.y > 4) {
-    //             special = hash13(floor(block_pos / 8));
-    //         }
-    //         */
+            // pick random special mirror block
+            if (block_pos.y > 4) {
+                special = hash13(floor(block_pos / 8));
+            }
 
-    //         if (special > 0.8 && metallic > 0.0) {
+            if (special > 0.8 && metallic > 0.0) {
                 
-    //             iterative_ray_pos = world + iterative_ray_dir * 0.001;
+                /*
+                iterative_ray_pos = world + iterative_ray_dir * 0.001;
                 
-    //             const int ITERNUM = 32;
+                const int ITERNUM = 32;
 
-    //             float dt = 0.045;
-    //             float3 center = block_pos + 0.5 + float3(sin(time), cos(time), sin(time * 0.4 + 4.1223)) * 0.2; 
-    //             float3 ray_velocity = iterative_ray_dir; 
+                float dt = 0.045;
+                float3 center = block_pos + 0.5 + float3(sin(time), cos(time), sin(time * 0.4 + 4.1223)) * 0.2; 
+                float3 ray_velocity = iterative_ray_dir; 
 
-    //             [loop]
-    //             raymarch: for (int k = 0; k < ITERNUM; k++) {
-    //                 stats.iterations += 1;
+                [loop]
+                raymarch: for (int k = 0; k < ITERNUM; k++) {
+                    stats.iterations += 1;
                     
-    //                 float3 force_torwards_center = -(iterative_ray_pos - center);
-    //                 float3 normalized_force_torwards_center = force_torwards_center / (pow(length(force_torwards_center) + 0.8, 8));
-    //                 normalized_force_torwards_center *= (sin(time * 0.8) * 2.0);
+                    float3 force_torwards_center = -(iterative_ray_pos - center);
+                    float3 normalized_force_torwards_center = force_torwards_center / (pow(length(force_torwards_center) + 0.8, 8));
+                    normalized_force_torwards_center *= (sin(time * 0.8) * 2.0);
 
-    //                 iterative_ray_dir += normalized_force_torwards_center * dt * 12.3;
-    //                 iterative_ray_pos += normalize(iterative_ray_dir) * dt;
-    //                 //color *= lerp(snoise(iterative_ray_pos * 4.8) * 0.5 + 0.5, hash33(floor(iterative_ray_pos * 32) * 4.2132) + 0.5, 0.98);
+                    iterative_ray_dir += normalized_force_torwards_center * dt * 12.3;
+                    iterative_ray_pos += normalize(iterative_ray_dir) * dt;
+                    //color *= lerp(snoise(iterative_ray_pos * 4.8) * 0.5 + 0.5, hash33(floor(iterative_ray_pos * 32) * 4.2132) + 0.5, 0.98);
 
-    //                 if (any(floor(iterative_ray_pos) != block_pos)) {
-    //                     break raymarch;
-    //                 }
-    //             }
+                    if (any(floor(iterative_ray_pos) != block_pos)) {
+                        break raymarch;
+                    }
+                }
 
-    //             iterative_ray_dir = normalize(iterative_ray_dir);
+                iterative_ray_dir = normalize(iterative_ray_dir);
+                */
+                // mirror
+                // TODO: I wanted to get refractions working, but that requires more coordination between the ray-tracer and the lighting system
+                // the ray-tracer needs to keep track of the current "medium" in which the ray is traveling in, and discard that medium when a block of that medium comes up
+                // for example, if the ray entered some glass voxels, the raytracer must discard glass blocks in the next iteration as to avoid colliding with them.
+                // this will need us to implement an actual block type system so that will probably be for later. maybe we will need to use a 3D texture + the AS for fast lookups but lower memory usage. idk 
+                float3 new_normal = normal;
+
+                if (WAVY_REFLECTIONS) {
+                    new_normal = normalize(snoise(world * 0.85 + time) * 0.05 + normal);
+                }
+
+                float3 dir = reflect(iterative_ray_dir, new_normal);
+                //float3 dir = reflect(iterative_ray_dir, normalize(new_normal + (hash33(world * float3(3.2312, -80.4098361, 94.309483)) * 2.0 - 1.0) * 0.03 * roughness));
+                iterative_ray_dir = dir;
+                iterative_ray_pos = world + dir * 0.001;
+                color *= diffuse * metallic;
+            } else {
+                // AMBIENT OCCLUSION
+                float ao = 1.0;
+                if (AMBIENT_OCCLUSION) {
+                    //ao = 0;
+
+                    ao_solver solver = ao_solver(Fetcher(svt, svt_metadata), block_pos, world-block_pos, ray.face, sign(iterative_ray_dir));
+                    ao = lerp(solver.ao(), 1, 0.8);
+                    /*
+                    [loop]
+                    for (int j = 0; j < 2; j++) {
+                        //ao += cube_overlap_density_svo(world + normal * (j+0.5), 0.8 + j * 0.8, svo, stats);
+                        //ao += cube_overlap_density_svt(world + normal * (j+0.5), 0.8 + j * 0.8, svt, svt_metadata, stats);
+                        ao += planar_overlap_density_svt(world + normal * (j*2+0.5), 0.8 + 2 * j * 0.8, ray.face, Fetcher(svt, svt_metadata), stats);
+                        if (ao > 2) {
+                            break;
+                        }
+                    }
                 
-    //             /*
-    //             // mirror
-    //             // TODO: I wanted to get refractions working, but that requires more coordination between the ray-tracer and the lighting system
-    //             // the ray-tracer needs to keep track of the current "medium" in which the ray is traveling in, and discard that medium when a block of that medium comes up
-    //             // for example, if the ray entered some glass voxels, the raytracer must discard glass blocks in the next iteration as to avoid colliding with them.
-    //             // this will need us to implement an actual block type system so that will probably be for later. maybe we will need to use a 3D texture + the AS for fast lookups but lower memory usage. idk 
-    //             float3 new_normal = normal;
-
-    //             if (WAVY_REFLECTIONS) {
-    //                 new_normal = normalize(snoise(world * 0.85 + time) * 0.05 + normal);
-    //             }
-
-    //             float3 dir = reflect(iterative_ray_dir, new_normal + (hash33(world * float3(3.2312, -80.4098361, 94.309483)) * 2.0 - 1.0) * 0.03 * roughness);
-    //             iterative_ray_dir = dir;
-    //             iterative_ray_pos = world + dir * 0.001;
-    //             color *= diffuse * metallic;
-    //             */
-    //         } else {
-    //             // AMBIENT OCCLUSION
-    //             float ao = 1.0;
-    //             if (AMBIENT_OCCLUSION) {
-    //                 //ao = 0;
-
-    //                 ao_solver solver = ao_solver(Fetcher(svt, svt_metadata), block_pos, world-block_pos, ray.face, sign(iterative_ray_dir));
-    //                 ao = lerp(solver.ao(), 1, 0.8);
-    //                 /*
-    //                 [loop]
-    //                 for (int j = 0; j < 2; j++) {
-    //                     //ao += cube_overlap_density_svo(world + normal * (j+0.5), 0.8 + j * 0.8, svo, stats);
-    //                     //ao += cube_overlap_density_svt(world + normal * (j+0.5), 0.8 + j * 0.8, svt, svt_metadata, stats);
-    //                     ao += planar_overlap_density_svt(world + normal * (j*2+0.5), 0.8 + 2 * j * 0.8, ray.face, Fetcher(svt, svt_metadata), stats);
-    //                     if (ao > 2) {
-    //                         break;
-    //                     }
-    //                 }
-                
-    //                 ao = clamp(ao, 0, 2);
-    //                 ao *= 0.2;
-    //                 ao = clamp(1-ao, 0, 1);
-    //                 */
+                    ao = clamp(ao, 0, 2);
+                    ao *= 0.2;
+                    ao = clamp(1-ao, 0, 1);
+                    */
             
-    //                 /*
-    //                 for (int k = 0; k < 4; k++) {
-    //                     float3 rng = (hash33(world * 23.12123545 + k * 30.43324) * 2.0 - 1.0);
+                    /*
+                    for (int k = 0; k < 4; k++) {
+                        float3 rng = (hash33(world * 23.12123545 + k * 30.43324) * 2.0 - 1.0);
 
-    //                     // don't affect the ray in the major axis direction
-    //                     rng[ray.face] = 0;
+                        // don't affect the ray in the major axis direction
+                        rng[ray.face] = 0;
 
-    //                     float3 dir = normalize(normal + rng);
-    //                     float3 start = world - iterative_ray_dir * 0.05 + dir * 0.05;
-    //                     var ao_ray = trace_shi<4>(start, dir, svo, stats);
+                        float3 dir = normalize(normal + rng);
+                        float3 start = world - iterative_ray_dir * 0.05 + dir * 0.05;
+                        var ao_ray = trace_shi<4>(start, dir, svo, stats);
 
-    //                     if (ao_ray.hit) {
-    //                         // AO strength decreases as the hit object is further
-    //                         // closer objects have more influence
-    //                         float strength = clamp(8.0 / distance(ao_ray.world, start), 0, 1);
-    //                         ao -= strength / 4.0;
-    //                     }
-    //                 }
-    //                 ao = clamp(ao, 0, 1);
-    //                 */
-    //             }
+                        if (ao_ray.hit) {
+                            // AO strength decreases as the hit object is further
+                            // closer objects have more influence
+                            float strength = clamp(8.0 / distance(ao_ray.world, start), 0, 1);
+                            ao -= strength / 4.0;
+                        }
+                    }
+                    ao = clamp(ao, 0, 1);
+                    */
+                }
 
-    //             //output[id.xy] = ao;
-    //             //return;
+                //output[id.xy] = ao;
+                //return;
 
-    //             float shadow = 1.0;
+                float shadow = 1.0;
 
 
-    //             // SHADOW STUFF!!!!
-    //             float3 shadow_ray_start = world;
-    //             if (PIXELATED_SHADOWS) {
-    //                 shadow_ray_start = floor(world * 4) / 4.0;
-    //             }
-    //             if (SHADOW_SAMPLES > 1) {
-    //                 shadow = 0.0;
-    //                 [loop]
-    //                 for (int k = 0; k < SHADOW_SAMPLES; k++) {
-    //                     float3 rng = (hash33((shadow_ray_start) * 23.12123545 + k * 30.43324) * 2.0 - 1.0);
-    //                     float3 dir = normalize(sun.xyz + rng * 0.005);
-    //                     float d = 0;
-    //                     float strength = pow(dot(dir, sun.xyz), 40);
-    //                     bool t = trace_shi<4096>((shadow_ray_start) + sun.xyz * 0.004 + dir * 0.05, dir, svo, stats).hit;
-    //                     shadow += (t ? 0.0 : (strength * (1-clouds(sun.xyz, dir, shadow_ray_start, clouds_sampler).a))) / SHADOW_SAMPLES;
-    //                 }
-    //             } else if (SHADOW_SAMPLES == 1) {
-    //                 bool t = trace_shi<4096>((shadow_ray_start) + sun.xyz * 0.05, sun.xyz, svo, stats).hit;
-    //                 shadow = (t ? 0.0 : 1 * (1-clouds(sun.xyz, sun.xyz, shadow_ray_start, clouds_sampler).a));
-    //             } else {
-    //                 shadow = 1.0;
-    //             }
+                // SHADOW STUFF!!!!
+                float3 shadow_ray_start = world;
+                if (PIXELATED_SHADOWS) {
+                    shadow_ray_start = floor(world * 4) / 4.0;
+                }
+                if (SHADOW_SAMPLES > 1) {
+                    shadow = 0.0;
+                    [loop]
+                    for (int k = 0; k < SHADOW_SAMPLES; k++) {
+                        float3 rng = (hash33((shadow_ray_start) * 23.12123545 + k * 30.43324) * 2.0 - 1.0);
+                        float3 dir = normalize(sun.xyz + rng * 0.005);
+                        float d = 0;
+                        float strength = pow(dot(dir, sun.xyz), 40);
+                        bool t = trace_shi<4096>((shadow_ray_start) + sun.xyz * 0.004 + dir * 0.05, dir, svo, stats).hit;
+                        shadow += (t ? 0.0 : (strength * (1-clouds(sun.xyz, dir, shadow_ray_start, clouds_sampler).a))) / SHADOW_SAMPLES;
+                    }
+                } else if (SHADOW_SAMPLES == 1) {
+                    bool t = trace_shi<4096>((shadow_ray_start) + sun.xyz * 0.05, sun.xyz, svo, stats).hit;
+                    shadow = (t ? 0.0 : 1 * (1-clouds(sun.xyz, sun.xyz, shadow_ray_start, clouds_sampler).a));
+                } else {
+                    shadow = 1.0;
+                }
 
-    //             PbrSurfaceData pbr_surface_data = PbrSurfaceData(world, diffuse, normal, roughness, metallic, pow(ao, 1.4), shadow);
-    //             CameraData camera_data = CameraData(-iterative_ray_dir);
+                PbrSurfaceData pbr_surface_data = PbrSurfaceData(world, diffuse, normal, roughness, metallic, pow(ao, 1.4), shadow);
+                CameraData camera_data = CameraData(-iterative_ray_dir);
 
-    //             // approximate sun color based on height
-    //             float3 sun_colour = sun_colour(sun.xyz);
-    //             SunData sun_data = SunData(sun.xyz, sun.y > 0 ? (3.2 * sun_colour) : 0);
-    //             //SkyData sky_data = SkyData(skybox_sampler, clouds_sampler);
+                // approximate sun color based on height
+                float3 sun_colour = sun_colour(sun.xyz);
+                SunData sun_data = SunData(sun.xyz, sun.y > 0 ? (3.2 * sun_colour) : 0);
+                SkyData sky_data = SkyData(skybox_sampler, clouds_sampler);
 
-    //             //temp_color = lighting(pbr_surface_data, camera_data, sun_data, sky_data);
+                temp_color = lighting(pbr_surface_data, camera_data, sun_data, sky_data);
 
-    //             /*
-    //             for (int l = 0; l < 10; l++) {
-    //                 float3 light_pos = lights_buffer[l].xyz;
-    //                 float3 light_towards_position = shadow_ray_start - light_pos;
-    //                 float d = length(light_towards_position);
-    //                 if (d < 10) {
+                /*
+                for (int l = 0; l < 10; l++) {
+                    float3 light_pos = lights_buffer[l].xyz;
+                    float3 light_towards_position = shadow_ray_start - light_pos;
+                    float d = length(light_towards_position);
+                    if (d < 10) {
                         
-    //                     float unshadowed_dist = length(light_towards_position);
-    //                     light_towards_position = normalize(light_towards_position);
-    //                     float shadowed_dist = trace_shi<4096>(light_pos, light_towards_position, svo, stats).distance;
-    //                     float shadow = (((shadowed_dist + 0.1) > unshadowed_dist) ? 1.0 : 0);
-    //                     float n_dot_l = saturate(dot(normal, -normalize(light_towards_position)));
-    //                     float strength = (1 / (d*d)) * smoothstep(0, 1, 10-d);
-    //                     temp_color += shadow * n_dot_l * strength * hash33(l * 3.21312) * 0.3; 
+                        float unshadowed_dist = length(light_towards_position);
+                        light_towards_position = normalize(light_towards_position);
+                        float shadowed_dist = trace_shi<4096>(light_pos, light_towards_position, svo, stats).distance;
+                        float shadow = (((shadowed_dist + 0.1) > unshadowed_dist) ? 1.0 : 0);
+                        float n_dot_l = saturate(dot(normal, -normalize(light_towards_position)));
+                        float strength = (1 / (d*d)) * smoothstep(0, 1, 10-d);
+                        temp_color += shadow * n_dot_l * strength * hash33(l * 3.21312) * 0.3; 
                         
-    //                 }
-    //             }
-    //             */
+                    }
+                }
+                */
 
-    //             color *= temp_color;
+                color *= temp_color;
 
-    //             break;
-    //         }
-    //     } else {
-    //         float4 clouds_colour_opacity = clouds(sun.xyz, iterative_ray_dir, iterative_ray_pos, clouds_sampler);
-    //         float3 sky_colour = skybox_sampler.Sample(iterative_ray_dir).xyz;
-    //         float3 composed_sky_colour = lerp(sky_colour, clouds_colour_opacity.xyz, clouds_colour_opacity.w);
-    //         color *= composed_sky_colour;
-    //         break;
-    //     }
+                break;
+            }
+        } else {
+            alpha = 10;
 
-    //     // if we reach this point, this means that all previous rays have been reflected. return 0
-    //     if (i == (MAX_ITERATIONS)-1) {
-    //         color *= 0.0;
-    //     }
-    // }
-    
-    // /*
-    // switch (debug_type) {
-    //     case DebugType::Combined:
-    //         output[id.xy] = float4(color, 0);
-    //         break;
-    //     case DebugType::Iterations:
-    //         output[id.xy] = float4(heatmap(stats.iterations / 256.0), 0);
-    //         break;
-    //     case DebugType::BufferFetches:
-    //         output[id.xy] = float4(heatmap(stats.buffer_fetches / 32.0), 0);
-    //         break;
-    //     case DebugType::Normals:
-    //         output[id.xy] = float4(nth_normals, 0);
-    //         break;
-    //     case DebugType::World:
-    //         output[id.xy] = float4((nth_world % 16) / 16, 0);
-    //         break;
-    //     case DebugType::ExitType:
-    //         output[id.xy] = float4(heatmap(stats.num_entered_but_missed / 64.0), 0);
-    //         //output[id.xy] = float4(heatmap(1 - (stats.active_threads_per_call / stats.calls) / 64.0), 0);
-    //         //output[id.xy] = float4(stats.exit_type / 4.0);
-    //         break;
-    //     default:
-    //         break;
-    // }
-    // */
+            // ray miss stuff
+            float4 clouds_colour_opacity = clouds(sun.xyz, iterative_ray_dir, iterative_ray_pos, clouds_sampler);
+            float3 sky_colour = skybox_sampler.Sample(iterative_ray_dir).xyz;
+            float3 composed_sky_colour = lerp(sky_colour, clouds_colour_opacity.xyz, clouds_colour_opacity.w);
+            color *= composed_sky_colour;
+            break;
+        }
+
+        // if we reach this point, this means that all previous rays have been reflected. return 0
+        if (i == (MAX_ITERATIONS)-1) {
+            color *= 0.0;
+        }
+    }
+
+#ifdef DEBUG
+    switch (debug_type) {
+        case DebugType::Combined:
+            output[id.xy] = float4(color, alpha);
+            break;
+        case DebugType::Iterations:
+            output[id.xy] = float4(heatmap(stats.iterations / 256.0), 0);
+            break;
+        case DebugType::BufferFetches:
+            output[id.xy] = float4(heatmap(stats.buffer_fetches / 32.0), 0);
+            break;
+        case DebugType::Normals:
+            output[id.xy] = float4(nth_normals, 0);
+            break;
+        case DebugType::World:
+            output[id.xy] = float4((nth_world % 16) / 16, 0);
+            break;
+        case DebugType::ExitType:
+            output[id.xy] = float4(heatmap(stats.num_entered_but_missed / 64.0), 0);
+            //output[id.xy] = float4(heatmap(1 - (stats.active_threads_per_call / stats.calls) / 64.0), 0);
+            //output[id.xy] = float4(stats.exit_type / 4.0);
+            break;
+        default:
+            break;
+    }
+#else
+    output[id.xy] = float4(color, alpha);
+#endif
+
+}

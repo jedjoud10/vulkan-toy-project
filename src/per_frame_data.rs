@@ -31,7 +31,7 @@ impl PerFrameData {
         pool: vk::CommandPool,
         descriptor_pool: vk::DescriptorPool,
         render_compute_pipeline: &pipeline::RenderPipeline,
-        compositing_compute_pipeline: &pipeline::LightingPipeline,
+        post_process_compute_pipeline: &pipeline::PostProcessPipeline,
         swapchain_image: vk::Image
     ) -> Self {
         let present_complete_semaphore = device
@@ -51,7 +51,7 @@ impl PerFrameData {
             .allocate_command_buffers(&cmd_buffer_create_info)
             .unwrap()[0];
 
-        let per_frame_descriptor_set_layouts = [render_compute_pipeline.descriptor_set_layout[0], compositing_compute_pipeline.descriptor_set_layout[0]];
+        let per_frame_descriptor_set_layouts = [render_compute_pipeline.descriptor_set_layout[0], post_process_compute_pipeline.descriptor_set_layout[0]];
         let descriptor_set_allocate_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(descriptor_pool)
             .set_layouts(&per_frame_descriptor_set_layouts);
@@ -98,7 +98,7 @@ impl PerFrameData {
         self.rt_image_allocation = Some(rt_image_allocation);
         
 
-        let rendered_image_format = vk::Format::R32G32_UINT;
+        let rendered_image_format = vk::Format::R32G32B32A32_SFLOAT;
         let (rendered_image, rendered_image_allocation) = create_image(device, rendered_image_format, allocator, queue_family_index, extent, binder, scaling_factor, "Rendered Texture");
         self.rendered_image = rendered_image;
         self.rendered_image_allocation = Some(rendered_image_allocation);

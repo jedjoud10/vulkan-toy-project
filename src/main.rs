@@ -53,7 +53,7 @@ struct Args {
     ambient_occlusion: bool,
 
     /// Fun setting to make all mirror reflections wavey lolol
-    #[arg(long, default_value_t = true)]
+    #[arg(long, default_value_t = false)]
     wavy_reflections: bool,
 
     /// Setting to make all shadows pixelated

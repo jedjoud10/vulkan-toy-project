@@ -60,7 +60,7 @@ pub struct InternalApp {
     // pipelines
     render_compute_pipeline: pipeline::RenderPipeline,
     sky_compute_pipeline: pipeline::SkyPipeline,
-    compositing_compute_pipeline: pipeline::LightingPipeline,
+    post_process_compute_pipeline: pipeline::PostProcessPipeline,
     
     // descriptors & frames in flight
     frames_in_flight: Vec<PerFrameData>,
@@ -99,7 +99,6 @@ impl InternalApp {
         let mut assets = HashMap::<&str, &[u32]>::new();
         asset!("raytracer.spv", assets);
         asset!("sky_compute.spv", assets);
-        asset!("lighting_compute.spv", assets);
         asset!("post_process_compute.spv", assets);
 
         let window = event_loop
@@ -235,8 +234,8 @@ impl InternalApp {
         let sky_compute_pipeline = pipeline::create_sky_pipeline(assets["sky_compute.spv"], &device, &debug_marker);
         log::info!("created sky compute pipeline");
 
-        let compositing_compute_pipeline = pipeline::create_lighting_pipeline(assets["lighting_compute.spv"], &device, &debug_marker);
-        log::info!("created compositing compute pipeline");
+        let compositing_compute_pipeline = pipeline::create_post_process_pipeline(assets["post_process_compute.spv"], &device, &debug_marker);
+        log::info!("created post process compute pipeline");
 
         let (svo, svt) = voxel::create_sparse_structures(
             &device,
@@ -327,7 +326,7 @@ impl InternalApp {
             stats: Default::default(),
             args,
             lights,
-            compositing_compute_pipeline,
+            post_process_compute_pipeline: compositing_compute_pipeline,
         }
     }
 
@@ -679,21 +678,22 @@ impl InternalApp {
         self.device.cmd_bind_descriptor_sets(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
-            self.compositing_compute_pipeline.entry_points[0].pipeline_layout,
+            self.post_process_compute_pipeline.entry_points[0].pipeline_layout,
             0,
-            &[per_frame_descriptor_sets.compositor_per_frame, constant_descriptor_sets.compositor_compute_pipeline_descriptor_set],
+            //&[per_frame_descriptor_sets.compositor_per_frame, constant_descriptor_sets.compositor_compute_pipeline_descriptor_set],
+            &[per_frame_descriptor_sets.compositor_per_frame],
             &[],
         );
         self.device.cmd_bind_pipeline(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
-            self.compositing_compute_pipeline.entry_points[0].pipeline,
+            self.post_process_compute_pipeline.entry_points[0].pipeline,
         );
 
         // TODO: remove duplicate push constants by saving to uniform buffer type shift
         self.device.cmd_push_constants(
             cmd,
-            self.compositing_compute_pipeline.entry_points[0].pipeline_layout,
+            self.post_process_compute_pipeline.entry_points[0].pipeline_layout,
             vk::ShaderStageFlags::COMPUTE,
             0,
             raw,
@@ -832,8 +832,8 @@ impl InternalApp {
         self.sky_compute_pipeline.destroy(&self.device);
         log::info!("destroyed sky compute pipeline");
 
-        self.compositing_compute_pipeline.destroy(&self.device);
-        log::info!("destroyed compositing compute pipeline");
+        self.post_process_compute_pipeline.destroy(&self.device);
+        log::info!("destroyed post process compute pipeline");
 
         self.device.destroy_descriptor_pool(self.descriptor_pool, None);
         log::info!("destroyed descriptor pool");

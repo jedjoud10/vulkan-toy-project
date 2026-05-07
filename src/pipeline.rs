@@ -62,7 +62,7 @@ impl<const ENTRY_POINTS: usize, const DESCRIPTOR_SETS: usize> MultiComputePipeli
 }
 
 pub type RenderPipeline = MultiComputePipeline<1, 2>;
-pub type LightingPipeline = MultiComputePipeline<1, 2>;
+pub type PostProcessPipeline = MultiComputePipeline<1, 1>;
 pub type SkyPipeline = MultiComputePipeline<2, 1>;
 
 #[derive(Pod, Zeroable, Copy, Clone)]
@@ -224,12 +224,12 @@ pub unsafe fn create_sky_pipeline(
 }
 
 
-pub unsafe fn create_lighting_pipeline(
+pub unsafe fn create_post_process_pipeline(
     raw: &[u32],
     device: &ash::Device,
     binder: &Option<ash::ext::debug_utils::Device>,
-) -> LightingPipeline {
-    let shader_module = create_shader_module(raw, device, binder, "lighting compute shader module");
+) -> PostProcessPipeline {
+    let shader_module = create_shader_module(raw, device, binder, "post process compute shader module");
 
     let rendered_image = vk::DescriptorSetLayoutBinding::default()
         .binding(0)
@@ -254,26 +254,8 @@ pub unsafe fn create_lighting_pipeline(
         .unwrap();
     crate::debug::set_object_name(descriptor_set_layout, binder, "lighting compute descriptor set layout 1 (per frame)");
 
-    let lights_buffer = vk::DescriptorSetLayoutBinding::default()
-        .binding(0)
-        .stage_flags(vk::ShaderStageFlags::COMPUTE)
-        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-        .descriptor_count(1);
-    let skybox_sampler = vk::DescriptorSetLayoutBinding::default()
-        .binding(1)
-        .stage_flags(vk::ShaderStageFlags::COMPUTE)
-        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-        .descriptor_count(1);
-    let clouds_sampler = vk::DescriptorSetLayoutBinding::default()
-        .binding(2)
-        .stage_flags(vk::ShaderStageFlags::COMPUTE)
-        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-        .descriptor_count(1);
-    let bindings = [
-        lights_buffer,
-        skybox_sampler,
-        clouds_sampler,
-    ];
+    /*
+    let bindings = [];
     let second_descriptor_set_layout_create_info = vk::DescriptorSetLayoutCreateInfo::default()
         .flags(vk::DescriptorSetLayoutCreateFlags::empty())
         .bindings(&bindings);
@@ -281,12 +263,12 @@ pub unsafe fn create_lighting_pipeline(
         .create_descriptor_set_layout(&second_descriptor_set_layout_create_info, None)
         .unwrap();
     crate::debug::set_object_name(second_descriptor_set_layout, binder, "lighting compute descriptor set layout 2 (constant stuff)");
-
-    let descriptor_set_layouts = [descriptor_set_layout, second_descriptor_set_layout];
+    */
+    let descriptor_set_layouts = [descriptor_set_layout /*, second_descriptor_set_layout*/];
     let push_constant_size = Some(size_of::<PushConstants>());
     let entry_point = create_single_entry_point_pipeline(device, binder, shader_module, "write_render_texture", &descriptor_set_layouts, push_constant_size, None);
     
-    LightingPipeline {
+    PostProcessPipeline {
         module: shader_module,
         descriptor_set_layout: descriptor_set_layouts,
         entry_points: [entry_point],

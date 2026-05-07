@@ -7,7 +7,7 @@ use crate::buffer;
 
 pub struct ConstantDescriptorSets {
     pub render_compute_pipeline_descriptor_set: vk::DescriptorSet,
-    pub compositor_compute_pipeline_descriptor_set: vk::DescriptorSet,
+    //pub compositor_compute_pipeline_descriptor_set: vk::DescriptorSet,
     pub sky_compute_pipeline_descriptor_set: vk::DescriptorSet,
 }
 
@@ -17,13 +17,13 @@ impl ConstantDescriptorSets {
         descriptor_pool: vk::DescriptorPool,
         render_compute_pipeline: &pipeline::RenderPipeline,
         sky_compute_pipeline: &pipeline::SkyPipeline,
-        compositor_compute_pipeline: &pipeline::LightingPipeline,
+        compositor_compute_pipeline: &pipeline::PostProcessPipeline,
         skybox: &skybox::Skybox,
         svt: &voxel::SparseVoxelTexture,
         svo: &voxel::SparseVoxelOctree,
         lights_buffer: &buffer::Buffer,
     ) -> Self {
-        let constant_descriptor_set_layouts = [render_compute_pipeline.descriptor_set_layout[1], sky_compute_pipeline.descriptor_set_layout[0], compositor_compute_pipeline.descriptor_set_layout[1]];
+        let constant_descriptor_set_layouts = [render_compute_pipeline.descriptor_set_layout[1], sky_compute_pipeline.descriptor_set_layout[0], /* compositor_compute_pipeline.descriptor_set_layout[1] */];
         let descriptor_set_allocate_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(descriptor_pool)
             .set_layouts(&constant_descriptor_set_layouts);
@@ -32,7 +32,7 @@ impl ConstantDescriptorSets {
             .unwrap();
         let render_compute_pipeline_descriptor_set= all_descriptor_sets[0];
         let sky_compute_pipeline_descriptor_set = all_descriptor_sets[1];
-        let compositor_compute_pipeline_descriptor_set = all_descriptor_sets[2];
+        //let compositor_compute_pipeline_descriptor_set = all_descriptor_sets[2];
 
 
         let descriptor_skybox_image_info = vk::DescriptorImageInfo::default()
@@ -110,6 +110,7 @@ impl ConstantDescriptorSets {
             .dst_set(render_compute_pipeline_descriptor_set)
             .image_info(&descriptor_skybox_combined_image_sampler_infos);
 
+        /*
         let compositor_compute_descriptor_svo_buffers_infos = [descriptor_light_buffer_info];
         let compositor_compute_descriptor_skybox_combined_image_sampler_infos = [descriptor_skybox_sampler_info, descriptor_clouds_sampler_info];
 
@@ -125,13 +126,13 @@ impl ConstantDescriptorSets {
             .dst_binding(1)
             .dst_set(compositor_compute_pipeline_descriptor_set)
             .image_info(&compositor_compute_descriptor_skybox_combined_image_sampler_infos);
-        
-        device.update_descriptor_sets(&[render_compute_skybox_descriptor_write, compositor_compute_storage_buffers_descriptor_write, compositor_compute_combined_image_sampler_descriptor_write, sky_compute_descriptor_write_1, render_compute_svt_images_descriptor_write, render_compute_svo_buffers_descriptor_write, compositor_compute_combined_image_sampler_descriptor_write], &[]);
+        */
+        device.update_descriptor_sets(&[render_compute_skybox_descriptor_write, /*compositor_compute_storage_buffers_descriptor_write, compositor_compute_combined_image_sampler_descriptor_write, compositor_compute_combined_image_sampler_descriptor_write,*/ sky_compute_descriptor_write_1, render_compute_svt_images_descriptor_write, render_compute_svo_buffers_descriptor_write], &[]);
 
         Self {
             render_compute_pipeline_descriptor_set,
             sky_compute_pipeline_descriptor_set,
-            compositor_compute_pipeline_descriptor_set,
+            //compositor_compute_pipeline_descriptor_set,
         }
     }
 }
