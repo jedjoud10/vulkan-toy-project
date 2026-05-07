@@ -180,6 +180,7 @@ void main(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID, uint3 gid:
     for (int i = 0; i < MAX_ITERATIONS; i++) {
         var ray = trace_shi<int.maxValue>(iterative_ray_pos, iterative_ray_dir, svo, stats);
 
+        /*
         let water = ray_plane_intersect_generic(iterative_ray_dir, iterative_ray_pos, float3(0, 1, 0), float3(0, 80, 0));
         if (water.hasValue && !inwater) {
             if (water.value < ray.distance || !ray.hit) {
@@ -194,6 +195,7 @@ void main(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID, uint3 gid:
                 continue;
             }
         }
+        */
 
         float3 temp_color = 0.0;
         if (ray.hit) {

@@ -261,10 +261,10 @@ impl InternalApp {
         let mut frames_in_flight = Vec::<PerFrameData>::new();
         for swapchain_image in swapchain_images {
             let mut per_frame_data = PerFrameData::create_per_frame_data(&device, pool, descriptor_pool, &render_compute_pipeline, &compositing_compute_pipeline, swapchain_image);
-            per_frame_data.recreate_rt_images_and_image_views_and_update_descriptor_sets(&device, swapchain_format, swapchain_image, &mut allocator, queue_family_index, extent, &debug_marker, args.downscale_factor);
+            per_frame_data.recreate_rt_images_and_image_views_and_update_descriptor_sets(&device, swapchain_format, swapchain_image, &mut allocator, queue_family_index, extent, &debug_marker, descriptor_pool, &compositing_compute_pipeline, args.downscale_factor);
             frames_in_flight.push(per_frame_data);
         }
-        crate::per_frame_data::transfer_rt_images(&device, queue_family_index, &frames_in_flight, pool, queue);
+        crate::per_frame_data::transfer_layout_for_images(&device, queue_family_index, &frames_in_flight, pool, queue);
         log::info!("created frames in flight structures");
 
         const NUM_LIGHTS: usize = 100;
@@ -345,7 +345,7 @@ impl InternalApp {
         self.device.device_wait_idle().unwrap();
 
         for frame in self.frames_in_flight.iter_mut() {
-            frame.destroy_rt_images_and_image_views(&self.device, &mut self.allocator);
+            frame.destroy_rt_images_and_image_views(&self.device, self.descriptor_pool, &mut self.allocator);
         }
 
         self.swapchain_loader
@@ -371,9 +371,9 @@ impl InternalApp {
         self.swapchain = swapchain;
 
         for (per_frame_data, swapchain_image) in self.frames_in_flight.iter_mut().zip(images) {
-            per_frame_data.recreate_rt_images_and_image_views_and_update_descriptor_sets(&self.device, swapchain_format, swapchain_image, &mut self.allocator, self.queue_family_index, extent, &self.debug_marker, self.args.downscale_factor);
+            per_frame_data.recreate_rt_images_and_image_views_and_update_descriptor_sets(&self.device, swapchain_format, swapchain_image, &mut self.allocator, self.queue_family_index, extent, &self.debug_marker, self.descriptor_pool, &self.post_process_compute_pipeline, self.args.downscale_factor);
         }
-        crate::per_frame_data::transfer_rt_images(&self.device, self.queue_family_index, &self.frames_in_flight, self.pool, self.queue);
+        crate::per_frame_data::transfer_layout_for_images(&self.device, self.queue_family_index, &self.frames_in_flight, self.pool, self.queue);
                 
         for frame in self.frames_in_flight.iter_mut() {
             self.device.destroy_semaphore(frame.present_complete_semaphore, None);
@@ -441,6 +441,9 @@ impl InternalApp {
             end_fence,
             cmd,
             per_frame_descriptor_sets,
+            bloom_image,
+            bloom_mip_image_views,
+            bloom_sampler,
             ..
         } = &self.frames_in_flight[frame_index as usize];
 
@@ -558,8 +561,7 @@ impl InternalApp {
         );
 
         let size = self.window.inner_size();
-        let size = vek::Vec2::<u32>::new(size.width, size.height)
-            .map(|val| val / self.args.downscale_factor);
+        let size = vek::Vec2::<u32>::new(size.width, size.height) / self.args.downscale_factor;
 
         let group_size = 2u32.pow(self.args.group_size_exp);
         let size_f32 = size.map(|x| x as f32);
@@ -586,9 +588,7 @@ impl InternalApp {
         );
 
         self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::COMPUTE_SHADER, self.query_pool, 0);
-
         self.device.cmd_dispatch(cmd, size.x.div_ceil(group_size), size.y.div_ceil(group_size), 1);
-
         self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::COMPUTE_SHADER, self.query_pool, 1);
 
         
@@ -630,22 +630,6 @@ impl InternalApp {
         self.device.cmd_dispatch(cmd, skybox::SKYBOX_RESOLUTION.div_ceil(8), skybox::SKYBOX_RESOLUTION.div_ceil(8), 6);
 
         
-
-        let skybox_subresource_range = vk::ImageSubresourceRange::default()
-            .aspect_mask(vk::ImageAspectFlags::COLOR)
-            .level_count(1)
-            .layer_count(6);
-        let skybox_image_barrier = vk::ImageMemoryBarrier2::default()
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
-            .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
-            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-            .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(self.queue_family_index)
-            .image(self.skybox.skybox_image)
-            .subresource_range(skybox_subresource_range);
         let src_shader_write_to_shader_read = vk::ImageMemoryBarrier2::default()
             .old_layout(vk::ImageLayout::GENERAL)
             .new_layout(vk::ImageLayout::GENERAL)
@@ -657,6 +641,180 @@ impl InternalApp {
             .dst_queue_family_index(self.queue_family_index)
             .image(*rendered_image)
             .subresource_range(subresource_range);
+        let skybox_subresource_range = vk::ImageSubresourceRange::default()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .level_count(1)
+            .layer_count(6);
+        let clouds_subresource_range = vk::ImageSubresourceRange::default()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .level_count(1)
+            .layer_count(1);
+        let skybox_image_barrier = vk::ImageMemoryBarrier2::default()
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .image(self.skybox.skybox_image)
+            .subresource_range(skybox_subresource_range);
+        let clouds_image_barrier = vk::ImageMemoryBarrier2::default()
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .image(self.skybox.clouds_image)
+            .subresource_range(clouds_subresource_range);
+        let image_memory_barriers = [src_shader_write_to_shader_read, skybox_image_barrier, clouds_image_barrier];
+        let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
+        self.device.cmd_pipeline_barrier2(cmd, &dep);
+
+        let full_passes_bloom = vk::ImageMemoryBarrier2::default()
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_WRITE | vk::AccessFlags2::SHADER_READ)
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .image(*bloom_image)
+            .subresource_range(vk::ImageSubresourceRange::default().level_count(vk::REMAINING_MIP_LEVELS).layer_count(1).aspect_mask(vk::ImageAspectFlags::COLOR).base_mip_level(0).base_array_layer(0));
+        let image_memory_barriers = [full_passes_bloom];
+        let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
+        self.device.cmd_pipeline_barrier2(cmd, &dep);
+
+        // execute bloom downsample passes
+        self.device.cmd_bind_pipeline(
+            cmd,
+            vk::PipelineBindPoint::COMPUTE,
+            self.post_process_compute_pipeline.entry_points[1].pipeline,
+        );
+        for mip in 0..(bloom_mip_image_views.len() as u32-1) {
+            // no need to pipeline barrier for the first pass, as we just waited for the render texture image to finish right before this
+            if mip > 0 {
+                // wait on previous mip level to be done
+                let previous_mip_level_subresource_range = vk::ImageSubresourceRange::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .base_array_layer(0)
+                .layer_count(1)
+                .base_mip_level(mip)
+                .level_count(1);
+                let previous_mip_image_memory_barrier = vk::ImageMemoryBarrier2::default()
+                    .old_layout(vk::ImageLayout::GENERAL)
+                    .new_layout(vk::ImageLayout::GENERAL)
+                    .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+                    .dst_access_mask(vk::AccessFlags2::SHADER_READ)
+                    .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                    .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                    .src_queue_family_index(self.queue_family_index)
+                    .dst_queue_family_index(self.queue_family_index)
+                    .image(*bloom_image)
+                    .subresource_range(previous_mip_level_subresource_range);
+                let barriers = [previous_mip_image_memory_barrier];
+                let dep = vk::DependencyInfo::default().image_memory_barriers(&barriers);
+                self.device.cmd_pipeline_barrier2(cmd, &dep);
+            }
+            
+            
+            let previous_mip_size = size / (1 << (mip)); // larger mip
+            let next_mip_size = size / (1 << (mip+1)); // smaller mip
+
+            
+            
+            self.device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                self.post_process_compute_pipeline.entry_points[1].pipeline_layout,
+                0,
+                &[per_frame_descriptor_sets.compositor_downsample_bloom_per_frame[mip as usize]],
+                &[],
+            );
+            
+            let downsample_dispatch_push_constants = previous_mip_size.as_::<f32>();
+
+            self.device.cmd_push_constants(cmd, self.post_process_compute_pipeline.entry_points[1].pipeline_layout, vk::ShaderStageFlags::COMPUTE, 0, bytemuck::bytes_of(&downsample_dispatch_push_constants));
+            self.device.cmd_dispatch(cmd, next_mip_size.x.div_ceil(8), next_mip_size.y.div_ceil(8), 1);
+        }
+
+        let full_passes_bloom = vk::ImageMemoryBarrier2::default()
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .src_access_mask(vk::AccessFlags2::SHADER_WRITE | vk::AccessFlags2::SHADER_READ)
+            .dst_access_mask(vk::AccessFlags2::SHADER_WRITE | vk::AccessFlags2::SHADER_READ)
+            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .image(*bloom_image)
+            .subresource_range(vk::ImageSubresourceRange::default().level_count(vk::REMAINING_MIP_LEVELS).layer_count(1).aspect_mask(vk::ImageAspectFlags::COLOR).base_mip_level(0).base_array_layer(0));
+        let image_memory_barriers = [full_passes_bloom];
+        let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
+        self.device.cmd_pipeline_barrier2(cmd, &dep);
+
+        // execute bloom upsample passes
+        self.device.cmd_bind_pipeline(
+            cmd,
+            vk::PipelineBindPoint::COMPUTE,
+            self.post_process_compute_pipeline.entry_points[2].pipeline,
+        );
+
+        // there is no need to go down to the largest mip since we will be sampling from a smaller mip anyways
+        let minimum_upsampling_mip = 2;
+
+        for mip in (minimum_upsampling_mip..(bloom_mip_image_views.len() as u32 - 1)).rev() {
+            // no need to pipeline barrier for the very first pass (we did a full pipeline barrier for the entire bloom image right before this)
+            if mip != bloom_mip_image_views.len() as u32 - 2 {
+                // wait on previous mip level to be done
+                let previous_mip_level_subresource_range = vk::ImageSubresourceRange::default()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .base_array_layer(0)
+                    .layer_count(1)
+                    .base_mip_level(mip+1)
+                    .level_count(1);
+                let previous_mip_image_memory_barrier = vk::ImageMemoryBarrier2::default()
+                    .old_layout(vk::ImageLayout::GENERAL)
+                    .new_layout(vk::ImageLayout::GENERAL)
+                    .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+                    .dst_access_mask(vk::AccessFlags2::SHADER_READ)
+                    .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                    .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                    .src_queue_family_index(self.queue_family_index)
+                    .dst_queue_family_index(self.queue_family_index)
+                    .image(*bloom_image)
+                    .subresource_range(previous_mip_level_subresource_range);
+                let barriers = [previous_mip_image_memory_barrier];
+                let dep = vk::DependencyInfo::default().image_memory_barriers(&barriers);
+                self.device.cmd_pipeline_barrier2(cmd, &dep);
+            }
+            
+            
+            let previous_mip_size = size / (1 << (mip+1)); // smaller mip
+            let next_mip_size = size / (1 << (mip)); // larger mip
+
+            
+            
+            self.device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                self.post_process_compute_pipeline.entry_points[2].pipeline_layout,
+                0,
+                &[per_frame_descriptor_sets.compositor_upsample_bloom_per_frame[mip as usize]],
+                &[],
+            );
+            
+            let upsample_dispatch_push_constants = previous_mip_size.as_::<f32>();
+
+            self.device.cmd_push_constants(cmd, self.post_process_compute_pipeline.entry_points[2].pipeline_layout, vk::ShaderStageFlags::COMPUTE, 0, bytemuck::bytes_of(&upsample_dispatch_push_constants));
+            self.device.cmd_dispatch(cmd, next_mip_size.x.div_ceil(8), next_mip_size.y.div_ceil(8), 1);
+        }
+
         let rt_image_blit_src_layout_transition_to_shader_write = vk::ImageMemoryBarrier2::default()
             .old_layout(vk::ImageLayout::UNDEFINED)
             .new_layout(vk::ImageLayout::GENERAL)
@@ -668,10 +826,19 @@ impl InternalApp {
             .dst_queue_family_index(self.queue_family_index)
             .image(rt_image)
             .subresource_range(subresource_range);
-        let image_memory_barriers = [src_shader_write_to_shader_read, rt_image_blit_src_layout_transition_to_shader_write, skybox_image_barrier];
+        let last_pass_bloom = vk::ImageMemoryBarrier2::default()
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_READ)
+            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .image(*bloom_image)
+            .subresource_range(vk::ImageSubresourceRange::default().level_count(vk::REMAINING_MIP_LEVELS).layer_count(1).aspect_mask(vk::ImageAspectFlags::COLOR).base_mip_level(0).base_array_layer(0));
+        let image_memory_barriers = [rt_image_blit_src_layout_transition_to_shader_write, last_pass_bloom];
         let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
-        
-        // wtf? no validation errors when we remove this barrier??? why????
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
         // execute composition pass
@@ -835,9 +1002,6 @@ impl InternalApp {
         self.post_process_compute_pipeline.destroy(&self.device);
         log::info!("destroyed post process compute pipeline");
 
-        self.device.destroy_descriptor_pool(self.descriptor_pool, None);
-        log::info!("destroyed descriptor pool");
-
         self.svo.destroy(&self.device, &mut self.allocator);
         log::info!("destroyed SVO buffers & stuff");
 
@@ -859,7 +1023,7 @@ impl InternalApp {
             .wait_for_fences(&fences, true, u64::MAX)
             .unwrap();
         for frame in self.frames_in_flight.into_iter() {
-            frame.destroy_everything(&self.device, self.pool, &mut self.allocator);
+            frame.destroy_everything(&self.device, self.pool, self.descriptor_pool, &mut self.allocator);
         }
 
 
@@ -870,9 +1034,11 @@ impl InternalApp {
         self.surface_loader.destroy_surface(self.surface_khr, None);
         log::info!("destroyed surface");
 
-
         self.device.destroy_command_pool(self.pool, None);
         log::info!("destroyed cmd pool");
+        
+        self.device.destroy_descriptor_pool(self.descriptor_pool, None);
+        log::info!("destroyed descriptor pool");
 
         drop(self.allocator);
         self.device.destroy_device(None);

@@ -62,7 +62,7 @@ impl<const ENTRY_POINTS: usize, const DESCRIPTOR_SETS: usize> MultiComputePipeli
 }
 
 pub type RenderPipeline = MultiComputePipeline<1, 2>;
-pub type PostProcessPipeline = MultiComputePipeline<1, 1>;
+pub type PostProcessPipeline = MultiComputePipeline<3, 2>;
 pub type SkyPipeline = MultiComputePipeline<2, 1>;
 
 #[derive(Pod, Zeroable, Copy, Clone)]
@@ -241,37 +241,59 @@ pub unsafe fn create_post_process_pipeline(
         .stage_flags(vk::ShaderStageFlags::COMPUTE)
         .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
         .descriptor_count(1);
+    let bloom_image = vk::DescriptorSetLayoutBinding::default()
+        .binding(2)
+        .stage_flags(vk::ShaderStageFlags::COMPUTE)
+        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+        .descriptor_count(1);
     let bindings = [
         rendered_image,
-        rt_image
+        rt_image,
+        bloom_image
     ];
 
-    let descriptor_set_layout_create_info = vk::DescriptorSetLayoutCreateInfo::default()
+    let descriptor_set_layout_create_info_1 = vk::DescriptorSetLayoutCreateInfo::default()
         .flags(vk::DescriptorSetLayoutCreateFlags::empty())
         .bindings(&bindings);
-    let descriptor_set_layout = device
-        .create_descriptor_set_layout(&descriptor_set_layout_create_info, None)
+    let descriptor_set_layout_1 = device
+        .create_descriptor_set_layout(&descriptor_set_layout_create_info_1, None)
         .unwrap();
-    crate::debug::set_object_name(descriptor_set_layout, binder, "lighting compute descriptor set layout 1 (per frame)");
+    crate::debug::set_object_name(descriptor_set_layout_1, binder, "post proces compute descriptor set layout 1 (post process)");
 
-    /*
-    let bindings = [];
-    let second_descriptor_set_layout_create_info = vk::DescriptorSetLayoutCreateInfo::default()
+    let previous_bloom_mip = vk::DescriptorSetLayoutBinding::default()
+        .binding(0)
+        .stage_flags(vk::ShaderStageFlags::COMPUTE)
+        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+        .descriptor_count(1);
+    let next_bloom_mip = vk::DescriptorSetLayoutBinding::default()
+        .binding(1)
+        .stage_flags(vk::ShaderStageFlags::COMPUTE)
+        .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+        .descriptor_count(1);
+    let bindings = [
+        previous_bloom_mip,
+        next_bloom_mip,
+    ];
+    let descriptor_set_layout_create_info_2 = vk::DescriptorSetLayoutCreateInfo::default()
         .flags(vk::DescriptorSetLayoutCreateFlags::empty())
         .bindings(&bindings);
-    let second_descriptor_set_layout = device
-        .create_descriptor_set_layout(&second_descriptor_set_layout_create_info, None)
+    let descriptor_set_layout_2 = device
+        .create_descriptor_set_layout(&descriptor_set_layout_create_info_2, None)
         .unwrap();
-    crate::debug::set_object_name(second_descriptor_set_layout, binder, "lighting compute descriptor set layout 2 (constant stuff)");
-    */
-    let descriptor_set_layouts = [descriptor_set_layout /*, second_descriptor_set_layout*/];
+    crate::debug::set_object_name(descriptor_set_layout_2, binder, "post proces compute descriptor set layout 2 (bloom upsample / downsample)");
+
     let push_constant_size = Some(size_of::<PushConstants>());
-    let entry_point = create_single_entry_point_pipeline(device, binder, shader_module, "write_render_texture", &descriptor_set_layouts, push_constant_size, None);
-    
+    let post_process_entry_point = create_single_entry_point_pipeline(device, binder, shader_module, "write_render_texture", &[descriptor_set_layout_1], push_constant_size, None);
+
+    let push_constant_size2 = Some(size_of::<vek::Vec2<f32>>());
+    let bloom_downsample_entry_point = create_single_entry_point_pipeline(device, binder, shader_module, "bloom_downsample", &[descriptor_set_layout_2], push_constant_size2, None);
+    let bloom_upsample_entry_point = create_single_entry_point_pipeline(device, binder, shader_module, "bloom_upsample", &[descriptor_set_layout_2], push_constant_size2, None);
+
+
     PostProcessPipeline {
         module: shader_module,
-        descriptor_set_layout: descriptor_set_layouts,
-        entry_points: [entry_point],
+        descriptor_set_layout: [descriptor_set_layout_1, descriptor_set_layout_2],
+        entry_points: [post_process_entry_point, bloom_downsample_entry_point, bloom_upsample_entry_point],
     }
 }
 

@@ -53,8 +53,10 @@ float3 fresnelRoughness(float3 f0, float3 v, float3 x, float roughness) {
 // Cook-torrence model for specular
 float3 specular(float3 f0, float roughness, float3 v, float3 l, float3 n, float3 h) {
 	float3 num = ndf(roughness, n, h) * gsf(roughness, n, v, l) * fresnel(f0, h, v);
-	float denom = 4 * max(dot(v, n), 0.0) * max(dot(l, n), 0.0) + 0.0001;
-	return num / denom;
+	float denom = 4 * max(dot(v, n), 0.0) * max(dot(l, n), 0.0);
+
+	float3 tmp = num / max(denom, 0.0001);
+	return select(isinf(tmp), 1000, clamp(tmp, 0, 1000));
 }
 
 // Sun data struct

@@ -31,7 +31,7 @@ void write_clouds(uint3 id: SV_DispatchThreadID, uniform float4 sun_and_time) {
     }
 
     // scale opacity by another noisy function
-    float opacity = value.x * smoothstep(0, 1, snoise(pos * 0.0005) * 1.5 - 0.2) * 2.0;
+    float opacity = value.x * smoothstep(0, 1, snoise(pos * 0.0005) * 1.5 - 0.2) * 6.0;
     float2 derivatives = value.yz;
 
     //opacity *= saturate(3000-length(pos));

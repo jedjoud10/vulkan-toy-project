@@ -203,7 +203,7 @@ float3 sky(float3 sun_dir, float3 ray_dir, float3 ray_pos, bool extraLightEnable
         float sun = max(0.0, smoothstep(0.5, 1.5, dot(ray_dir, sun_dir))) * 0.5;
         float sunDisc = smoothstep(0.9999, 0.999935, dot(ray_dir, sun_dir));
 
-        res += sunDisc * dayTime;
+        res += sunDisc * dayTime * 500.0;
 
         float starsIntensity = stars(ray_dir) * 0.3;
         res += starsIntensity * night;
