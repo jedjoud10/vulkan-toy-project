@@ -14,6 +14,7 @@ pub struct SparseVoxelOctree {
     pub index_buffer: Buffer,
     pub aabb_buffer: Buffer,
     pub root: TopLevelAccelerationStructureNode,
+    pub chunks: Vec<Chunk>,
 }
 
 impl SparseVoxelOctree {
@@ -35,6 +36,7 @@ impl SparseVoxelOctree {
             bitmask_buffer,
             index_buffer,
             aabb_buffer,
+            chunks: Vec::new(),
             root: TopLevelAccelerationStructureNode::root(),
         }
     }
@@ -117,11 +119,11 @@ impl SparseVoxelOctree {
                 if let Some(valid_child) = child_mut_ref {
                     // overwrite?
                     log::debug!("overwrite chunk child node sparse representation");
-                    *valid_child = chunk.sparse_representation; 
+                    *valid_child = chunk.sparse_representation.clone(); 
                     break;
                 } else {
                     log::debug!("first write chunk child node sparse representation");
-                    *child_mut_ref = Some(chunk.sparse_representation);
+                    *child_mut_ref = Some(chunk.sparse_representation.clone());
                     break;
                 }
             } else {
@@ -159,6 +161,9 @@ impl SparseVoxelOctree {
         }
     
         // TODO: only thing missing here is getting rid of walks in the tree that solely consist of empty nodes
+
+
+        self.chunks.push(chunk);
     }
 
     pub unsafe fn rebuild(&mut self, device: &ash::Device, pool: vk::CommandPool, queue: vk::Queue, allocator: &mut Allocator) {
@@ -198,6 +203,12 @@ pub struct SparseVoxelTreeBuildResultGpuBuffers {
     #[n(2)] pub aabbs: Vec<u64>,
 }
 
+#[derive(minicbor::Encode, minicbor::Decode)]
+pub struct SparseVoxelTreeSaveState {
+    #[n(0)]
+    pub chunks: Vec<Chunk>,
+}
+
 impl TopLevelAccelerationStructureNode {
     pub fn root() -> Self {
         Self { children: None, full: false, bounds: vek::Aabb::new_empty(vek::Vec3::zero()) }
@@ -220,17 +231,11 @@ pub struct TopLevelAccelerationStructureNode {
     pub full: bool,
 }
 
+#[derive(Clone)]
 pub struct ChunkLevelAccelerationStructureNode {
     pub bounds: vek::Aabb<u32>,
     pub children: Option<Box<[Option<usize>; 64]>>,
     pub full: bool,
-}
-
-
-struct BottomUpPath {
-    pub parent_index: usize,
-    pub child_index_relative: u32,
-    pub child_index_absolute: usize,
 }
 
 enum TraversalNodeType<'a> {
@@ -332,13 +337,13 @@ pub fn convert_to_buffers(svo: &SparseVoxelOctree) -> SparseVoxelTreeBuildResult
     let mut base_indices_for_height = vec![0u32; SVO_DEPTH as usize + 1];
 
     // first pass that will create the index vec and bitmask vec
-    while let Some(TraversalNode { node_type, height, parent_base_child_index: parent_index, self_packed_child_offset  }) = queue.pop_front() {
+    while let Some(TraversalNode { node_type, height, parent_base_child_index, self_packed_child_offset  }) = queue.pop_front() {
         let self_index = index_vec.len();
         base_indices_for_height[height as usize] += 1;
         
         // VERIFY: makes sure that the packed child index matches up
-        if let Some(parent) = parent_index {
-            debug_assert_eq!(self_index, parent + self_packed_child_offset);
+        if let Some(parent_base_child_index) = parent_base_child_index {
+            debug_assert_eq!(self_index, parent_base_child_index + self_packed_child_offset);
         }
 
         // creates a 64 bit mask that contains which children are enabled
@@ -382,9 +387,13 @@ pub fn convert_to_buffers(svo: &SparseVoxelOctree) -> SparseVoxelTreeBuildResult
                 total_num_full_nodes += 1;
             } else if height > 1 {
                 // if bitmask is full, then there's no need to do the bitmask buffer fetch in the shader
+                
+                // commented it out as we have removed that conditional fetching logic from shader anyways :p
+                /*
                 if bitmask == u64::MAX {
                     base_child_index |= 1 << 30;
                 }
+                */
 
                 // node is not full, we must compute bitmask of children and stuff
                 match node_type {

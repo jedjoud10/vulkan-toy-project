@@ -45,8 +45,13 @@ pub unsafe fn create_sparse_structures(
         let mut zlib_decoder = flate2::read::ZlibDecoder::new(cached_file);
         let mut vec = Vec::<u8>::new();
         zlib_decoder.read_to_end(&mut vec).unwrap();
-        let res = minicbor::decode::<SparseVoxelTreeBuildResultGpuBuffers>(&vec).unwrap();
-        svo.apply_update_gpu_buffers(device, pool, queue, allocator, &res);
+        let bytes = vec.as_slice();
+
+        let res = minicbor::decode::<SparseVoxelTreeSaveState>(bytes).unwrap();
+
+        for chunk in res.chunks {
+            svo.register_chunk(chunk);
+        }
     } else {
         // regenerate chunks and save to file
         log::warn!("cache file not found (or was forced to regenerate), regenerating chunks...");
@@ -87,26 +92,28 @@ pub unsafe fn create_sparse_structures(
             svo.register_chunk(chunk);
         }
 
-        let res: SparseVoxelTreeBuildResultGpuBuffers = convert_to_buffers(&svo);
-        svo.apply_update_gpu_buffers(device, pool, queue, allocator, &res);
-        log::info!("created & updated sparse voxel tree buffers");
-
         if let Some(path) = cached_file_path {
             log::warn!("{}", path.as_os_str().to_str().unwrap());
             std::fs::create_dir_all(cached_folder_path.unwrap()).unwrap();
             let file = std::fs::File::create(&path).unwrap();
             let zlib_encoder = flate2::write::ZlibEncoder::new(file, flate2::Compression::fast());
             let mut writer = minicbor::encode::write::Writer::new(zlib_encoder);
-            minicbor::encode(res, &mut writer).unwrap();
+
+            let save_state = SparseVoxelTreeSaveState { chunks: svo.chunks.clone() };
+            minicbor::encode(save_state, &mut writer).unwrap();
             log::debug!("wrote cached serialized data to file");
         } else {
             log::error!("cached file path could not be found");
         }
     }
+
+    let gpu_packed: SparseVoxelTreeBuildResultGpuBuffers = convert_to_buffers(&svo);
+    svo.apply_update_gpu_buffers(device, pool, queue, allocator, &gpu_packed);
+    log::info!("created & updated sparse voxel tree buffers");
     
     // FIXME: what the fuck do we do with this fuckass sparse texture
-    let chunks = vec![];
-    //let chunks = convert_to_sparse_image_chunks(&svo.nodes);
+    //let chunks = vec![];
+    let chunks = convert_to_sparse_image_chunks(&svo.chunks);
     let svt = create_sparse_voxel_texture(device, allocator, binder, queue, pool, queue_family_index, chunks);
     log::info!("created sparse voxel texture");
 
@@ -291,12 +298,16 @@ unsafe fn create_sparse_voxel_texture(
             sparse_image_memory_binds.push(memory_bind);
             sparse_image_allocations.push(allocation);
 
+            log::trace!("created allocation for sparse chunk {origin}. offset in staging buffer: {offset_in_staging_buffer}");
+
             total_data_to_copy.extend_from_slice(data);
             binding_chunks.push((*origin, offset_in_staging_buffer));
             offset_in_staging_buffer += data.len();
+
         }
         
     }
+    log::info!("created memory allocations for {} sparse chunks for sparse voxel texture", chunks.len());
 
     
     // create allocation for metadata image and upload stuff to it

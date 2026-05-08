@@ -138,10 +138,11 @@ impl ApplicationHandler for App {
 pub fn main() {
     let args = Args::parse();
     env_logger::Builder::from_default_env()
+        .filter_level(log::LevelFilter::Debug)
+        .parse_default_env()
         .format_timestamp_millis()
         .format_file(true)
         .format_line_number(true)
-        .filter_level(log::LevelFilter::Debug)
         .init();
     let event_loop = EventLoop::new().unwrap();
     let mut app = App {

@@ -167,6 +167,7 @@ pub unsafe fn write_to_buffer(
 }
 
 pub unsafe fn create_staging_buffer(device: &ash::Device, allocator: &mut Allocator, bytes: &[u8]) -> (vk::Buffer, Allocation) {
+    log::trace!("created staging buffer for {}", bytesize::ByteSize::b(bytes.len() as u64).display().si());
     let staging_buffer_create_info = vk::BufferCreateInfo::default()
         .flags(vk::BufferCreateFlags::empty())
         .usage(vk::BufferUsageFlags::TRANSFER_SRC)

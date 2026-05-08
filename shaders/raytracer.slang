@@ -217,7 +217,8 @@ void main(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID, uint3 gid:
             // fetch the nth normal and world position
             if (i == 0) {
                 nth_normals = normal;
-                nth_world = world;
+                nth_world = (block_pos % 16) / 16.0;
+                //nth_world = world;
             }
 #endif
 
@@ -303,8 +304,12 @@ void main(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID, uint3 gid:
                 if (AMBIENT_OCCLUSION) {
                     //ao = 0;
 
-                    ao_solver solver = ao_solver(Fetcher(svt, svt_metadata), block_pos, world-block_pos, ray.face, sign(iterative_ray_dir));
-                    ao = lerp(solver.ao(), 1, 0.8);
+                    float3 wtf = select(normal < 0, -2, normal);
+
+                    ao -= Fetcher(svt, svt_metadata).is_solid((uint3)floor(block_pos + wtf)) * 0.5;
+
+                    //ao_solver solver = ao_solver(Fetcher(svt, svt_metadata), block_pos, world-block_pos, ray.face, sign(iterative_ray_dir));
+                    //ao = lerp(solver.ao(), 1, 0.0);
                     /*
                     [loop]
                     for (int j = 0; j < 2; j++) {
@@ -434,7 +439,7 @@ void main(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID, uint3 gid:
             output[id.xy] = float4(heatmap(stats.buffer_fetches / 32.0), 0);
             break;
         case DebugType::Normals:
-            output[id.xy] = float4(nth_normals, 0);
+            output[id.xy] = float4(saturate(nth_normals), 0);
             break;
         case DebugType::World:
             output[id.xy] = float4((nth_world % 16) / 16, 0);

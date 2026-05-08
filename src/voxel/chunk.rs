@@ -1,3 +1,4 @@
+use core::num;
 use std::collections::VecDeque;
 use fixedbitset::FixedBitSet;
 use crate::voxel::{sparse::ChunkLevelAccelerationStructureNode, util::offset_to_index};
@@ -5,6 +6,7 @@ use crate::voxel::{sparse::ChunkLevelAccelerationStructureNode, util::offset_to_
 pub const CHUNK_SIZE: usize = 64;
 pub const CHUNK_VOLUME: usize = 64*64*64;
 
+#[derive(Clone)]
 pub enum ChunkData {
     Full,
     Empty,
@@ -14,11 +16,119 @@ pub enum ChunkData {
 
 // invariant: ChunkData MUST be in correct state
 // it cannot be in the "partial" state if it contains a fully cleared or fully set bitset
+#[derive(Clone)]
 pub struct Chunk {
     pub position: vek::Vec3<u32>,
     pub voxel_data: ChunkData,
     pub sparse_representation: Vec<ChunkLevelAccelerationStructureNode>,
     pub bounds: vek::Aabb<u32>,
+}
+
+impl<C> minicbor::Encode<C> for Chunk {
+    fn encode<W: minicbor::encode::Write>(&self, e: &mut minicbor::Encoder<W>, ctx: &mut C) -> Result<(), minicbor::encode::Error<W::Error>> {
+        e.array(3)?;
+        for axis in self.position {
+            e.u32(axis)?;
+        }
+
+        e.bool(self.is_full())?;
+        e.bool(self.is_empty())?;
+
+        if let ChunkData::Partial(fixed_bit_set) = &self.voxel_data {
+            e.array(fixed_bit_set.as_slice().len() as u64)?;
+            for block in fixed_bit_set.as_slice() {
+                e.u64(*block as u64)?;
+            }
+        } 
+
+        e.array(self.sparse_representation.len() as u64)?;
+
+        for ChunkLevelAccelerationStructureNode { bounds, children, full } in self.sparse_representation.iter() {
+            e.map(4)?;
+
+            e.map(3)?;
+            for axis in bounds.min {
+                e.u32(axis)?;
+            }
+
+            e.map(3)?;
+            for axis in bounds.max {
+                e.u32(axis)?;
+            }
+
+            e.encode(children)?;
+            e.bool(*full)?;
+        }
+
+        for axis in self.bounds.min {
+            e.u32(axis)?;
+        }
+
+        for axis in self.bounds.max {
+            e.u32(axis)?;
+        }
+
+        Ok(())
+    }
+}
+
+impl<'b, C> minicbor::Decode<'b, C> for Chunk {
+    fn decode(d: &mut minicbor::Decoder<'b>, ctx: &mut C) -> Result<Self, minicbor::decode::Error> {
+        assert_eq!(d.array()?, Some(3));
+
+        let position = vek::Vec3::new(d.u32()?, d.u32()?, d.u32()?);
+
+        let full = d.bool()?;
+        let empty = d.bool()?;
+        
+        let voxel_data = if !full && !empty {
+            let num_blocks = d.array()?.unwrap() as usize;
+            let mut fixed_bit_set = FixedBitSet::with_capacity(CHUNK_VOLUME);  
+            let target_blocks = fixed_bit_set.as_mut_slice();
+            assert_eq!(target_blocks.len(), num_blocks);
+
+            for block in target_blocks {
+                *block = d.u64()? as usize;
+            }
+
+            ChunkData::Partial(fixed_bit_set)
+        } else if full {
+            ChunkData::Full
+        } else if empty {
+            ChunkData::Empty
+        } else {
+            unreachable!()
+        };
+
+        let num_sparse_nodes = d.array()?.unwrap();
+        let mut sparse_representation: Vec<ChunkLevelAccelerationStructureNode>  = Vec::with_capacity(num_sparse_nodes as usize);
+
+        for _ in 0..num_sparse_nodes {
+            d.map()?;
+
+            d.map()?;
+            let min = vek::Vec3::<u32>::new(d.u32()?, d.u32()?, d.u32()?);
+
+            d.map()?;
+            let max = vek::Vec3::<u32>::new(d.u32()?, d.u32()?, d.u32()?);
+        
+            let children = d.decode::<Option<Box<[Option<usize>; 64]>>>()?;
+            let full = d.bool()?;
+
+            sparse_representation.push(ChunkLevelAccelerationStructureNode { bounds: vek::Aabb::<u32> { min, max }, children, full });
+        }
+
+        let min = vek::Vec3::<u32>::new(d.u32()?, d.u32()?, d.u32()?);
+        let max = vek::Vec3::<u32>::new(d.u32()?, d.u32()?, d.u32()?);
+        
+
+        Ok(Chunk {
+            position,
+            voxel_data,
+            sparse_representation,
+            bounds: vek::Aabb::<u32> { min, max },
+        })
+    }
 }
 
 impl Chunk {
@@ -128,7 +238,7 @@ fn chunk_to_sparse(data: &ChunkData, chunk_position: vek::Vec3<u32>) -> (Vec<Chu
         let mip_size = 64usize / (1 << ((pass)*2)); // 16, 4, 1
         let voxel_size = 64usize / mip_size; // 4, 16, 64
 
-        log::debug!("pass {pass}, mip size: {mip_size}");
+        log::trace!("pass {pass}, mip size: {mip_size}");
 
         let previous_mip_size = mip_size * 4;
         let previous_voxel_size = voxel_size / 4;
@@ -137,8 +247,8 @@ fn chunk_to_sparse(data: &ChunkData, chunk_position: vek::Vec3<u32>) -> (Vec<Chu
         let previous_all_mip = &all_mips[pass-1];
         let previous_all_bounds = &all_bounds[pass-1];
 
-        log::debug!("pass: {pass}, num PREVIOUS any mip bits set: {}", previous_any_mip.count_ones(..));
-        log::debug!("pass: {pass}, num PREVIOUS all mip bits set: {}", previous_all_mip.count_ones(..));
+        log::trace!("pass: {pass}, num PREVIOUS any mip bits set: {}", previous_any_mip.count_ones(..));
+        log::trace!("pass: {pass}, num PREVIOUS all mip bits set: {}", previous_all_mip.count_ones(..));
 
         let mip_volume = (mip_size as usize).pow(3);
         let mut next_any_mip = FixedBitSet::with_capacity(mip_volume);
@@ -189,8 +299,8 @@ fn chunk_to_sparse(data: &ChunkData, chunk_position: vek::Vec3<u32>) -> (Vec<Chu
             }
         }
 
-        log::debug!("pass: {pass}, num next any mip bits set: {}", next_any_mip.count_ones(..));
-        log::debug!("pass: {pass}, num next all mip bits set: {}", next_all_mip.count_ones(..));
+        log::trace!("pass: {pass}, num next any mip bits set: {}", next_any_mip.count_ones(..));
+        log::trace!("pass: {pass}, num next all mip bits set: {}", next_all_mip.count_ones(..));
         
 
         any_mips[pass] = next_any_mip;

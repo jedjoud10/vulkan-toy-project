@@ -64,6 +64,7 @@ impl<const ENTRY_POINTS: usize, const DESCRIPTOR_SETS: usize> MultiComputePipeli
 pub type RenderPipeline = MultiComputePipeline<1, 2>;
 pub type PostProcessPipeline = MultiComputePipeline<3, 2>;
 pub type SkyPipeline = MultiComputePipeline<2, 1>;
+pub type VoxelPipeline = MultiComputePipeline<1, 1>;
 
 #[derive(Pod, Zeroable, Copy, Clone)]
 #[repr(C)]
@@ -295,6 +296,36 @@ pub unsafe fn create_post_process_pipeline(
         descriptor_set_layout: [descriptor_set_layout_1, descriptor_set_layout_2],
         entry_points: [post_process_entry_point, bloom_downsample_entry_point, bloom_upsample_entry_point],
     }
+}
+
+
+pub unsafe fn create_voxel_pipeline(
+    raw: &[u32],
+    device: &ash::Device,
+    binder: &Option<ash::ext::debug_utils::Device>,
+) -> VoxelPipeline {
+    let shader_module = create_shader_module(raw, device, binder, "voxel compute shader module");
+
+    let sparse_voxel_texture = vk::DescriptorSetLayoutBinding::default()
+        .binding(0)
+        .stage_flags(vk::ShaderStageFlags::COMPUTE)
+        .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+        .descriptor_count(1);
+    let bindings = [sparse_voxel_texture];
+    let first_descriptor_set_layout_create_info = vk::DescriptorSetLayoutCreateInfo::default()
+        .flags(vk::DescriptorSetLayoutCreateFlags::empty())
+        .bindings(&bindings);
+    let first_descriptor_set_layout = device
+        .create_descriptor_set_layout(&first_descriptor_set_layout_create_info, None)
+        .unwrap();
+    crate::debug::set_object_name(first_descriptor_set_layout, binder, "voxle compute shader descriptor set layout");
+
+    let push_constant_size = Some(size_of::<vek::Vec4::<u32>>());
+
+    let descriptor_set_layouts = [first_descriptor_set_layout];
+    let main_entry_point = create_single_entry_point_pipeline(device, binder, shader_module, "main", &descriptor_set_layouts, push_constant_size, None);
+    
+    MultiComputePipeline { module: shader_module, entry_points: [main_entry_point], descriptor_set_layout: [first_descriptor_set_layout] }
 }
 
 unsafe fn create_shader_module(raw: &[u32], device: &ash::Device, binder: &Option<ash::ext::debug_utils::Device>, name: &str) -> vk::ShaderModule {

@@ -61,6 +61,7 @@ pub struct InternalApp {
     render_compute_pipeline: pipeline::RenderPipeline,
     sky_compute_pipeline: pipeline::SkyPipeline,
     post_process_compute_pipeline: pipeline::PostProcessPipeline,
+    voxel_compute_pipeline: pipeline::VoxelPipeline,
     
     // descriptors & frames in flight
     frames_in_flight: Vec<PerFrameData>,
@@ -234,8 +235,11 @@ impl InternalApp {
         let sky_compute_pipeline = pipeline::create_sky_pipeline(assets["sky_compute.spv"], &device, &debug_marker);
         log::info!("created sky compute pipeline");
 
-        let compositing_compute_pipeline = pipeline::create_post_process_pipeline(assets["post_process_compute.spv"], &device, &debug_marker);
+        let post_process_compute_pipeline = pipeline::create_post_process_pipeline(assets["post_process_compute.spv"], &device, &debug_marker);
         log::info!("created post process compute pipeline");
+
+        let voxel_compute_pipeline = pipeline::create_voxel_pipeline(assets["voxel_interesting_compute.spv"], &device, &debug_marker);
+        log::info!("created voxel compute pipeline");
 
         let (svo, svt) = voxel::create_sparse_structures(
             &device,
@@ -260,8 +264,8 @@ impl InternalApp {
 
         let mut frames_in_flight = Vec::<PerFrameData>::new();
         for swapchain_image in swapchain_images {
-            let mut per_frame_data = PerFrameData::create_per_frame_data(&device, pool, descriptor_pool, &render_compute_pipeline, &compositing_compute_pipeline, swapchain_image);
-            per_frame_data.recreate_rt_images_and_image_views_and_update_descriptor_sets(&device, swapchain_format, swapchain_image, &mut allocator, queue_family_index, extent, &debug_marker, descriptor_pool, &compositing_compute_pipeline, args.downscale_factor);
+            let mut per_frame_data = PerFrameData::create_per_frame_data(&device, pool, descriptor_pool, &render_compute_pipeline, &post_process_compute_pipeline, swapchain_image);
+            per_frame_data.recreate_rt_images_and_image_views_and_update_descriptor_sets(&device, swapchain_format, swapchain_image, &mut allocator, queue_family_index, extent, &debug_marker, descriptor_pool, &post_process_compute_pipeline, args.downscale_factor);
             frames_in_flight.push(per_frame_data);
         }
         crate::per_frame_data::transfer_layout_for_images(&device, queue_family_index, &frames_in_flight, pool, queue);
@@ -282,7 +286,7 @@ impl InternalApp {
         buffer::write_to_buffer(&device, pool, queue, lights_buffer.buffer, &mut allocator, bytemuck::cast_slice(lights.as_slice()));
         log::info!("created lights buffer");
 
-        let const_descriptor_sets = ConstantDescriptorSets::create_constant_descriptor_sets(&device, descriptor_pool, &render_compute_pipeline, &sky_compute_pipeline, &compositing_compute_pipeline, &skybox, &svt, &svo, &lights_buffer);
+        let const_descriptor_sets = ConstantDescriptorSets::create_constant_descriptor_sets(&device, descriptor_pool, &render_compute_pipeline, &sky_compute_pipeline, &post_process_compute_pipeline, &skybox, &svt, &svo, &lights_buffer);
         log::info!("created constant descriptor sets");
 
         let query_pool = others::create_query_pool(&device);
@@ -326,7 +330,8 @@ impl InternalApp {
             stats: Default::default(),
             args,
             lights,
-            post_process_compute_pipeline: compositing_compute_pipeline,
+            post_process_compute_pipeline,
+            voxel_compute_pipeline,
         }
     }
 
@@ -909,6 +914,7 @@ impl InternalApp {
 
         // TODO: implement fast path that does not even allocate RT and just renders to the swapchain image directly
         // replacing this blit by a copy does not improve performance much, but removing it completely definitely should
+        // this blit is taking 500us! fucking nuts! wtf!
         let regions = [image_blit];
         self.device.cmd_blit_image(
             cmd,
@@ -1001,6 +1007,9 @@ impl InternalApp {
 
         self.post_process_compute_pipeline.destroy(&self.device);
         log::info!("destroyed post process compute pipeline");
+
+        self.voxel_compute_pipeline.destroy(&self.device);
+        log::info!("destroyed voxel compute pipeline");
 
         self.svo.destroy(&self.device, &mut self.allocator);
         log::info!("destroyed SVO buffers & stuff");

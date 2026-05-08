@@ -1,3 +1,5 @@
+use crate::voxel::chunk::{CHUNK_SIZE, CHUNK_VOLUME, Chunk, ChunkData};
+
 pub const BOTTOM_NODE: u32 = u32::MAX;
 pub const FULL_NODE: u32 = u32::MAX-1; 
 pub const SVO_DEPTH: u32 = 5;
@@ -44,14 +46,12 @@ pub struct SparseImageChunk {
     pub full: bool,
 }
 
-
 /*
 struct SimpleTraversalNode<'a> {
     node: &'a FlatNode,
     height: u32,
     origin: vek::Vec3<u32>,
 }
-
 
 pub fn convert_single_chunk_node_to_sparse_image_binding_chunk(origin: vek::Vec3<u32>, node: &FlatNode, nodes: &[FlatNode]) -> SparseImageChunk {
     let mut queue = VecDeque::<SimpleTraversalNode>::new();
@@ -186,42 +186,30 @@ pub fn convert_to_sparse_image_chunks(nodes: &[FlatNode]) -> Vec<SparseImageChun
 */
 
 
-/*
+// hard-coded chunk granularity of 64x64x64
+pub fn convert_to_sparse_image_chunks(chunks: &[Chunk]) -> Vec<SparseImageChunk> {
+    let mut binding_chunks = Vec::<SparseImageChunk>::new();
 
-*/
-
-/*
-struct ConvertTraversalNode<'a> {
-    node: &'a RecursiveNode,
-    parent_index: usize,
-    child_index_relative: u32,
-}
-
-pub fn convert_recursive_to_flat_map(node: RecursiveNode) -> Vec<FlatNode> {
-    let mut map = Vec::<FlatNode>::new();
-    let mut queue = VecDeque::<ConvertTraversalNode>::new();
-    queue.push_back(ConvertTraversalNode { node: &node, parent_index: usize::MAX, child_index_relative: 0 });
-
-    while let Some(ConvertTraversalNode { node, parent_index, child_index_relative }) = queue.pop_front() {
-        map.push(FlatNode { children: None, full: node.full, bounds: todo!() });
-        let index = map.len() - 1;
-
-        if parent_index != usize::MAX {
-            let children = map[parent_index].children.get_or_insert_with(|| Box::new([const {None}; 64]));
-            children[child_index_relative as usize] = Some(index);
-        }
-
-        if let Some(children) = node.children.as_ref() {
-            for (child_index_relative, child) in children.iter().enumerate().filter_map(|(i, opt)| opt.as_ref().map(|c| (i, c))) {
-                queue.push_back(ConvertTraversalNode {
-                    node: &child,
-                    parent_index: index,
-                    child_index_relative: child_index_relative as u32,
-                });
-            }
-        }
+    for chunk in chunks {
+        let data = match &chunk.voxel_data {
+            ChunkData::Full => Vec::new(),
+            ChunkData::Empty => Vec::new(),
+            ChunkData::Partial(fixed_bit_set) => {
+                let mut data = Vec::<u8>::with_capacity(CHUNK_VOLUME);
+                for bit_index in 0..CHUNK_VOLUME {
+                    let is_set = fixed_bit_set.contains(bit_index);
+                    data.push(if is_set { 255 } else { 0 });
+                }
+                data
+            },
+        };
+        
+        binding_chunks.push(SparseImageChunk {
+            origin: chunk.position * (CHUNK_SIZE as u32),
+            data: data,
+            full: chunk.is_full()
+        });
     }
 
-    map
+    binding_chunks
 }
-*/
