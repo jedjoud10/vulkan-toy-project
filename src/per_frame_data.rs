@@ -12,8 +12,6 @@ pub struct PerFrameDescriptorSets {
 }
 
 pub struct PerFrameData {
-    pub rt_image: vk::Image,
-    pub rt_image_allocation: Option<Allocation>,
     pub rendered_image: vk::Image,
     pub rendered_image_allocation: Option<Allocation>,
     
@@ -28,7 +26,6 @@ pub struct PerFrameData {
     pub per_frame_descriptor_sets: PerFrameDescriptorSets,
     
     pub rendered_image_view: vk::ImageView,
-    pub rt_image_view: vk::ImageView,
     pub entire_bloom_image_view: vk::ImageView,
 }
 
@@ -66,8 +63,6 @@ impl PerFrameData {
             .unwrap();
 
         Self {
-            rt_image: vk::Image::null(),
-            rt_image_allocation: None,
             rendered_image: vk::Image::null(),
             rendered_image_allocation: None,
             present_complete_semaphore,
@@ -80,7 +75,6 @@ impl PerFrameData {
                 compositor_downsample_bloom_per_frame: Vec::default(),
                 compositor_upsample_bloom_per_frame: Vec::default(),
             },
-            rt_image_view: vk::ImageView::null(),
             rendered_image_view: vk::ImageView::null(),
             bloom_image: vk::Image::null(),
             bloom_image_allocation: None,
@@ -103,11 +97,6 @@ impl PerFrameData {
         scaling_factor: u32,
     ) {
         log::debug!("recreate images & descriptor set stuff for per-frame-data...");
-
-        let (rt_image, rt_image_allocation) = create_image(device, swapchain_format, allocator, queue_family_index, extent, binder, scaling_factor, "Render Texture (post-process)", None);
-        self.rt_image = rt_image;
-        self.rt_image_allocation = Some(rt_image_allocation);
-        
 
         let rendered_image_format = vk::Format::R16G16B16A16_SFLOAT;
         let (rendered_image, rendered_image_allocation) = create_image(device, rendered_image_format, allocator, queue_family_index, extent, binder, scaling_factor, "Tmp Rendered Texture (pre-process)", None);
@@ -133,14 +122,6 @@ impl PerFrameData {
             .level_count(vk::REMAINING_MIP_LEVELS)
             .layer_count(1);
 
-        let rt_image_view_create_info = vk::ImageViewCreateInfo::default()
-            .components(vk::ComponentMapping::default())
-            .flags(vk::ImageViewCreateFlags::empty())
-            .format(swapchain_format)
-            .image(rt_image)
-            .subresource_range(subresource_range)
-            .view_type(vk::ImageViewType::TYPE_2D);
-
         let rendered_image_view_create_info = vk::ImageViewCreateInfo::default()
             .components(vk::ComponentMapping::default())
             .flags(vk::ImageViewCreateFlags::empty())
@@ -157,9 +138,6 @@ impl PerFrameData {
             .subresource_range(entire_bloom_subresource_range)
             .view_type(vk::ImageViewType::TYPE_2D);
 
-        self.rt_image_view = device
-            .create_image_view(&rt_image_view_create_info, None)
-            .unwrap();
         self.rendered_image_view = device
             .create_image_view(&rendered_image_view_create_info, None)
             .unwrap();
@@ -274,10 +252,6 @@ impl PerFrameData {
             device.update_descriptor_sets(&[previous_mip_descriptor_write, next_mip_descriptor_write], &[]);
         }
 
-        let descriptor_rt_image_view_info = vk::DescriptorImageInfo::default()
-            .image_view(self.rt_image_view)
-            .image_layout(vk::ImageLayout::GENERAL)
-            .sampler(vk::Sampler::null());
         let descriptor_rendered_image_view_info = vk::DescriptorImageInfo::default()
             .image_view(self.rendered_image_view)
             .image_layout(vk::ImageLayout::GENERAL)
@@ -304,15 +278,6 @@ impl PerFrameData {
             .dst_binding(0)
             .dst_set(self.per_frame_descriptor_sets.compositor_per_frame)
             .image_info(&composition_compute_descriptor_image_infos_2);
-
-        // rt image for compositor (write only)
-        let composition_compute_descriptor_image_infos_1 = [descriptor_rt_image_view_info];
-        let composition_compute_image_descriptor_write_1 = vk::WriteDescriptorSet::default()
-            .descriptor_count(1)
-            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-            .dst_binding(1)
-            .dst_set(self.per_frame_descriptor_sets.compositor_per_frame)
-            .image_info(&composition_compute_descriptor_image_infos_1);
         
         // entire bloom image for compositor (read only)
         let composition_compute_descriptor_image_infos_3 = [descriptor_entire_bloom_image_view_info];
@@ -325,11 +290,10 @@ impl PerFrameData {
         
 
         log::debug!("updating the other types of descriptor sets now...");
-        device.update_descriptor_sets(&[render_compute_image_descriptor_write, composition_compute_image_descriptor_write_1, composition_compute_image_descriptor_write_2, composition_compute_image_descriptor_write_3], &[]);
+        device.update_descriptor_sets(&[render_compute_image_descriptor_write, composition_compute_image_descriptor_write_2, composition_compute_image_descriptor_write_3], &[]);
     }
     
     pub unsafe fn destroy_rt_images_and_image_views(&mut self, device: &ash::Device, descriptor_pool: vk::DescriptorPool, allocator: &mut gpu_allocator::vulkan::Allocator) {
-        device.destroy_image_view(self.rt_image_view, None);
         device.destroy_image_view(self.rendered_image_view, None);
         device.destroy_image_view(self.entire_bloom_image_view, None);
         log::info!("destroyed image views for frame data");
@@ -339,10 +303,6 @@ impl PerFrameData {
             log::info!("destroyed bloom image view");
         }
         self.bloom_mip_image_views.clear();
-
-        device.destroy_image(self.rt_image, None);
-        allocator.free(self.rt_image_allocation.take().unwrap()).unwrap();
-        log::info!("destroyed render target image frame data");
     
         device.destroy_image(self.rendered_image, None);
         allocator.free(self.rendered_image_allocation.take().unwrap()).unwrap();
@@ -456,22 +416,6 @@ pub unsafe fn transfer_layout_for_images(
     let mut barriers = Vec::<vk::ImageMemoryBarrier2>::new();
 
     for frame_in_flight in per_frame_data.iter() {
-        let rt_image_transition = vk::ImageMemoryBarrier2::default()
-            .old_layout(vk::ImageLayout::UNDEFINED)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .src_access_mask(vk::AccessFlags2::NONE)
-            .dst_access_mask(
-                vk::AccessFlags2::TRANSFER_READ
-                    | vk::AccessFlags2::SHADER_WRITE
-                    | vk::AccessFlags2::SHADER_STORAGE_WRITE,
-            )
-            .src_stage_mask(vk::PipelineStageFlags2::NONE)
-            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .src_queue_family_index(queue_family_index)
-            .dst_queue_family_index(queue_family_index)
-            .image(frame_in_flight.rt_image)
-            .subresource_range(subresource_range);
-
         let rendered_image_transition = vk::ImageMemoryBarrier2::default()
             .old_layout(vk::ImageLayout::UNDEFINED)
             .new_layout(vk::ImageLayout::GENERAL)
@@ -508,7 +452,7 @@ pub unsafe fn transfer_layout_for_images(
             .image(frame_in_flight.bloom_image)
             .subresource_range(bloom_subresource_range);
 
-        barriers.extend_from_slice(&[rt_image_transition, rendered_image_transition, bloom_image_transition]);
+        barriers.extend_from_slice(&[rendered_image_transition, bloom_image_transition]);
     }
 
     let dep = vk::DependencyInfo::default().image_memory_barriers(&barriers);

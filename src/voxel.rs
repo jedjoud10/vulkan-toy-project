@@ -112,8 +112,8 @@ pub unsafe fn create_sparse_structures(
     log::info!("created & updated sparse voxel tree buffers");
     
     // FIXME: what the fuck do we do with this fuckass sparse texture
-    //let chunks = vec![];
-    let chunks = convert_to_sparse_image_chunks(&svo.chunks);
+    let chunks = vec![];
+    //let chunks = convert_to_sparse_image_chunks(&svo.chunks);
     let svt = create_sparse_voxel_texture(device, allocator, binder, queue, pool, queue_family_index, chunks);
     log::info!("created sparse voxel texture");
 

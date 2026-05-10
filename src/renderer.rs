@@ -240,7 +240,7 @@ impl InternalApp {
         let sky_compute_pipeline = pipeline::create_sky_pipeline(assets["sky_compute.spv"], &device, &debug_marker);
         log::info!("created sky compute pipeline");
 
-        let post_process_compute_pipeline = pipeline::create_post_process_pipeline(assets["post_process_compute.spv"], &device, &debug_marker);
+        let post_process_compute_pipeline = pipeline::create_post_process_pipeline(assets["post_process_compute.spv"], &device, &debug_marker, &args);
         log::info!("created post process compute pipeline");
 
         let voxel_compute_pipeline = pipeline::create_voxel_pipeline(assets["voxel_interesting_compute.spv"], &device, &debug_marker);
@@ -460,7 +460,6 @@ impl InternalApp {
         let constant_descriptor_sets = &self.const_descriptor_sets;
         let PerFrameData {
             rendered_image, // first render to this...
-            rt_image, // then compose onto this...
             present_complete_semaphore,
             end_fence,
             cmd,
@@ -471,7 +470,6 @@ impl InternalApp {
         } = &self.frames_in_flight[frame_in_flight_index as usize];
 
         let cmd = *cmd;
-        let rt_image = *rt_image;
         let present_complete_semaphores = [*present_complete_semaphore];
         let end_fence = *end_fence;
 
@@ -510,7 +508,26 @@ impl InternalApp {
             )
             .unwrap();
 
-        let swapchain_image = self.swapchain_images[acquired_swapchain_image_index as usize]; // then blit to this...
+        let swapchain_image = self.swapchain_images[acquired_swapchain_image_index as usize]; // then compose onto this...
+        let swapchain_image_view = self.swapchain_image_views[acquired_swapchain_image_index as usize];
+
+        //log::debug!("frame in flight index: {frame_in_flight_index}, acquire swapchain image index: {acquired_swapchain_image_index}");
+
+        let descriptor_rt_image_view_info = vk::DescriptorImageInfo::default()
+            .image_view(swapchain_image_view)
+            .image_layout(vk::ImageLayout::GENERAL)
+            .sampler(vk::Sampler::null());
+
+        // rt image for compositor (write only)
+        let composition_compute_descriptor_image_infos_1 = [descriptor_rt_image_view_info];
+        let composition_compute_image_descriptor_write_1 = vk::WriteDescriptorSet::default()
+            .descriptor_count(1)
+            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+            .dst_binding(1)
+            .dst_set(per_frame_descriptor_sets.compositor_per_frame)
+            .image_info(&composition_compute_descriptor_image_infos_1);
+
+        self.device.update_descriptor_sets(&[composition_compute_image_descriptor_write_1], &[]);
 
         let _start = std::time::Instant::now();
 
@@ -572,17 +589,6 @@ impl InternalApp {
             .level_count(1)
             .layer_count(1);
 
-        let swapchain_image_undefined_to_blit_dst_layout_transition = vk::ImageMemoryBarrier2::default()
-            .old_layout(vk::ImageLayout::UNDEFINED)
-            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-            .src_access_mask(vk::AccessFlags2::NONE)
-            .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-            .src_stage_mask(vk::PipelineStageFlags2::NONE)
-            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(self.queue_family_index)
-            .image(swapchain_image)
-            .subresource_range(subresource_range);
         let lights_buffer_barrier = vk::BufferMemoryBarrier2::default()
             .buffer(self.lights_buffer.buffer)
             .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
@@ -603,7 +609,7 @@ impl InternalApp {
             .dst_queue_family_index(self.queue_family_index)
             .image(self.svt.sparse_image)
             .subresource_range(subresource_range);
-        let image_memory_barriers = [swapchain_image_undefined_to_blit_dst_layout_transition, svt_image_barrier];
+        let image_memory_barriers = [svt_image_barrier];
         let buffer_memory_barriers = [lights_buffer_barrier];
         let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers).buffer_memory_barriers(&buffer_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
@@ -625,6 +631,7 @@ impl InternalApp {
         );
 
         let size = self.window.inner_size();
+        let window_size_no_downscale = vek::Vec2::<u32>::new(size.width, size.height);
         let size = vek::Vec2::<u32>::new(size.width, size.height) / self.args.downscale_factor;
 
         let group_size = 2u32.pow(self.args.group_size_exp);
@@ -879,17 +886,6 @@ impl InternalApp {
             self.device.cmd_dispatch(cmd, next_mip_size.x.div_ceil(8), next_mip_size.y.div_ceil(8), 1);
         }
 
-        let rt_image_blit_src_layout_transition_to_shader_write = vk::ImageMemoryBarrier2::default()
-            .old_layout(vk::ImageLayout::UNDEFINED)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .src_access_mask(vk::AccessFlags2::NONE)
-            .dst_access_mask(vk::AccessFlags2::SHADER_WRITE)
-            .src_stage_mask(vk::PipelineStageFlags2::NONE)
-            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-            .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(self.queue_family_index)
-            .image(rt_image)
-            .subresource_range(subresource_range);
         let last_pass_bloom = vk::ImageMemoryBarrier2::default()
             .old_layout(vk::ImageLayout::GENERAL)
             .new_layout(vk::ImageLayout::GENERAL)
@@ -901,7 +897,18 @@ impl InternalApp {
             .dst_queue_family_index(self.queue_family_index)
             .image(*bloom_image)
             .subresource_range(vk::ImageSubresourceRange::default().level_count(vk::REMAINING_MIP_LEVELS).layer_count(1).aspect_mask(vk::ImageAspectFlags::COLOR).base_mip_level(0).base_array_layer(0));
-        let image_memory_barriers = [rt_image_blit_src_layout_transition_to_shader_write, last_pass_bloom];
+        let swapchain_image_undefined_to_blit_dst_layout_transition = vk::ImageMemoryBarrier2::default()
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .src_access_mask(vk::AccessFlags2::NONE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_WRITE)
+            .src_stage_mask(vk::PipelineStageFlags2::NONE)
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .image(swapchain_image)
+            .subresource_range(subresource_range);
+        let image_memory_barriers = [last_pass_bloom, swapchain_image_undefined_to_blit_dst_layout_transition];
         let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
@@ -930,77 +937,12 @@ impl InternalApp {
             raw,
         );
 
-        self.device.cmd_dispatch(cmd, size.x.div_ceil(8), size.y.div_ceil(8), 1);
-
-        let rt_image_shader_write_to_blit_src_layout_transition = vk::ImageMemoryBarrier2::default()
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-            .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
-            .dst_access_mask(vk::AccessFlags2::TRANSFER_READ)
-            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(self.queue_family_index)
-            .image(rt_image)
-            .subresource_range(subresource_range);
-        let image_memory_barriers = [rt_image_shader_write_to_blit_src_layout_transition];
-        let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
-        self.device.cmd_pipeline_barrier2(cmd, &dep);
-
-        let origin_offset = vk::Offset3D::default();
-        let src_extent_offset = vk::Offset3D::default()
-            .x(self.window.inner_size().width as i32 / self.args.downscale_factor as i32)
-            .y(self.window.inner_size().height as i32 / self.args.downscale_factor as i32)
-            .z(1);
-        let dst_extent_offset = vk::Offset3D::default()
-            .x(self.window.inner_size().width as i32)
-            .y(self.window.inner_size().height as i32)
-            .z(1);
-        let src_offsets = [origin_offset, src_extent_offset];
-        let dst_offsets = [origin_offset, dst_extent_offset];
-
-        let subresource_layers = vk::ImageSubresourceLayers::default()
-            .aspect_mask(vk::ImageAspectFlags::COLOR)
-            .base_array_layer(0)
-            .layer_count(1)
-            .mip_level(0);
-
-        let image_blit = vk::ImageBlit::default()
-            .src_offsets(src_offsets)
-            .src_subresource(subresource_layers)
-            .dst_offsets(dst_offsets)
-            .dst_subresource(subresource_layers);
-
-        // TODO: implement fast path that does not even allocate RT and just renders to the swapchain image directly
-        // replacing this blit by a copy does not improve performance much, but removing it completely definitely should
-        // this blit is taking 500us! fucking nuts! wtf!
-        let regions = [image_blit];
-        self.device.cmd_blit_image(
-            cmd,
-            rt_image,
-            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-            swapchain_image,
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            &regions,
-            vk::Filter::NEAREST,
-        );
-
-        let src_transfer_src_to_shader_read = vk::ImageMemoryBarrier2::default()
-            .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .src_access_mask(vk::AccessFlags2::TRANSFER_READ)
-            .dst_access_mask(vk::AccessFlags2::SHADER_WRITE)
-            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(self.queue_family_index)
-            .image(rt_image)
-            .subresource_range(subresource_range);
+        self.device.cmd_dispatch(cmd, window_size_no_downscale.x.div_ceil(8), window_size_no_downscale.y.div_ceil(8), 1);
 
         let blit_dst_to_present_layout_transition = vk::ImageMemoryBarrier2::default()
-            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .old_layout(vk::ImageLayout::GENERAL)
             .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-            .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+            .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
             .dst_access_mask(vk::AccessFlags2::NONE)
             .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
             .dst_stage_mask(vk::PipelineStageFlags2::NONE)
@@ -1009,7 +951,7 @@ impl InternalApp {
             .image(swapchain_image)
             .subresource_range(subresource_range);
 
-        let image_memory_barriers = [src_transfer_src_to_shader_read, blit_dst_to_present_layout_transition];
+        let image_memory_barriers = [blit_dst_to_present_layout_transition];
         let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
@@ -1038,11 +980,6 @@ impl InternalApp {
             .queue_present(self.queue, &present_info)
             .unwrap();
 
-        // FIXME: there's still something wrong with frames in flight presenting. lots of stuttering and weird shit happening wtf
-        // remove this when shit is fixed pls thx
-        // also this fixes issues with OBS recording stuff :(
-        //self.device.wait_for_fences(&[end_fence], true, u64::MAX).unwrap(); 
-       
         self.stats.end_of_frame(self.frame_count);
         self.frame_count += 1;
 
@@ -1094,7 +1031,9 @@ impl InternalApp {
             frame.destroy_everything(&self.device, self.pool, self.descriptor_pool, &mut self.allocator);
         }
 
-
+        for swapchain_image_view in self.swapchain_image_views {
+            self.device.destroy_image_view(swapchain_image_view, None);
+        }
         self.swapchain_loader
             .destroy_swapchain(self.swapchain, None);
         log::info!("destroyed swapchain");

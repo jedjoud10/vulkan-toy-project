@@ -235,6 +235,7 @@ pub unsafe fn create_post_process_pipeline(
     raw: &[u32],
     device: &ash::Device,
     binder: &Option<ash::ext::debug_utils::Device>,
+    args: &crate::Args,
 ) -> PostProcessPipeline {
     let shader_module = create_shader_module(raw, device, binder, "post process compute shader module");
 
@@ -289,8 +290,11 @@ pub unsafe fn create_post_process_pipeline(
         .unwrap();
     crate::debug::set_object_name(descriptor_set_layout_2, binder, "post proces compute descriptor set layout 2 (bloom upsample / downsample)");
 
+    let spec_constant_fields = [args.downscale_factor];
+    let spec_constants = spec_constant_fields.iter().map(|x| SpecConstant { bytes: bytemuck::bytes_of(x) }).collect::<Vec<_>>();
+
     let push_constant_size = Some(size_of::<PushConstants>());
-    let post_process_entry_point = create_single_entry_point_pipeline(device, binder, shader_module, "write_render_texture", &[descriptor_set_layout_1], push_constant_size, None);
+    let post_process_entry_point = create_single_entry_point_pipeline(device, binder, shader_module, "write_swapchain_image", &[descriptor_set_layout_1], push_constant_size, Some(&spec_constants));
 
     let push_constant_size2 = Some(size_of::<vek::Vec2<f32>>());
     let bloom_downsample_entry_point = create_single_entry_point_pipeline(device, binder, shader_module, "bloom_downsample", &[descriptor_set_layout_2], push_constant_size2, None);

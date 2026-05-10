@@ -8,22 +8,28 @@
 readonly RWTexture2D<float4> pre_compose;
 
 [[vk::binding(1, 0)]]
-RWTexture2D<float4> render_target;
+RWTexture2D<float4> swapchain_image;
 
 [[vk::binding(2, 0)]]
 Sampler2D<float4> entire_bloom_image;
+
+[SpecializationConstant] const uint DOWNSCALE_FACTOR = 1;
 
 //#define SHORT_CIRCUIT_NO_TONEMAPPING
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void write_render_texture(uint3 id: SV_DispatchThreadID, uniform float2 screen, uniform matrix<float,4,4> mat, uniform float4 position, uniform float4 sun, uniform uint debug_type, uniform float time) {
+void write_swapchain_image(uint3 id: SV_DispatchThreadID, uniform float2 screen, uniform matrix<float,4,4> mat, uniform float4 position, uniform float4 sun, uniform uint debug_type, uniform float time) {
 #ifdef SHORT_CIRCUIT_NO_TONEMAPPING
-    render_target[id.xy] = pre_compose[id.xy];
+    swapchain_image[id.xy] = pre_compose[id.xy / DOWNSCALE_FACTOR];
     return;
 #endif
+
+    uint2 src_coords = id.xy / DOWNSCALE_FACTOR;
+    uint2 dst_coords = id.xy;
     
-    float2 screen_uvs_negative_one_to_one = (float2)id.xy / screen;
+    
+    float2 screen_uvs_negative_one_to_one = ((float2)src_coords) / screen;
     screen_uvs_negative_one_to_one *= 2.0;
     screen_uvs_negative_one_to_one -= 1.0;
     screen_uvs_negative_one_to_one.y = -screen_uvs_negative_one_to_one.y;
@@ -31,9 +37,7 @@ void write_render_texture(uint3 id: SV_DispatchThreadID, uniform float2 screen, 
 
     float2 screen_uvs = -screen_uvs_negative_one_to_one * 0.5 + 0.5;
 
-    float4 pre_post_process = pre_compose[id.xy];
-    
-    float3 final_colour = pre_post_process.xyz;
+    float3 final_colour = pre_compose[src_coords].xyz;
 
     /*
     float total = 1;
@@ -67,7 +71,7 @@ void write_render_texture(uint3 id: SV_DispatchThreadID, uniform float2 screen, 
     //col = lerp(col, 0.0, vignette);
 
 
-    render_target[id.xy] = float4(col, 0);
+    swapchain_image[dst_coords] = float4(col, 0);
 }
 
 
