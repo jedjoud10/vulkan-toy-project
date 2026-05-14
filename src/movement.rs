@@ -147,6 +147,7 @@ impl Movement {
                 *idx %= self.snapshots.len();
                 self.position = self.snapshots[*idx].position;
                 self.rotation = self.snapshots[*idx].rotation;
+                self.fov = self.snapshots[*idx].fov;
             }
     }
     

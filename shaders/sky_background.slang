@@ -1,12 +1,6 @@
 #language slang 2026
 #include "sky.slang"
-
-struct UniformThing {
-    float4x4 view_matrix;
-    float4x4 projection_matrix;
-    float4x4 inv_view_matrix;
-    float4x4 inv_projection_matrix;
-};
+#include "uniform_thing.slang"
 
 [[vk::binding(0, 0)]]
 ParameterBlock<UniformThing> uniform_buffer;
@@ -48,12 +42,11 @@ float4 fragMain(VertexOutput inVert) : SV_Target {
     float2 screen_uvs = inVert.uvs;
     
 
-    float3 sun = 1.0;
     let ndc = float4(screen_uvs, 1, 1);
     float3 ray_dir = mul(ndc, uniform_buffer.inv_projection_matrix).xyz;
     ray_dir = mul(float4(ray_dir.xy, 1, 0), uniform_buffer.inv_view_matrix).xyz;
     ray_dir = -ray_dir;
 
-    float3 ray_pos = 0.0;
+    float3 ray_pos = uniform_buffer.position.xyz;
     return float4(sample_skybox_and_clouds(ray_pos, ray_dir, clouds_sampler, skybox_sampler), 1.0);
 }

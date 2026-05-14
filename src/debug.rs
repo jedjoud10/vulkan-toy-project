@@ -1,7 +1,6 @@
 use ash::vk::{self};
 use std::{ffi::{CStr, CString, c_void}, str::FromStr};
 
-#[cfg(debug_assertions)]
 pub unsafe fn create_debug_messenger_create_info() -> vk::DebugUtilsMessengerCreateInfoEXT<'static>
 {
     vk::DebugUtilsMessengerCreateInfoEXT::default()
@@ -32,25 +31,18 @@ pub unsafe fn set_object_name<T: ash::vk::Handle, S: AsRef<str>>(obj: T, binder:
 pub unsafe fn create_debug_messenger(
     entry: &ash::Entry,
     instance: &ash::Instance,
+    debug_stuff: bool,
 ) -> Option<(
     ash::ext::debug_utils::Instance,
     ash::vk::DebugUtilsMessengerEXT,
 )> {
-    let debug_messenger;
-    #[cfg(debug_assertions)]
-    {
+    debug_stuff.then(|| {
         let debug_utils = ash::ext::debug_utils::Instance::new(entry, instance);
         let messenger = debug_utils
             .create_debug_utils_messenger(&create_debug_messenger_create_info(), None)
             .unwrap();
-        debug_messenger = Some((debug_utils, messenger));
-    }
-    #[cfg(not(debug_assertions))]
-    {
-        debug_messenger = None;
-    }
-
-    debug_messenger
+        (debug_utils, messenger)
+    })
 }
 
 pub unsafe fn create_debug_marker(
@@ -60,7 +52,6 @@ pub unsafe fn create_debug_marker(
     ash::ext::debug_utils::Device::new(instance, device)
 }
 
-#[cfg(debug_assertions)]
 pub unsafe extern "system" fn debug_callback(
     message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,
     message_type: vk::DebugUtilsMessageTypeFlagsEXT,

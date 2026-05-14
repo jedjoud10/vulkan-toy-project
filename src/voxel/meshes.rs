@@ -90,17 +90,23 @@ fn mesh_chunk(chunk: &Chunk, other_chunks: &HashMap<vek::Vec3::<u32>, &Chunk>) -
                 let pos = vek::Vec3::new(x,y,z);
 
                 let mut bitmask = 0u8;
+                let mut vertex = vek::Vec3::<f32>::zero();
                 for neighbour in 0..8usize {
                     let neighbour_offset = index_to_offset(neighbour, 2);
                     let next_cell_is_set = bitset.contains(offset_to_index(pos + neighbour_offset, CHUNK_SIZE));
 
                     if next_cell_is_set {
                         bitmask |= 1u8 << neighbour as u8;
+                        vertex += neighbour_offset.as_::<f32>();
                     }
                 }
 
                 if bitmask != 0 && bitmask != 0xFF {
-                    let vertex_position = pos.as_::<f32>() + 0.5f32 + chunk.position.as_::<f32>() * CHUNK_SIZE as f32;
+                    //let inside_cell_offset = vertex / bitmask.count_ones() as f32;
+                    let inside_cell_offset = 0.5f32;
+                    
+
+                    let vertex_position = inside_cell_offset + pos.as_::<f32>() + chunk.position.as_::<f32>() * CHUNK_SIZE as f32;
                     let index = vertices.len();
                     lookup[offset_to_index(pos, CHUNK_SIZE)] = index as u32;
                     vertices.push(vertex_position);

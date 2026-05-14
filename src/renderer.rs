@@ -128,9 +128,9 @@ impl InternalApp {
         let raw_display_handle = window.display_handle().unwrap().as_raw();
         let entry = ash::Entry::load().unwrap();
 
-        let instance = instance::create_instance(&entry, raw_display_handle);
+        let instance = instance::create_instance(&entry, raw_display_handle, args.enable_debug_stuff);
         log::info!("created instance");
-        let debug_messenger = debug::create_debug_messenger(&entry, &instance).inspect(|_x| {
+        let debug_messenger = debug::create_debug_messenger(&entry, &instance, args.enable_debug_stuff).inspect(|_x| {
             log::info!("created debug utils messenger");
         });
 
@@ -302,7 +302,7 @@ impl InternalApp {
         buffer::write_to_buffer(&device, pool, queue, lights_buffer.buffer, &mut allocator, bytemuck::cast_slice(lights.as_slice()));
         log::info!("created lights buffer");
 
-        let mut const_descriptor_sets = ConstantData::create_constant_descriptor_sets(&device, descriptor_pool, &render_compute_pipeline, &sky_compute_pipeline, &post_process_compute_pipeline, &voxel_compute_pipeline, &rasterization_background_pipeline, &samplers, &skybox, &svt, &svo, &lights_buffer);
+        let mut const_descriptor_sets = ConstantData::create_constant_descriptor_sets(&device, descriptor_pool, &render_compute_pipeline, &sky_compute_pipeline, &post_process_compute_pipeline, &voxel_compute_pipeline, &rasterization_background_pipeline, &rasterization_pipeline, &samplers, &skybox, &svt, &svo, &lights_buffer);
         const_descriptor_sets.recreate_rt_images_and_image_views_and_update_descriptor_sets(&device, swapchain_format, &mut allocator, queue_family_index, extent, &debug_marker, descriptor_pool, &samplers, &post_process_compute_pipeline, args.downscale_factor);
         crate::constant_data::transfer_layout_for_images(&device, queue_family_index, &const_descriptor_sets, pool, queue);
         log::info!("created constant descriptor sets");
@@ -484,7 +484,7 @@ impl InternalApp {
             //return;
         } else {
             let mut timestamps = [0u64; 2];
-            let okay = self.device.get_query_pool_results(self.query_pool, 0, &mut timestamps, vk::QueryResultFlags::TYPE_64).is_ok();
+            let okay = self.device.get_query_pool_results(self.query_pool, 0, &mut timestamps, vk::QueryResultFlags::TYPE_64 | vk::QueryResultFlags::WAIT).is_ok();
             if okay {
                 let delta_in_ms = ((timestamps[1].saturating_sub(timestamps[0])) as f64 * self.timestamp_period as f64) / 1000000.0f64;
                 self.stats.push_query_timings(delta_in_ms);
@@ -554,6 +554,7 @@ impl InternalApp {
             .dst_set(per_frame_descriptor_sets.background_rasterizer_per_frame)
             .buffer_info(&background_rasterization_per_frame_buffer_infos);
 
+        // update per frame descriptor sets
         self.device.update_descriptor_sets(&[composition_compute_image_descriptor_write_1, render_rasterization_descriptor_write, background_rasterization_descriptor_write], &[]);
 
         if suboptimal || self.was_resized {
@@ -677,119 +678,124 @@ impl InternalApp {
             projection_matrix: self.movement.proj_matrix,
             inv_view_matrix: self.movement.view_matrix.inverted(),
             inv_projection_matrix: self.movement.proj_matrix.inverted(),
-        };
+            screen_resolution: size_f32,
+            position: self.movement.position.with_w(0f32),
+            sun: self.sun.normalized().with_w(0f32),
+            debug_type: self.debug_type,
+            time: elapsed,
 
-        //let p = uniform_per_frame_data.projection_matrix * (uniform_per_frame_data.view_matrix * vek::Vec4::new(0f32, 0f32, 0f32, 1f32));
-        //log::info!("{p}");
+            _padding: Default::default(),
+        };
 
         self.device.cmd_update_buffer(cmd, uniform_buffer.buffer, 0, bytemuck::bytes_of(&uniform_per_frame_data));
         
         self.device.cmd_update_buffer(cmd, self.lights_buffer.buffer, 0, bytemuck::cast_slice(&self.lights));
 
+        if self.debug_type == 0 {
+            let rendered_image_barrier = vk::ImageMemoryBarrier2::default()
+                .old_layout(vk::ImageLayout::UNDEFINED)
+                .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .src_access_mask(vk::AccessFlags2::NONE)
+                .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+                .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                .src_queue_family_index(self.queue_family_index)
+                .dst_queue_family_index(self.queue_family_index)
+                .image(constant_descriptor_sets.rendered_image)
+                .subresource_range(subresource_range);
+            let image_memory_barriers = [rendered_image_barrier];
+            let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
+            self.device.cmd_pipeline_barrier2(cmd, &dep);
 
-        let rendered_image_barrier = vk::ImageMemoryBarrier2::default()
-            .old_layout(vk::ImageLayout::UNDEFINED)
-            .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-            .src_access_mask(vk::AccessFlags2::NONE)
-            .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
-            .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-            .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-            .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(self.queue_family_index)
-            .image(constant_descriptor_sets.rendered_image)
-            .subresource_range(subresource_range);
-        let image_memory_barriers = [rendered_image_barrier];
-        let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
-        self.device.cmd_pipeline_barrier2(cmd, &dep);
+            let render_area = vk::Rect2D::default()
+                .offset(vk::Offset2D::default())
+                .extent(vk::Extent2D::default().width(size.x).height(size.y));
+            let color_attachment = vk::RenderingAttachmentInfo::default()
+                .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0f32; 4] } })
+                .load_op(vk::AttachmentLoadOp::DONT_CARE)
+                .store_op(vk::AttachmentStoreOp::STORE)
+                .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .image_view(self.const_descriptor_sets.rendered_image_view);
+            let depth_attachment = vk::RenderingAttachmentInfo::default()
+                .clear_value(vk::ClearValue { depth_stencil: vk::ClearDepthStencilValue { depth: 1f32, stencil: 0 } })
+                .load_op(vk::AttachmentLoadOp::CLEAR)
+                .store_op(vk::AttachmentStoreOp::DONT_CARE)
+                .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+                .image_view(self.const_descriptor_sets.rendered_depth_image_image_view);
+            let color_attachments = [color_attachment];
+            let rendering_info = vk::RenderingInfo::default()
+                .color_attachments(&color_attachments)
+                .depth_attachment(&depth_attachment)
+                .layer_count(1)
+                .render_area(render_area)
+                .view_mask(0);
 
-        let render_area = vk::Rect2D::default()
-            .offset(vk::Offset2D::default())
-            .extent(vk::Extent2D::default().width(size.x).height(size.y));
-        let color_attachment = vk::RenderingAttachmentInfo::default()
-            .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0f32; 4] } })
-            .load_op(vk::AttachmentLoadOp::DONT_CARE)
-            .store_op(vk::AttachmentStoreOp::STORE)
-            .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-            .image_view(self.const_descriptor_sets.rendered_image_view);
-        let depth_attachment = vk::RenderingAttachmentInfo::default()
-            .clear_value(vk::ClearValue { depth_stencil: vk::ClearDepthStencilValue { depth: 1f32, stencil: 0 } })
-            .load_op(vk::AttachmentLoadOp::CLEAR)
-            .store_op(vk::AttachmentStoreOp::DONT_CARE)
-            .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
-            .image_view(self.const_descriptor_sets.rendered_depth_image_image_view);
-        let color_attachments = [color_attachment];
-        let rendering_info = vk::RenderingInfo::default()
-            .color_attachments(&color_attachments)
-            .depth_attachment(&depth_attachment)
-            .layer_count(1)
-            .render_area(render_area)
-            .view_mask(0);
-
-        let viewport = vk::Viewport::default().height(size.y as f32).width(size.x as f32).x(0f32).y(0f32).min_depth(0f32).max_depth(1f32);
-        self.device.cmd_set_viewport(cmd, 0, &[viewport]);
-        self.device.cmd_set_scissor(cmd, 0, &[render_area]);
-        
-        self.device.cmd_begin_rendering(cmd, &rendering_info);
+            let viewport = vk::Viewport::default().height(size.y as f32).width(size.x as f32).x(0f32).y(0f32).min_depth(0f32).max_depth(1f32);
+            self.device.cmd_set_viewport(cmd, 0, &[viewport]);
+            self.device.cmd_set_scissor(cmd, 0, &[render_area]);
+            
+            self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::ALL_GRAPHICS, self.query_pool, 0);
+            self.device.cmd_begin_rendering(cmd, &rendering_info);
 
 
-        // render background skybox and clouds
-        self.device.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::GRAPHICS, self.rasterization_background_pipeline.pipeline_layout, 0, &[per_frame_descriptor_sets.background_rasterizer_per_frame, constant_descriptor_sets.sky_rasterization_render_pipeline_descriptor_set], &[]);
-        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.rasterization_background_pipeline.pipeline);
-        self.device.cmd_draw(cmd, 6, 1, 0, 0);
+            // render background skybox and clouds
+            self.device.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::GRAPHICS, self.rasterization_background_pipeline.pipeline_layout, 0, &[per_frame_descriptor_sets.background_rasterizer_per_frame, constant_descriptor_sets.sky_rasterization_render_pipeline_descriptor_set], &[]);
+            self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.rasterization_background_pipeline.pipeline);
+            self.device.cmd_draw(cmd, 6, 1, 0, 0);
 
-        // render chunk meshes stuff
-        self.device.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::GRAPHICS, self.rasterization_pipeline.pipeline_layout, 0, &[per_frame_descriptor_sets.rasterizer_per_frame], &[]);
-        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.rasterization_pipeline.pipeline);
-        self.device.cmd_bind_vertex_buffers(cmd, 0, &[self.meshed.vertex_buffer.buffer], &[0]);
-        self.device.cmd_bind_index_buffer(cmd, self.meshed.index_buffer.buffer, 0, vk::IndexType::UINT32);
-        for single_chunk in self.meshed.chunks.iter() {
-            self.device.cmd_draw_indexed(cmd, single_chunk.index_count as u32, 1, single_chunk.first_index as u32, single_chunk.vertex_start_offset as i32, 0);
-        }
+            // render chunk meshes stuff
+            self.device.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::GRAPHICS, self.rasterization_pipeline.pipeline_layout, 0, &[per_frame_descriptor_sets.rasterizer_per_frame, constant_descriptor_sets.main_render_rasterization_render_pipeline_descriptor_set], &[]);
+            self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.rasterization_pipeline.pipeline);
+            self.device.cmd_bind_vertex_buffers(cmd, 0, &[self.meshed.vertex_buffer.buffer], &[0]);
+            self.device.cmd_bind_index_buffer(cmd, self.meshed.index_buffer.buffer, 0, vk::IndexType::UINT32);
+            for single_chunk in self.meshed.chunks.iter() {
+                self.device.cmd_draw_indexed(cmd, single_chunk.index_count as u32, 1, single_chunk.first_index as u32, single_chunk.vertex_start_offset as i32, 0);
+            }
 
-        self.device.cmd_end_rendering(cmd);
+            self.device.cmd_end_rendering(cmd);
+            self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::ALL_GRAPHICS, self.query_pool, 1);
 
-        let rendered_image_barrier = vk::ImageMemoryBarrier2::default()
-            .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
-            .dst_access_mask(vk::AccessFlags2::MEMORY_READ)
-            .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(self.queue_family_index)
-            .image(constant_descriptor_sets.rendered_image)
-            .subresource_range(subresource_range);
-        let image_memory_barriers = [rendered_image_barrier];
-        let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
-        self.device.cmd_pipeline_barrier2(cmd, &dep);
+            let rendered_image_barrier = vk::ImageMemoryBarrier2::default()
+                .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .new_layout(vk::ImageLayout::GENERAL)
+                .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+                .dst_access_mask(vk::AccessFlags2::MEMORY_READ)
+                .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+                .src_queue_family_index(self.queue_family_index)
+                .dst_queue_family_index(self.queue_family_index)
+                .image(constant_descriptor_sets.rendered_image)
+                .subresource_range(subresource_range);
+            let image_memory_barriers = [rendered_image_barrier];
+            let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
+            self.device.cmd_pipeline_barrier2(cmd, &dep);
+        } else {
+            self.device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                self.render_compute_pipeline.entry_points[0].pipeline_layout,
+                0,
+                &[constant_descriptor_sets.main_render, constant_descriptor_sets.render_compute_pipeline_descriptor_set],
+                &[],
+            );
+            self.device.cmd_bind_pipeline(
+                cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                self.render_compute_pipeline.entry_points[0].pipeline,
+            );
 
-        /*
-        self.device.cmd_bind_descriptor_sets(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.render_compute_pipeline.entry_points[0].pipeline_layout,
-            0,
-            &[constant_descriptor_sets.main_render, constant_descriptor_sets.render_compute_pipeline_descriptor_set],
-            &[],
-        );
-        self.device.cmd_bind_pipeline(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.render_compute_pipeline.entry_points[0].pipeline,
-        );
+            self.device.cmd_push_constants(
+                cmd,
+                self.render_compute_pipeline.entry_points[0].pipeline_layout,
+                vk::ShaderStageFlags::COMPUTE,
+                0,
+                raw,
+            );
 
-        self.device.cmd_push_constants(
-            cmd,
-            self.render_compute_pipeline.entry_points[0].pipeline_layout,
-            vk::ShaderStageFlags::COMPUTE,
-            0,
-            raw,
-        );
-
-        self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::COMPUTE_SHADER, self.query_pool, 0);
-        self.device.cmd_dispatch(cmd, size.x.div_ceil(group_size), size.y.div_ceil(group_size), 1);
-        self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::COMPUTE_SHADER, self.query_pool, 1);
-        */
+            self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::COMPUTE_SHADER, self.query_pool, 0);
+            self.device.cmd_dispatch(cmd, size.x.div_ceil(group_size), size.y.div_ceil(group_size), 1);
+            self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::COMPUTE_SHADER, self.query_pool, 1);
+        } 
 
         self.device.cmd_bind_descriptor_sets(
             cmd,

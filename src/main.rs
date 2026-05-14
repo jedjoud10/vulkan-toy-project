@@ -73,6 +73,10 @@ struct Args {
     /// Use this option to force voxel generator to rebuild terrain, even though there is the cached sparse structure file
     #[arg(long, default_value_t = false)]
     force_regenerate: bool,
+
+    /// Enable validation layers and debug stuff even when debug_assertions are disabled
+    #[arg(long, default_value_t = false)]
+    enable_debug_stuff: bool,
 }
 
 struct App {

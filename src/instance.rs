@@ -1,25 +1,28 @@
-use std::ffi::CStr;
+use std::ffi::{CStr, c_char};
 
 use ash::vk;
 use raw_window_handle::RawDisplayHandle;
 
+const DEBUG_INSTANCE_EXTENSIONS: &[&CStr] =
+    &[
+        ash::ext::debug_utils::NAME,
+        ash::ext::validation_features::NAME,
+    ];
+
+
 const REQUIRED_INSTANCE_EXTENSIONS: &[&CStr] =
     &[
-        #[cfg(debug_assertions)]
-        ash::ext::debug_utils::NAME,
-        #[cfg(debug_assertions)]
-        ash::ext::validation_features::NAME,
         ash::khr::surface::NAME,
     ];
 
-const REQUIRED_INSTANCE_VALIDATION_LAYERS: &[&CStr] = &[
-    #[cfg(debug_assertions)]
+const DEBUG_INSTANCE_VALIDATION_LAYERS: &[&CStr] = &[
     c"VK_LAYER_KHRONOS_validation",
 ];
 
 pub unsafe fn create_instance(
     entry: &ash::Entry,
     raw_display_handle: RawDisplayHandle,
+    debug_stuff: bool,
 ) -> ash::Instance {
     let app_info = vk::ApplicationInfo::default()
         .application_name(c"Vulkan Voxel Raytracer")
@@ -34,15 +37,20 @@ pub unsafe fn create_instance(
 
     extension_names_ptrs.extend(REQUIRED_INSTANCE_EXTENSIONS.iter().map(|s| s.as_ptr()));
 
-    let validation_ptrs = REQUIRED_INSTANCE_VALIDATION_LAYERS
-        .iter()
-        .map(|cstr| cstr.as_ptr())
-        .collect::<Vec<_>>();
+    if debug_stuff {
+        extension_names_ptrs.extend(DEBUG_INSTANCE_EXTENSIONS.iter().map(|s| s.as_ptr()));
+    }
+    
+    let mut validation_ptrs: Vec<*const c_char> = Vec::new();
+    let mut enabled_validation_features: Vec<vk::ValidationFeatureEnableEXT> = Vec::new();
 
-    let enabled_validation_features = [
-        #[cfg(debug_assertions)]
-        vk::ValidationFeatureEnableEXT::DEBUG_PRINTF,
-    ];
+    if debug_stuff {
+        validation_ptrs.extend(DEBUG_INSTANCE_VALIDATION_LAYERS
+            .iter()
+            .map(|cstr| cstr.as_ptr()));
+        enabled_validation_features.push(vk::ValidationFeatureEnableEXT::DEBUG_PRINTF);
+    }
+
     let mut validation_features = ash::vk::ValidationFeaturesEXT::default()
         .enabled_validation_features(&enabled_validation_features);
 

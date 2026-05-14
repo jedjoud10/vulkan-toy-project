@@ -103,7 +103,7 @@ float4 raymarch<let N : int>(
     return summed;
 }
 
-#define DEBUG
+//#define DEBUG
 
 [shader("compute")]
 [numthreads(GROUP_SIZE, GROUP_SIZE, 1)]

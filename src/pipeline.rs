@@ -23,6 +23,12 @@ pub struct PerFrameUniformData {
     pub projection_matrix: vek::Mat4<f32>,
     pub inv_view_matrix: vek::Mat4<f32>,
     pub inv_projection_matrix: vek::Mat4<f32>,
+    pub screen_resolution: vek::Vec2<f32>,
+    pub _padding: vek::Vec2<f32>,
+    pub position: vek::Vec4<f32>,
+    pub sun: vek::Vec4<f32>,
+    pub debug_type: u32,
+    pub time: f32,
 }
 
 #[repr(C)]
@@ -89,7 +95,7 @@ pub type RenderPipeline = MultiComputePipeline<1, 2>;
 pub type PostProcessPipeline = MultiComputePipeline<3, 3>;
 pub type SkyPipeline = MultiComputePipeline<2, 1>;
 pub type VoxelPipeline = MultiComputePipeline<1, 1>;
-pub type RasterizationRenderPipeline = RasterizedPipeline<1>;
+pub type RasterizationRenderPipeline = RasterizedPipeline<2>;
 pub type RasterizationBackgroundPipeline = RasterizedPipeline<2>;
 
 
@@ -442,7 +448,7 @@ pub unsafe fn create_render_rasterization_pipeline(
     
     let uniform_buffer = vk::DescriptorSetLayoutBinding::default()
         .binding(0)
-        .stage_flags(vk::ShaderStageFlags::VERTEX)
+        .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
         .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
         .descriptor_count(1);
     let bindings = [uniform_buffer];
@@ -454,11 +460,50 @@ pub unsafe fn create_render_rasterization_pipeline(
         .unwrap();
     crate::debug::set_object_name(descriptor_set_layout, binder, "main render rasterization descriptor set layout");
 
+    let svo_bitmasks = vk::DescriptorSetLayoutBinding::default()
+        .binding(0)
+        .stage_flags(vk::ShaderStageFlags::COMPUTE)
+        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+        .descriptor_count(1);
+    let svo_indices = vk::DescriptorSetLayoutBinding::default()
+        .binding(1)
+        .stage_flags(vk::ShaderStageFlags::COMPUTE)
+        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+        .descriptor_count(1);
+    let svo_aabbs = vk::DescriptorSetLayoutBinding::default()
+        .binding(2)
+        .stage_flags(vk::ShaderStageFlags::COMPUTE)
+        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+        .descriptor_count(1);
+    let skybox_sampler = vk::DescriptorSetLayoutBinding::default()
+        .binding(3)
+        .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+        .descriptor_count(1);
+    let clouds_sampler = vk::DescriptorSetLayoutBinding::default()
+        .binding(4)
+        .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+        .descriptor_count(1);
+    let svt_sampler = vk::DescriptorSetLayoutBinding::default()
+        .binding(5)
+        .stage_flags(vk::ShaderStageFlags::COMPUTE)
+        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+        .descriptor_count(1);
+    let bindings = [svo_bitmasks, svo_indices, svo_aabbs, skybox_sampler, clouds_sampler, svt_sampler];
+    let descriptor_set_layout_create_info = vk::DescriptorSetLayoutCreateInfo::default()
+        .flags(vk::DescriptorSetLayoutCreateFlags::empty())
+        .bindings(&bindings);
+    let descriptor_set_layout_const = device
+        .create_descriptor_set_layout(&descriptor_set_layout_create_info, None)
+        .unwrap();
+    crate::debug::set_object_name(descriptor_set_layout_const, binder, "main render rasterization descriptor set layout (constant)");
+
     let (pipeline, pipeline_layout) = create_graphics_pipeline(
         device,
         binder,
         shader_module,
-        &[descriptor_set_layout],
+        &[descriptor_set_layout, descriptor_set_layout_const],
         None,
         None,
         vertex_input,
@@ -466,7 +511,7 @@ pub unsafe fn create_render_rasterization_pipeline(
         true,
     );
 
-    RasterizationRenderPipeline { module: shader_module, descriptor_set_layout: [descriptor_set_layout], pipeline, pipeline_layout }
+    RasterizationRenderPipeline { module: shader_module, descriptor_set_layout: [descriptor_set_layout, descriptor_set_layout_const], pipeline, pipeline_layout }
 }
 
 unsafe fn create_shader_module(raw: &[u32], device: &ash::Device, binder: &Option<ash::ext::debug_utils::Device>, name: &str) -> vk::ShaderModule {
