@@ -40,7 +40,23 @@ pub unsafe fn create_device_and_queue(
     let mut device_features_12 = vk::PhysicalDeviceVulkan12Features::default()
         .storage_buffer8_bit_access(true)
         .shader_float16(true)
-        .shader_int8(true);
+        .shader_int8(true)
+        .host_query_reset(true)
+        .timeline_semaphore(true)
+        .shader_sampled_image_array_non_uniform_indexing(true)
+        .shader_storage_image_array_non_uniform_indexing(true)
+        .shader_storage_buffer_array_non_uniform_indexing(true)
+        .shader_storage_texel_buffer_array_non_uniform_indexing(true)
+        .buffer_device_address(true)
+        .descriptor_indexing(true)
+        .descriptor_binding_partially_bound(true)
+        .descriptor_binding_sampled_image_update_after_bind(true)
+        .descriptor_binding_storage_buffer_update_after_bind(true)
+        .descriptor_binding_storage_image_update_after_bind(true)
+        .descriptor_binding_uniform_buffer_update_after_bind(true)
+        .descriptor_binding_variable_descriptor_count(true)
+        .runtime_descriptor_array(true);
+    
     let mut device_features_13 = vk::PhysicalDeviceVulkan13Features::default()
         .synchronization2(true)
         .maintenance4(true)
@@ -54,7 +70,11 @@ pub unsafe fn create_device_and_queue(
         ash::ext::shader_image_atomic_int64::NAME,
         ash::khr::shader_draw_parameters::NAME,
         ash::khr::dynamic_rendering::NAME,
-
+        ash::ext::host_image_copy::NAME,
+        ash::ext::host_query_reset::NAME,
+        ash::khr::timeline_semaphore::NAME,
+        ash::khr::buffer_device_address::NAME,
+        
         // TODO: remove when ash vk1.4
         c"VK_KHR_compute_shader_derivatives",
     ];

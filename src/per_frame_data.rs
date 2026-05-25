@@ -4,19 +4,11 @@ use crate::pipeline::{self, PerFrameUniformData};
 
 pub const FRAMES_IN_FLIGHT: usize = 3;
 
-pub struct PerFrameDescriptorSets {
-    pub compositor_per_frame: vk::DescriptorSet,
-    pub rasterizer_per_frame: vk::DescriptorSet,
-    pub background_rasterizer_per_frame: vk::DescriptorSet,
-}
-
 pub struct PerFrameData {
     pub present_complete_semaphore: vk::Semaphore,
     pub render_finished_semaphore: vk::Semaphore,
     pub end_fence: vk::Fence,
-    pub cmd: vk::CommandBuffer,
-    pub per_frame_descriptor_sets: PerFrameDescriptorSets,
-    
+    pub cmd: vk::CommandBuffer,    
     pub uniform_buffer: crate::buffer::Buffer,
 }
 
@@ -24,10 +16,6 @@ impl PerFrameData {
     pub unsafe fn create_per_frame_data(
         device: &ash::Device,
         pool: vk::CommandPool,
-        descriptor_pool: vk::DescriptorPool,
-        post_process_compute_pipeline: &pipeline::PostProcessPipeline,
-        rasterized_pipeline: &pipeline::RasterizationRenderPipeline,
-        background_rasterized_pipeline: &pipeline::RasterizationBackgroundPipeline,
         allocator: &mut Allocator,
         binder: &Option<ash::ext::debug_utils::Device>,
     ) -> Self {
@@ -48,15 +36,6 @@ impl PerFrameData {
             .allocate_command_buffers(&cmd_buffer_create_info)
             .unwrap()[0];
 
-        let per_frame_descriptor_set_layouts = [post_process_compute_pipeline.descriptor_set_layout[1], rasterized_pipeline.descriptor_set_layout[0], background_rasterized_pipeline.descriptor_set_layout[0]];
-        let descriptor_set_allocate_info = vk::DescriptorSetAllocateInfo::default()
-            .descriptor_pool(descriptor_pool)
-            .set_layouts(&per_frame_descriptor_set_layouts);
-        let all_descriptor_sets_for_frame = device
-            .allocate_descriptor_sets(&descriptor_set_allocate_info)
-            .unwrap();
-
-
         let uniform_buffer = crate::buffer::create_buffer(device, allocator, size_of::<PerFrameUniformData>(), binder, "per frame uniform buffer", vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
 
         Self {
@@ -64,11 +43,6 @@ impl PerFrameData {
             render_finished_semaphore,
             end_fence,
             cmd,
-            per_frame_descriptor_sets: PerFrameDescriptorSets {
-                compositor_per_frame: all_descriptor_sets_for_frame[0],
-                rasterizer_per_frame: all_descriptor_sets_for_frame[1],
-                background_rasterizer_per_frame: all_descriptor_sets_for_frame[2],
-            },
             uniform_buffer,
         }
     }

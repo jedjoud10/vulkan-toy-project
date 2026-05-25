@@ -8,7 +8,6 @@ mod movement;
 mod physical_device;
 mod pipeline;
 mod swapchain;
-mod voxel;
 mod ticker;
 mod buffer;
 mod statistics;

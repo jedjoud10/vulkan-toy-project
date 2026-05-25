@@ -3,15 +3,7 @@
 #include <lighting.slang>
 #include <pbr.slang>
 #include <noises.slang>
-
-[[vk::binding(0, 0)]]
-readonly RWTexture2D<float4> pre_compose;
-
-[[vk::binding(1, 0)]]
-Sampler2D<float4> entire_bloom_image;
-
-[[vk::binding(0, 1)]]
-RWTexture2D<float4> swapchain_image;
+#include <bindless.slang>
 
 [SpecializationConstant] const uint DOWNSCALE_FACTOR = 1;
 
@@ -20,6 +12,8 @@ RWTexture2D<float4> swapchain_image;
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void write_swapchain_image(uint3 id: SV_DispatchThreadID, uniform float2 screen, uniform matrix<float,4,4> mat, uniform float4 position, uniform float4 sun, uniform uint debug_type, uniform float time) {
+    (storage_images[0])[id.xy] = float4((float2)id.xy / screen, 0, 0);
+    /*
 #ifdef SHORT_CIRCUIT_NO_TONEMAPPING
     swapchain_image[id.xy] = pre_compose[id.xy / DOWNSCALE_FACTOR];
     return;
@@ -63,6 +57,7 @@ void write_swapchain_image(uint3 id: SV_DispatchThreadID, uniform float2 screen,
     }
     */
     
+    /*
     float3 bloom = entire_bloom_image.SampleLevel(screen_uvs, 2.0).xyz;
 
     float3 col = pow(aces(final_colour + bloom * 0.05), 1/2.2);
@@ -72,18 +67,13 @@ void write_swapchain_image(uint3 id: SV_DispatchThreadID, uniform float2 screen,
 
 
     swapchain_image[dst_coords] = float4(col, 0);
+    */
 }
-
-
-[[vk::binding(0, 0)]]
-Sampler2D<float4> previous_bloom_mip;
-
-[[vk::binding(1, 0)]]
-RWTexture2D<float4> next_bloom_mip;
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void bloom_downsample(uint3 id: SV_DispatchThreadID, uniform float2 previous_bloom_mip_resolution) {
+    /*
     float4 sum = 0;
     for (int x = -1; x <= 1; x++) {
         for (int y = -1; y <= 1; y++) {
@@ -97,11 +87,13 @@ void bloom_downsample(uint3 id: SV_DispatchThreadID, uniform float2 previous_blo
     }
 
     next_bloom_mip[id.xy] = sum / 9;
+    */
 }
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void bloom_upsample(uint3 id: SV_DispatchThreadID, uniform float2 previous_bloom_mip_resolution) {
+    /*
     float4 sum = 0;
     for (int x = 0; x < 2; x++) {
         for (int y = 0; y < 2; y++) {
@@ -113,4 +105,5 @@ void bloom_upsample(uint3 id: SV_DispatchThreadID, uniform float2 previous_bloom
     if (!any(isnan(sum))) {
         next_bloom_mip[id.xy] = sum / 4.0;
     }
+    */
 }
