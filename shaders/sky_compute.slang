@@ -13,7 +13,7 @@
 void write_clouds(uint3 id: SV_DispatchThreadID) {
     float2 uv = id.xy / (float)CLOUDS_RESOLUTION;
     
-    let uniform_thing = storage_buffers[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
+    let uniform_thing = storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
     float3 sun = uniform_thing.sun.xyz;
     float time = uniform_thing.time;
 
@@ -96,15 +96,15 @@ float3 uv_coords_to_ray_dir(float2 uv, int cubemap_face) {
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void write_skybox(uint3 id: SV_DispatchThreadID) {
+void write_skybox(uint3 id: SV_DispatchThreadID, uint3 gid: SV_GroupID) {
     float2 uv = ((id.xy / (float)SKYBOX_RESOLUTION) * 2.0 - 1.0);
 
-    let uniform_thing = storage_buffers[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
+    let uniform_thing = storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
     float3 sun = uniform_thing.sun.xyz;
     float time = uniform_thing.time;
 
     
-    float3 ray_dir = uv_coords_to_ray_dir(uv, id.z);
+    float3 ray_dir = uv_coords_to_ray_dir(uv, gid.z);
     float3 sky_colour = sky(sun, ray_dir, 0.0, true, true);
     (storage_images_array[SKYBOX_STORAGE_IMAGE_IDX]).Store(id, float4(sky_colour, 0));
 }

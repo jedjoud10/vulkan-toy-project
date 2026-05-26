@@ -32,6 +32,9 @@ pub unsafe fn create_device_and_queue(
         .shader_subgroup_clock(true); 
     let mut atomics = vk::PhysicalDeviceShaderImageAtomicInt64FeaturesEXT::default()
         .shader_image_int64_atomics(true); 
+    let mut mesh_shader = vk::PhysicalDeviceMeshShaderFeaturesEXT::default()
+        .mesh_shader(true)
+        .task_shader(true);
     let device_features_base = vk::PhysicalDeviceFeatures::default()
         .shader_int16(true)
         .shader_int64(true)
@@ -74,6 +77,8 @@ pub unsafe fn create_device_and_queue(
         ash::ext::host_query_reset::NAME,
         ash::khr::timeline_semaphore::NAME,
         ash::khr::buffer_device_address::NAME,
+        ash::ext::mesh_shader::NAME,
+        
         
         // TODO: remove when ash vk1.4
         c"VK_KHR_compute_shader_derivatives",
@@ -92,7 +97,8 @@ pub unsafe fn create_device_and_queue(
         .push_next(&mut device_features_12)
         .push_next(&mut atomics)
         .push_next(&mut shader_clock)
-        .push_next(&mut compute_derivatives);
+        .push_next(&mut compute_derivatives)
+        .push_next(&mut mesh_shader);
 
     let device = instance
         .create_device(physical_device, &device_create_info, None)

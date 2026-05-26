@@ -34,6 +34,7 @@ pub struct PerFrameUniformData {
     pub _padding: vek::Vec2<f32>,
     pub position: vek::Vec4<f32>,
     pub sun: vek::Vec4<f32>,
+    pub camera_frustum_planes: [vek::Vec4<f32>; 6],
     pub debug_type: u32,
     pub time: f32,
 }
@@ -153,6 +154,7 @@ pub unsafe fn create_sky_rasterization_pipeline(
         shader_module,
         pipeline_layout,
         None,
+        None,
         vk::PipelineVertexInputStateCreateInfo::default(),
         "background sky",
         false
@@ -168,6 +170,7 @@ pub unsafe fn create_render_rasterization_pipeline(
     binder: &Option<ash::ext::debug_utils::Device>,
     pipeline_layout: vk::PipelineLayout
 ) -> RasterizationRenderPipeline {
+    /*
     let shader_module = create_shader_module(raw, device, binder, "main render rasterization shader module");
 
     let vertex_binding_descriptions = [vk::VertexInputBindingDescription::default().binding(0).input_rate(vk::VertexInputRate::VERTEX).stride(size_of::<vek::Vec3::<f32>>() as u32)];
@@ -183,7 +186,22 @@ pub unsafe fn create_render_rasterization_pipeline(
         shader_module,
         pipeline_layout,
         None,
+        None,
         vertex_input,
+        "main render",
+        true,
+    );
+
+    RasterizationRenderPipeline { module: shader_module, pipeline }
+    */
+
+    let shader_module = create_shader_module(raw, device, binder, "main render rasterization shader module");
+    
+    let pipeline = create_graphics_pipeline_mesh_shader(
+        device,
+        binder,
+        shader_module,
+        pipeline_layout,
         "main render",
         true,
     );
@@ -206,26 +224,132 @@ unsafe fn create_shader_module(raw: &[u32], device: &ash::Device, binder: &Optio
 }
 
 
+pub unsafe fn create_graphics_pipeline_mesh_shader(
+    device: &ash::Device,
+    binder: &Option<ash::ext::debug_utils::Device>,
+    shader_module: vk::ShaderModule,
+    pipeline_layout: vk::PipelineLayout,
+    name: &str,
+    face_culling: bool,
+) -> vk::Pipeline {
+    /*
+    let task_shader_stage_create_info = vk::PipelineShaderStageCreateInfo::default()
+        .flags(vk::PipelineShaderStageCreateFlags::empty())
+        .name(c"task_main")
+        .stage(vk::ShaderStageFlags::TASK_EXT)
+        .module(shader_module);
+    */
+
+
+    let mesh_shader_stage_create_info = vk::PipelineShaderStageCreateInfo::default()
+        .flags(vk::PipelineShaderStageCreateFlags::empty())
+        .name(c"mesh_main")
+        .stage(vk::ShaderStageFlags::MESH_EXT)
+        .module(shader_module);
+
+    let fragment_shader_stage_create_info = vk::PipelineShaderStageCreateInfo::default()
+        .flags(vk::PipelineShaderStageCreateFlags::empty())
+        .name(c"frag_main")
+        .stage(vk::ShaderStageFlags::FRAGMENT)
+        .module(shader_module);
+    let stages = [mesh_shader_stage_create_info, fragment_shader_stage_create_info];
+
+    let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+    let dynamic_state = vk::PipelineDynamicStateCreateInfo::default()
+        .dynamic_states(&dynamic_states);
+
+    let color_attachment_formats = [vk::Format::R16G16B16A16_SFLOAT];
+    let mut next = vk::PipelineRenderingCreateInfo::default()
+        .color_attachment_formats(&color_attachment_formats)
+        .depth_attachment_format(vk::Format::D32_SFLOAT);
+
+    let viewport_state = vk::PipelineViewportStateCreateInfo::default().scissor_count(1).viewport_count(1);
+    
+
+    let rasterization_state = vk::PipelineRasterizationStateCreateInfo::default()
+        .cull_mode(if face_culling { vk::CullModeFlags::BACK } else { vk::CullModeFlags::NONE })
+        .polygon_mode(vk::PolygonMode::FILL)
+        .rasterizer_discard_enable(false)
+        .depth_clamp_enable(false)
+        .depth_bias_enable(false)
+        .line_width(1.0f32)
+        .front_face(vk::FrontFace::CLOCKWISE);
+
+    let multisample = vk::PipelineMultisampleStateCreateInfo::default()
+        .alpha_to_coverage_enable(false)
+        .alpha_to_one_enable(false)
+        .rasterization_samples(vk::SampleCountFlags::TYPE_1)
+        .sample_shading_enable(false);
+    
+    let attachment = vk::PipelineColorBlendAttachmentState::default()
+        .blend_enable(false)
+        .src_color_blend_factor(vk::BlendFactor::ONE)
+        .src_alpha_blend_factor(vk::BlendFactor::ONE)
+        .dst_color_blend_factor(vk::BlendFactor::ZERO)
+        .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+        .color_write_mask(vk::ColorComponentFlags::RGBA);
+    let attachments = [attachment];
+    let color_blend_state = vk::PipelineColorBlendStateCreateInfo::default()
+        .logic_op_enable(false)
+        .attachments(&attachments);
+
+    let depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::default()
+        .stencil_test_enable(false)
+        .depth_write_enable(true)
+        .depth_test_enable(true)
+        .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL);
+
+    let graphics_pipeline_create_info = vk::GraphicsPipelineCreateInfo::default()
+        .render_pass(vk::RenderPass::null())
+        .dynamic_state(&dynamic_state)
+        .viewport_state(&viewport_state)
+        .rasterization_state(&rasterization_state)
+        .multisample_state(&multisample)
+        .color_blend_state(&color_blend_state)
+        .depth_stencil_state(&depth_stencil_state)
+        .stages(&stages)
+        .layout(pipeline_layout)
+        .push_next(&mut next);
+
+    let pipeline = device.create_graphics_pipelines(vk::PipelineCache::null(), &[graphics_pipeline_create_info], None).unwrap()[0];
+    crate::debug::set_object_name(pipeline, binder, format!("'{name}' graphics pipeline"));
+
+    pipeline
+}
+
 pub unsafe fn create_graphics_pipeline(
     device: &ash::Device,
     binder: &Option<ash::ext::debug_utils::Device>,
     shader_module: vk::ShaderModule,
     pipeline_layout: vk::PipelineLayout,
-    spec_constants: Option<&[u32]>,
+    spec_constants_vert: Option<&[u32]>,
+    spec_constants_frag: Option<&[u32]>,
+    
     vertex_input: vk::PipelineVertexInputStateCreateInfo<'_>,
     name: &str,
     face_culling: bool,
 ) -> vk::Pipeline {
+    let (data, entries) = convert_spec_constants(spec_constants_vert);
+    let vertex_shader_stage_specialization_info = vk::SpecializationInfo::default()
+        .map_entries(&entries)
+        .data(&data);
     let vertex_shader_stage_create_info = vk::PipelineShaderStageCreateInfo::default()
         .flags(vk::PipelineShaderStageCreateFlags::empty())
-        .name(c"vertMain")
+        .name(c"vert_main")
         .stage(vk::ShaderStageFlags::VERTEX)
-        .module(shader_module);
+        .module(shader_module)
+        .specialization_info(&vertex_shader_stage_specialization_info);
+
+    let (data, entries) = convert_spec_constants(spec_constants_frag);
+    let fragment_shader_stage_specialization_info = vk::SpecializationInfo::default()
+        .map_entries(&entries)
+        .data(&data);
     let fragment_shader_stage_create_info = vk::PipelineShaderStageCreateInfo::default()
         .flags(vk::PipelineShaderStageCreateFlags::empty())
-        .name(c"fragMain")
+        .name(c"frag_main")
         .stage(vk::ShaderStageFlags::FRAGMENT)
-        .module(shader_module);
+        .module(shader_module)
+        .specialization_info(&fragment_shader_stage_specialization_info);
     let stages = [vertex_shader_stage_create_info, fragment_shader_stage_create_info];
 
     let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
@@ -306,24 +430,9 @@ pub unsafe fn create_single_entry_point_pipeline(
 ) -> SingleEntryPointWrapper {
     let string = CString::from_str(entry_point_name).unwrap();
 
-    let mut specialization_entries = Vec::<vk::SpecializationMapEntry>::new();
-
-    let mut data = Vec::<u8>::new();
-    if let Some(spec_constants) = spec_constants {
-        let mut last_offset = 0u32;
-        for (i, spec) in spec_constants.iter().enumerate() {
-            specialization_entries.push(vk::SpecializationMapEntry::default()
-                .constant_id(i as u32)
-                .offset(last_offset)
-                .size(size_of::<u32>())
-            );
-            data.extend_from_slice(bytemuck::bytes_of(spec));
-            last_offset += size_of::<u32>() as u32;
-        }
-    }
-
+    let (data, entries) = convert_spec_constants(spec_constants);
     let specialization_info = vk::SpecializationInfo::default()
-        .map_entries(&specialization_entries)
+        .map_entries(&entries)
         .data(&data);
 
     log::info!("creating single entry point pipeline for {entry_point_name}");
@@ -349,6 +458,25 @@ pub unsafe fn create_single_entry_point_pipeline(
     crate::debug::set_object_name(compute_pipelines[0], binder, format!("entry point '{entry_point_name}' compute pipeline"));
 
     SingleEntryPointWrapper { pipeline: compute_pipelines[0] }
+}
+
+fn convert_spec_constants(spec_constants: Option<&[u32]>) -> (Vec<u8>, Vec::<vk::SpecializationMapEntry>) {
+    let mut data = Vec::<u8>::new();
+    let mut specialization_entries = Vec::new();
+    if let Some(spec_constants) = spec_constants {
+        let mut last_offset = 0u32;
+        for (i, spec) in spec_constants.iter().enumerate() {
+            specialization_entries.push(vk::SpecializationMapEntry::default()
+                .constant_id(i as u32)
+                .offset(last_offset)
+                .size(size_of::<u32>())
+            );
+            data.extend_from_slice(bytemuck::bytes_of(spec));
+            last_offset += size_of::<u32>() as u32;
+        }
+    }
+
+    (data, specialization_entries)
 }
 
 pub unsafe fn create_bindless_pipeline_layout(device: &ash::Device, binder: &Option<ash::ext::debug_utils::Device>, descriptor_set_layout: vk::DescriptorSetLayout) -> vk::PipelineLayout {

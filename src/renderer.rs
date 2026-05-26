@@ -4,6 +4,7 @@ use bytemuck::Zeroable;
 use gpu_allocator::vulkan::Allocation;
 use rand::RngExt;
 use rand::SeedableRng;
+use smallvec::SmallVec;
 use crate::input::Button;
 use crate::input::Input;
 use crate::movement::Movement;
@@ -67,7 +68,9 @@ pub struct InternalApp {
     rasterization_pipeline: pipeline::RasterizationRenderPipeline,
     rasterization_background_pipeline: pipeline::RasterizationBackgroundPipeline,
     
-    
+    // mesh shader device
+    mesh_shader_device: ash::ext::mesh_shader::Device,
+
     // descriptors & frames in flight
     main_descriptor_set: vk::DescriptorSet,
     main_descriptor_set_layout: vk::DescriptorSetLayout,
@@ -310,6 +313,8 @@ impl InternalApp {
         let index_count = obj.indices.len() as u32;
         buffer::write_to_buffer(&device, pool, queue, index_buffer.buffer, &mut allocator, bytemuck::cast_slice(indices));
 
+        let mesh_shader_device = ash::ext::mesh_shader::Device::new(&instance, &device);
+
 
         Self {
             frame_count: 0,
@@ -358,6 +363,7 @@ impl InternalApp {
             vertex_buffer,
             index_buffer,
             index_count,
+            mesh_shader_device,
         }
     }
 
@@ -702,6 +708,26 @@ impl InternalApp {
 
         let size_f32 = size.map(|x| x as f32);
 
+        // https://github.com/jedjoud10/cflake-engine/blob/3369199f0cfa8b220edc0363a76401b50c83fada/crates/math/src/bounds/frustum.rs#L47
+        let camera_frustum_planes = {
+            let columns = (self.movement.proj_matrix * self.movement.view_matrix).transposed().into_col_arrays();
+            let columns = columns
+                .into_iter()
+                .map(vek::Vec4::from)
+                .collect::<SmallVec<[vek::Vec4<f32>; 4]>>();
+
+            // Magic from https://www.braynzarsoft.net/viewtutorial/q16390-34-aabb-cpu-side-frustum-culling
+            // And also from https://gamedev.stackexchange.com/questions/156743/finding-the-normals-of-the-planes-of-a-view-frustum
+            // YAY https://stackoverflow.com/questions/12836967/extracting-view-frustum-planes-gribb-hartmann-method
+            let left = columns[3] + columns[0];
+            let right = columns[3] - columns[0];
+            let top = columns[3] - columns[1];
+            let bottom = columns[3] + columns[1];
+            let near = columns[3] + columns[2];
+            let far = columns[3] - columns[2];
+            [top, bottom, left, right, near, far]
+        };
+
         let uniform_per_frame_data = pipeline::PerFrameUniformData {
             view_matrix: self.movement.view_matrix,
             projection_matrix: self.movement.proj_matrix,
@@ -711,6 +737,7 @@ impl InternalApp {
             screen_resolution: size_f32,
             position: self.movement.position.with_w(0f32),
             sun: self.sun.normalized().with_w(0f32),
+            camera_frustum_planes: camera_frustum_planes,
             debug_type: self.debug_type,
             time: elapsed,
 
@@ -1257,11 +1284,13 @@ impl InternalApp {
 
         // render chunk meshes stuff
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.rasterization_pipeline.pipeline);
-        self.device.cmd_bind_vertex_buffers(cmd, 0, &[self.vertex_buffer.buffer], &[0]);
-        self.device.cmd_bind_index_buffer(cmd, self.index_buffer.buffer, 0, vk::IndexType::UINT32);
+        //self.device.cmd_bind_vertex_buffers(cmd, 0, &[self.vertex_buffer.buffer], &[0]);
+        //self.device.cmd_bind_index_buffer(cmd, self.index_buffer.buffer, 0, vk::IndexType::UINT32);
         
-        self.device.cmd_draw_indexed(cmd, self.index_count, 100, 0, 0, 0);
+        //self.device.cmd_draw_indexed(cmd, self.index_count, 1, 0, 0, 0);
         
+        self.mesh_shader_device.cmd_draw_mesh_tasks(cmd, 32, 32, 1);
+
         self.device.cmd_end_rendering(cmd);
         //self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::ALL_GRAPHICS, self.query_pool, 1);
 
@@ -1278,33 +1307,22 @@ impl InternalApp {
             .dst_queue_family_index(self.queue_family_index)
             .image(const_data.rendered_image)
             .subresource_range(subresource_range);
-        let swapchain_image_undefined_to_blit_dst_layout_transition = vk::ImageMemoryBarrier2::default()
+        let full_passes_bloom = vk::ImageMemoryBarrier2::default()
             .old_layout(vk::ImageLayout::UNDEFINED)
             .new_layout(vk::ImageLayout::GENERAL)
             .src_access_mask(vk::AccessFlags2::NONE)
-            .dst_access_mask(vk::AccessFlags2::MEMORY_WRITE)
-            .src_stage_mask(vk::PipelineStageFlags2::NONE)
-            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(self.queue_family_index)
-            .image(swapchain_image)
-            .subresource_range(subresource_range);
-        let image_memory_barriers = [rendered_image_barrier, swapchain_image_undefined_to_blit_dst_layout_transition];
-        let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
-        self.device.cmd_pipeline_barrier2(cmd, &dep);   
-
-
-        let full_passes_bloom = vk::ImageMemoryBarrier2::default()
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
             .dst_access_mask(vk::AccessFlags2::SHADER_WRITE | vk::AccessFlags2::SHADER_READ)
-            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_stage_mask(vk::PipelineStageFlags2::NONE)
             .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)
             .image(const_data.bloom_image)
             .subresource_range(vk::ImageSubresourceRange::default().level_count(vk::REMAINING_MIP_LEVELS).layer_count(1).aspect_mask(vk::ImageAspectFlags::COLOR).base_mip_level(0).base_array_layer(0));
+        let image_memory_barriers = [rendered_image_barrier, full_passes_bloom];
+        let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
+        self.device.cmd_pipeline_barrier2(cmd, &dep);   
+
+
         let image_memory_barriers = [full_passes_bloom];
         let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
@@ -1515,7 +1533,9 @@ impl InternalApp {
         self.stats.end_of_frame(self.frame_count);
         self.frame_count += 1;
 
-        // self.device.wait_for_fences(&[end_fence], true, u64::MAX).unwrap();
+        // THERES STILL SOMETHING WRONG WITH FRAMES IN FLIGHT
+        // FUCK
+        self.device.wait_for_fences(&[end_fence], true, u64::MAX).unwrap();
 
         //log::debug!("CPU thread took: {}us", (_end-_start).as_micros());
 
