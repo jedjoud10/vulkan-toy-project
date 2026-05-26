@@ -12,7 +12,6 @@ fn load_module(session: &Session, file_name: &str, compiled_shader_folder_path: 
     let module: Module = session.load_module(file_name_with_extension).unwrap();
     
 
-
     if module.entry_point_count() == 0 {
         return;
     }

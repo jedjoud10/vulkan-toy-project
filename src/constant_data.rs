@@ -290,7 +290,8 @@ pub unsafe fn transfer_layout_for_images(
         .dst_access_mask(
             vk::AccessFlags2::TRANSFER_READ
                 | vk::AccessFlags2::SHADER_WRITE
-                | vk::AccessFlags2::SHADER_STORAGE_WRITE,
+                | vk::AccessFlags2::SHADER_STORAGE_WRITE
+                | vk::AccessFlags2::SHADER_SAMPLED_READ,
         )
         .src_stage_mask(vk::PipelineStageFlags2::NONE)
         .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)

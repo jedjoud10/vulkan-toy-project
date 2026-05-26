@@ -1,8 +1,8 @@
 #language slang 2026
-#include "pbr.slang"
-#include "uniform_thing.slang"
-#include "ray_stuff_other.slang"
-#include "bindless.slang"
+#include <pbr.slang>
+#include <uniform_thing.slang>
+#include <ray_stuff_other.slang>
+#include <bindless.slang>
 
 
 struct VertexInput {
