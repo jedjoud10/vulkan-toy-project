@@ -4,11 +4,6 @@
 #include <ray_stuff_other.slang>
 #include <bindless.slang>
 
-
-struct VertexInput {
-    float3 world;
-};
-
 struct VertexOutput {
     float3 world_pos;
     float3 meshlet_colour;
@@ -17,15 +12,12 @@ struct VertexOutput {
 
 /*
 [shader("vertex")]
-VertexOutput vert_main(VertexInput input) {
+VertexOutput vert_main(in float3 world) {
     VertexOutput output;
 
     let uniform_buffer = storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
 
-    float4 world_position = float4(input.world, 1.0) + uint4(input.count % 100, 0, input.count / 100, 0);
-
-    world_position.y += sin(input.count * 0.5 + uniform_buffer.time * 0) * 2;
-
+    float4 world_position = float4(world, 1.0);
 
     float4 t = mul(world_position, uniform_buffer.view_projection_matrix);
     t.y = -t.y;
@@ -59,58 +51,49 @@ void task_main(uint3 id : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID) {
 [shader("mesh")]
 [outputtopology("triangle")]
 [numthreads(1, 1, 1)]
-void mesh_main(out vertices VertexOutput vertices[64], out indices uint3 triangles[98], uint3 id : SV_DispatchThreadID, uint3 gid : SV_GroupID) {
-    let uniform_buffer = storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
+void mesh_main(out vertices VertexOutput vertices[64], out indices uint3 triangles[128], uint3 id : SV_DispatchThreadID, uint3 gid : SV_GroupID) {
+    let uniforms = storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
 
-    float2 meshlet_offset = (float2(id.x, id.y) * 7.0) * 10.0;
-    float2 meshlet_offset_2 = (float2(id.x + 1, id.y + 1) * 7.0) * 10.0;
-    float2 flat_center = (meshlet_offset+meshlet_offset_2) * 0.5;
+    let vertex_buffer = storage_buffers_readonly[1];
+    let index_buffer = storage_buffers_readonly[2];
 
-    float3 meshlet_center = float3(flat_center.x, 0, flat_center.y); 
-
-    let camera_frustum_planes = uniform_buffer.camera_frustum_planes;
-    for (int f = 0; f < 6; f++) {
-        float3 plane_normal = camera_frustum_planes[f].xyz;
-        float plane_distance = camera_frustum_planes[f].w;
-
-        if ((dot(plane_normal, meshlet_center) + plane_distance) < (-160.0 * 2.0)) {
-            return;
-        }
+    uint3 loaded_triangle = index_buffer.Load3(id.x * 4 * 3);
+    float3[6] vs = {};
+    //printf("%d %d %d", loaded_triangle.x, loaded_triangle.y, loaded_triangle.z);
+        
+    for (int i = 0; i < 3; i++) {
+        float3 loaded_vertex = vertex_buffer.Load<float3>(loaded_triangle[i] * 4 * 3);
+        vs[i] = loaded_vertex;
     }
 
-    for (uint x = 0; x < 8; x++) {
-        for (uint y = 0; y < 8; y++) {
-            VertexOutput output;
+    float3 t1 = (vs[0]+vs[1])*0.5;
+    float3 t2 = (vs[0]+vs[2])*0.5;
+    float3 t3 = (vs[1]+vs[2])*0.5;
 
-            float2 p = float2(x, y) * 10 + meshlet_offset;
-            float height = snoise(p * 0.008 + uniform_buffer.time * 0.4);
-            
-            float4 world_position = float4(p.x, height * 1, p.y, 1);
+    vs[3] = t1;
+    vs[4] = t2;
+    vs[5] = t3;
 
-            float4 t = mul(world_position, uniform_buffer.view_projection_matrix);
-            t.y = -t.y;
-            t.x = -t.x;
+    triangles[0] = uint3(0, 3, 4);
+    triangles[1] = uint3(4, 3, 5);
+    triangles[2] = uint3(5, 3, 1);
+    triangles[3] = uint3(2, 4, 5);
 
-            int index = y + x * 8;
+    for (int i = 0; i < 6; i++) {
+        //printf("%f %f %f", vertex.x, vertex.y, vertex.z);
+        float4 world_position = float4(vs[i]+hash33(vs[i]) * 0.1, 1);
 
-            vertices[index].sv_position = t;
-            vertices[index].world_pos = world_position.xyz;
-            vertices[index].meshlet_colour = hash33(id);
-        }
+        float4 t = mul(world_position, uniforms.view_projection_matrix);
+        t.y = -t.y;
+        t.x = -t.x;
+
+        vertices[i].world_pos = world_position.xyz;
+        vertices[i].sv_position = t;
+        vertices[i].meshlet_colour = hash33(vs[i]);
     }
-
-    int quad_index = 0;
-    for (uint x = 0; x < 7; x++) {
-        for (uint y = 0; y < 7; y++) {
-            uint4 corners = uint4(y + x * 8, y + x * 8 + 1, y + x * 8 + 8, y + x * 8 + 1 + 8);
-
-            triangles[quad_index * 2] = uint3(corners.x, corners.y, corners.z);
-            triangles[quad_index * 2 + 1] = uint3(corners.w, corners.z, corners.y);
-            quad_index++;
-        }
-    } 
-
-    SetMeshOutputCounts(64, quad_index*2);
+    
+    
+    SetMeshOutputCounts(6, 4);
 }
 
 [shader("fragment")]
@@ -147,7 +130,7 @@ float4 frag_main(VertexOutput in_vert) : SV_Target {
     return float4(colour, 1.0);
     */
     
-    float3 reflection = sample_skybox_and_clouds(world, reflect(view, normal), clouds_sampler, skybox_sampler);
+    //float3 reflection = sample_skybox_and_clouds(world, reflect(view, normal), clouds_sampler, skybox_sampler);
 
-    return float4(reflection, 1.0);
+    return float4(in_vert.meshlet_colour, 1);
 }

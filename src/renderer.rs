@@ -65,6 +65,7 @@ pub struct InternalApp {
     // pipelines
     sky_compute_pipeline: pipeline::SkyPipeline,
     post_process_compute_pipeline: pipeline::PostProcessPipeline,
+    waves_rasterization_pipeline: pipeline::RasterizationRenderPipeline,
     rasterization_pipeline: pipeline::RasterizationRenderPipeline,
     rasterization_background_pipeline: pipeline::RasterizationBackgroundPipeline,
     
@@ -116,7 +117,9 @@ impl InternalApp {
         asset!("post_process_compute.spv", assets);
         asset!("voxel_interesting_compute.spv", assets);
         asset!("rasterized.spv", assets);
+        asset!("waves_rasterized.spv", assets);
         asset!("sky_background.spv", assets);
+        
 
         let window = event_loop
             .create_window(Window::default_attributes())
@@ -251,6 +254,9 @@ impl InternalApp {
         let rasterization_pipeline = pipeline::create_render_rasterization_pipeline(assets["rasterized.spv"], &device, &debug_marker, main_pipeline_layout);
         log::info!("created main render rasterization pipeline");
 
+        let waves_rasterization_pipeline = pipeline::create_render_rasterization_pipeline(assets["waves_rasterized.spv"], &device, &debug_marker, main_pipeline_layout);
+        log::info!("created waves rasterization pipeline");
+
         let sky_compute_pipeline = pipeline::create_sky_pipeline(assets["sky_compute.spv"], &device, &debug_marker, main_pipeline_layout);
         log::info!("created sky compute pipeline");
 
@@ -364,6 +370,7 @@ impl InternalApp {
             index_buffer,
             index_count,
             mesh_shader_device,
+            waves_rasterization_pipeline,
         }
     }
 
@@ -607,7 +614,15 @@ impl InternalApp {
             .buffer(uniform_buffer.buffer)
             .offset(0)
             .range(vk::WHOLE_SIZE);
-        let storage_buffer_infos = [descriptor_uniform_buffer_info];
+        let descriptor_vertex_buffer_info = vk::DescriptorBufferInfo::default()
+            .buffer(self.vertex_buffer.buffer)
+            .offset(0)
+            .range(vk::WHOLE_SIZE);
+        let descriptor_index_buffer_info = vk::DescriptorBufferInfo::default()
+            .buffer(self.index_buffer.buffer)
+            .offset(0)
+            .range(vk::WHOLE_SIZE);
+        let storage_buffer_infos = [descriptor_uniform_buffer_info, descriptor_vertex_buffer_info, descriptor_index_buffer_info];
         let storage_buffer_write = vk::WriteDescriptorSet::default()
             .descriptor_count(storage_buffer_infos.len() as u32)
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
@@ -1282,14 +1297,16 @@ impl InternalApp {
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.rasterization_background_pipeline.pipeline);
         self.device.cmd_draw(cmd, 6, 1, 0, 0);
 
-        // render chunk meshes stuff
+        // render waves
+        //self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.waves_rasterization_pipeline.pipeline);
+        //self.mesh_shader_device.cmd_draw_mesh_tasks(cmd, 32, 32, 1);
+
+        // render objs
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.rasterization_pipeline.pipeline);
-        //self.device.cmd_bind_vertex_buffers(cmd, 0, &[self.vertex_buffer.buffer], &[0]);
-        //self.device.cmd_bind_index_buffer(cmd, self.index_buffer.buffer, 0, vk::IndexType::UINT32);
-        
-        //self.device.cmd_draw_indexed(cmd, self.index_count, 1, 0, 0, 0);
-        
-        self.mesh_shader_device.cmd_draw_mesh_tasks(cmd, 32, 32, 1);
+        // self.device.cmd_bind_vertex_buffers(cmd, 0, &[self.vertex_buffer.buffer], &[0]);
+        // self.device.cmd_bind_index_buffer(cmd, self.index_buffer.buffer, 0, vk::IndexType::UINT32);
+        // self.device.cmd_draw_indexed(cmd, self.index_count, 1, 0, 0, 0);
+        self.mesh_shader_device.cmd_draw_mesh_tasks(cmd, self.index_count / 3, 1, 1);
 
         self.device.cmd_end_rendering(cmd);
         //self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::ALL_GRAPHICS, self.query_pool, 1);
@@ -1558,6 +1575,9 @@ impl InternalApp {
 
         self.rasterization_pipeline.destroy(&self.device);
         log::info!("destroyed rasterization pipeline");
+
+        self.waves_rasterization_pipeline.destroy(&self.device);
+        log::info!("destroyed waves rasterization pipeline");
 
         self.rasterization_background_pipeline.destroy(&self.device);
         log::info!("destroyed rasterization background pipeline");
