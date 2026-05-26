@@ -5,6 +5,7 @@ struct UniformThing {
     float4x4 projection_matrix;
     float4x4 inv_view_matrix;
     float4x4 inv_projection_matrix;
+    float4x4 view_projection_matrix;
     float2 screen_resolution;
     float2 padding;
     float4 position;

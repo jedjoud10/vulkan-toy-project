@@ -36,7 +36,7 @@ impl PerFrameData {
             .allocate_command_buffers(&cmd_buffer_create_info)
             .unwrap()[0];
 
-        let uniform_buffer = crate::buffer::create_buffer(device, allocator, size_of::<PerFrameUniformData>(), binder, "per frame uniform buffer", vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
+        let uniform_buffer = crate::buffer::create_buffer(device, allocator, size_of::<PerFrameUniformData>(), binder, "per frame uniform buffer", vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
 
         Self {
             present_complete_semaphore,

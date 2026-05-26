@@ -29,6 +29,7 @@ pub struct PerFrameUniformData {
     pub projection_matrix: vek::Mat4<f32>,
     pub inv_view_matrix: vek::Mat4<f32>,
     pub inv_projection_matrix: vek::Mat4<f32>,
+    pub view_projection_matrix: vek::Mat4<f32>,
     pub screen_resolution: vek::Vec2<f32>,
     pub _padding: vek::Vec2<f32>,
     pub position: vek::Vec4<f32>,

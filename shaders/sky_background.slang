@@ -1,15 +1,7 @@
 #language slang 2026
 #include "sky.slang"
 #include "uniform_thing.slang"
-
-[[vk::binding(0, 0)]]
-ParameterBlock<UniformThing> uniform_buffer;
-
-[[vk::binding(0, 1)]]
-SamplerCube<float4> skybox_sampler;
-
-[[vk::binding(1, 1)]]
-Sampler2D<float4> clouds_sampler;
+#include "bindless.slang"
 
 struct VertexOutput {
     float2 uvs;
@@ -43,10 +35,11 @@ float4 fragMain(VertexOutput inVert) : SV_Target {
     
 
     let ndc = float4(screen_uvs, 1, 1);
-    float3 ray_dir = mul(ndc, uniform_buffer.inv_projection_matrix).xyz;
-    ray_dir = mul(float4(ray_dir.xy, 1, 0), uniform_buffer.inv_view_matrix).xyz;
+    let uniform_data = storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
+    float3 ray_dir = mul(ndc, uniform_data.inv_projection_matrix).xyz;
+    ray_dir = mul(float4(ray_dir.xy, 1, 0), uniform_data.inv_view_matrix).xyz;
     ray_dir = -ray_dir;
 
-    float3 ray_pos = uniform_buffer.position.xyz;
-    return float4(sample_skybox_and_clouds(ray_pos, ray_dir, clouds_sampler, skybox_sampler), 1.0);
+    float3 ray_pos = uniform_data.position.xyz;
+    return float4(sample_skybox_and_clouds(ray_pos, ray_dir, sampled_images[CLOUDS_SAMPLER_IMAGE_IDX], sampled_images_cube[SKYBOX_SAMPLER_IMAGE_IDX]), 1.0);
 }

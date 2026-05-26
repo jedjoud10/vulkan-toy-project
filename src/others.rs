@@ -49,10 +49,10 @@ pub unsafe fn create_descriptor_pool_and_bindless_descriptor_set(device: &ash::D
             .binding(2)
             .descriptor_count(COMBINED_IMAGE_SAMPLER_COUNT)
             .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .stage_flags(vk::ShaderStageFlags::ALL)
+            .stage_flags(vk::ShaderStageFlags::ALL),
     ];
 
-    let binding_flags = std::iter::repeat(vk::DescriptorBindingFlags::PARTIALLY_BOUND | vk::DescriptorBindingFlags::UPDATE_AFTER_BIND).take(3).collect::<SmallVec<[_; 10]>>();
+    let binding_flags = std::iter::repeat(vk::DescriptorBindingFlags::PARTIALLY_BOUND | vk::DescriptorBindingFlags::UPDATE_AFTER_BIND).take(bindings.len()).collect::<SmallVec<[_; 10]>>();
     let mut descriptor_set_layout_binding_flags_create_info = vk::DescriptorSetLayoutBindingFlagsCreateInfo::default()
         .binding_flags(binding_flags.as_slice());
 

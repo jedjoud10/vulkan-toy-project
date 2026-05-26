@@ -2,22 +2,20 @@
 
 #include "noises.slang"
 #include "sky.slang"
-
-[[vk::binding(0, 0)]]
-RWTexture2DArray<float4> skybox_image;
-
-[[vk::binding(1, 0)]]
-RWTexture2D<float4> clouds_image;
+#include "bindless.slang"
+#include "uniform_thing.slang"
 
 [SpecializationConstant] const uint SKYBOX_RESOLUTION = 32;
 [SpecializationConstant] const uint CLOUDS_RESOLUTION = 32;
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void write_clouds(uint3 id: SV_DispatchThreadID, uniform float4 sun_and_time) {
+void write_clouds(uint3 id: SV_DispatchThreadID) {
     float2 uv = id.xy / (float)CLOUDS_RESOLUTION;
-    float3 sun = sun_and_time.xyz;
-    float time = sun_and_time.w;
+    
+    let uniform_thing = storage_buffers[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
+    float3 sun = uniform_thing.sun.xyz;
+    float time = uniform_thing.time;
 
     float2 pos = (uv-0.5) * 8000;
 
@@ -55,7 +53,7 @@ void write_clouds(uint3 id: SV_DispatchThreadID, uniform float4 sun_and_time) {
 
     // final composition
     float3 col = (lerp(silver_lining * 0.3, 1.4, scattered) + 0.4) * (ambient * 1.0 + 0.3);
-    clouds_image[id.xy] = float4(col, saturate(opacity));
+    (storage_images[CLOUDS_STORAGE_IMAGE_IDX])[id.xy] = float4(col, saturate(opacity));
 }
 
 float3 uv_coords_to_ray_dir(float2 uv, int cubemap_face) {
@@ -98,20 +96,23 @@ float3 uv_coords_to_ray_dir(float2 uv, int cubemap_face) {
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void write_skybox(uint3 id: SV_DispatchThreadID, uniform float4 sun_and_time) {
+void write_skybox(uint3 id: SV_DispatchThreadID) {
     float2 uv = ((id.xy / (float)SKYBOX_RESOLUTION) * 2.0 - 1.0);
-    float3 sun = sun_and_time.xyz;
-    float time = sun_and_time.w;
+
+    let uniform_thing = storage_buffers[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
+    float3 sun = uniform_thing.sun.xyz;
+    float time = uniform_thing.time;
+
     
     float3 ray_dir = uv_coords_to_ray_dir(uv, id.z);
     float3 sky_colour = sky(sun, ray_dir, 0.0, true, true);
-    skybox_image.Store(id, float4(sky_colour, 0));
+    (storage_images_array[SKYBOX_STORAGE_IMAGE_IDX]).Store(id, float4(sky_colour, 0));
 }
 
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void convolute_skybox(uint3 id: SV_DispatchThreadID, uniform float4 sun_and_time) {
+void convolute_skybox(uint3 id: SV_DispatchThreadID) {
     float2 uv = ((id.xy / (float)SKYBOX_RESOLUTION) * 2.0 - 1.0);
     
     //float3 ray_dir = uv_coords_to_ray_dir(uv, id.z);

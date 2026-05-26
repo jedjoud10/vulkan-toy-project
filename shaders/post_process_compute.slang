@@ -12,7 +12,7 @@
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void write_swapchain_image(uint3 id: SV_DispatchThreadID, uniform float2 screen, uniform matrix<float,4,4> mat, uniform float4 position, uniform float4 sun, uniform uint debug_type, uniform float time) {
-    (storage_images[0])[id.xy] = float4((float2)id.xy / screen, 0, 0);
+    (storage_images[SWAPCHAIN_STORAGE_IMAGE_IDX])[id.xy] = (storage_images[RENDERED_STORAGE_IMAGE_IDX])[id.xy];
     /*
 #ifdef SHORT_CIRCUIT_NO_TONEMAPPING
     swapchain_image[id.xy] = pre_compose[id.xy / DOWNSCALE_FACTOR];

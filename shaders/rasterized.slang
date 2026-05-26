@@ -2,31 +2,12 @@
 #include "pbr.slang"
 #include "uniform_thing.slang"
 #include "ray_stuff_other.slang"
-
-[[vk::binding(0, 0)]]
-ParameterBlock<UniformThing> uniform_buffer;
-
-[[vk::binding(0, 1)]]
-StructuredBuffer<uint64_t> svo_bitmasks_buffer;
-
-[[vk::binding(1, 1)]]
-StructuredBuffer<uint32_t> svo_indices_buffer;
-
-[[vk::binding(2, 1)]]
-StructuredBuffer<uint64_t> svo_aabbs_buffer;
-
-[[vk::binding(3, 1)]]
-SamplerCube<float4> skybox_sampler;
-
-[[vk::binding(4, 1)]]
-Sampler2D<float4> clouds_sampler;
-
-[[vk::binding(5, 1)]]
-Sampler3D<float4> svt_sampler;
+#include "bindless.slang"
 
 
 struct VertexInput {
     float3 world;
+    uint count : SV_InstanceID;
 };
 
 struct VertexOutput {
@@ -38,9 +19,14 @@ struct VertexOutput {
 VertexOutput vertMain(VertexInput input) {
     VertexOutput output;
 
-    float4 world_position = float4(input.world, 1.0);
+    let uniform_buffer = storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
 
-    float4 t = mul(mul(world_position, uniform_buffer.view_matrix), uniform_buffer.projection_matrix);
+    float4 world_position = float4(input.world, 1.0) + uint4(input.count % 100, 0, input.count / 100, 0);
+
+    world_position.y += sin(input.count * 0.5 + uniform_buffer.time * 0) * 2;
+
+
+    float4 t = mul(world_position, uniform_buffer.view_projection_matrix);
     t.y = -t.y;
     t.x = -t.x;
 
@@ -51,36 +37,11 @@ VertexOutput vertMain(VertexInput input) {
 
 [shader("fragment")]
 float4 fragMain(VertexOutput inVert) : SV_Target {
+    let uniform_buffer = storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
+
+    float3 view = normalize(inVert.world_pos - uniform_buffer.position.xyz);
+
     float3 normal = -normalize(cross(ddy(inVert.world_pos), ddx(inVert.world_pos)));
-    float3 world = inVert.world_pos;
-    float3 diffuse = 0.5;
-    float roughness = 0.8;
-    float metallic = 0.2;
-    float ao = 1.0;
-    float shadow = 1.0; 
-
-    float3 ray_dir = normalize(uniform_buffer.position.xyz - world);
-    float3 ray_pos = uniform_buffer.position.xyz;
-    /*
-
-    PbrSurfaceData pbr_surface_data = PbrSurfaceData(world, diffuse, normal, roughness, metallic, pow(ao, 1.4), shadow);
-    CameraData camera_data = CameraData(ray_dir);
-
-    // approximate sun color based on height
-    float3 sun = uniform_buffer.sun.xyz;
-    float3 sun_colour = sun_colour(sun.xyz);
-    SunData sun_data = SunData(sun.xyz, sun.y > 0 ? (3.2 * sun_colour) : 0);
-    SkyData sky_data = SkyData(skybox_sampler, clouds_sampler);
-
-    float3 colour = lighting(pbr_surface_data, camera_data, sun_data, sky_data);
-
-    return float4(colour, 1.0);
-    */
-    
-
-    SparseVoxelOctree svo = SparseVoxelOctree(svo_indices_buffer, svo_bitmasks_buffer, svo_aabbs_buffer);
-    Statistics stats = Statistics(0, 0);
-    var ray = trace_shi<1024>(world + 0.5 + uniform_buffer.sun.xyz * 0.1, uniform_buffer.sun.xyz, svo, stats);
-
-    return ray.hit ? 1.0 : 0.0;
+    float3 reflected = reflect(view, normal);
+    return float4((sampled_images_cube[SKYBOX_SAMPLER_IMAGE_IDX]).Sample(reflected).xyz, 0.0);
 }
