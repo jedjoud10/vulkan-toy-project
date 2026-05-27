@@ -77,30 +77,6 @@ float4 frag_main(VertexOutput in_vert) : SV_Target {
     float3 normal = -normalize(cross(ddy(in_vert.world_pos), ddx(in_vert.world_pos)));
     float3 view = normalize(in_vert.world_pos - uniform_buffer.position.xyz);
 
-    
-    /*
-    float3 diffuse = 0.5;
-    float roughness = 0.8;
-    float metallic = 0.2;
-    float ao = 1.0;
-    float shadow = 1.0; 
-
-    float3 ray_pos = uniform_buffer.position.xyz;
-
-    PbrSurfaceData pbr_surface_data = PbrSurfaceData(world, diffuse, normal, roughness, metallic, pow(ao, 1.4), shadow);
-    CameraData camera_data = CameraData(view);
-
-    // approximate sun color based on height
-    float3 sun = uniform_buffer.sun.xyz;
-    float3 sun_colour = sun_colour(sun.xyz);
-    SunData sun_data = SunData(sun.xyz, sun.y > 0 ? (3.2 * sun_colour) : 0);
-    SkyData sky_data = SkyData(skybox_sampler, clouds_sampler);
-
-    float3 colour = lighting(pbr_surface_data, camera_data, sun_data, sky_data);
-    return float4(colour, 1.0);
-    */
-    
-    // float3 reflection = sample_skybox_and_clouds(world, refract(view, normal, 0.95), clouds_sampler, skybox_sampler);
-    // return float4(reflection, 1);
-    return float4(in_vert.meshlet_colour, 1);
+    float3 refraction = sample_skybox_and_clouds(world, refract(view, normal, 0.95), clouds_sampler, skybox_sampler);
+    return float4(refraction, 1);
 }

@@ -44,8 +44,8 @@ const WRITE_CLOUDS_ENTRY_POINT: &str = "write_clouds";
 const WRITE_SKYBOX_ENTRY_POINT: &str = "write_skybox";
 const RASTERIZED_MS_PASSTHROUGH_SPV: &str = "rasterized_ms_passthrough.spv";
 const RASTERIZED_MS_TESSELALTION_SPV: &str = "rasterized_ms_tesselation.spv";
+const RASTERIZED_MS_GENERATED_1_SPV: &str = "rasterized_ms_generated_1.spv";
 const RASTERIZED_BACKGROUND_SPV: &str = "rasterized_background.spv";
-        
 
 
 pub struct InternalApp {
@@ -134,6 +134,8 @@ impl InternalApp {
         asset!("rasterized_ms_tesselation.spv", assets);
         asset!("rasterized_ms_passthrough.spv", assets);
         asset!("rasterized_ms_waves.spv", assets);
+        asset!("rasterized_ms_generated_1.spv", assets);
+
         asset!("rasterized_background.spv", assets);
         
 
@@ -267,41 +269,40 @@ impl InternalApp {
         let mut compute_pipelines = HashMap::<&'static str, pipeline::GenericComputePipeline>::new();
 
         let settings = [pipeline::PipelineCreateSettings {
-            shader_module_debug_name: "post process compute shader module",
             pipeline_debug_name: "post process compute pipeline",
             wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &[WRITE_SWAPCHAIN_IMAGE_ENTRY_POINT, BLOOM_DOWNSAMPLE_ENTRY_POINT, BLOOM_UPSAMPLE_ENTRY_POINT] },
             spec_constants: Some(&[args.downscale_factor]),
             spv_file_name: COMPUTE_POST_PROCESS_SPV,
         }, pipeline::PipelineCreateSettings {
-            shader_module_debug_name: "sky compute shader module",
             pipeline_debug_name: "sky compute pipeline",
             wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &[WRITE_SKYBOX_ENTRY_POINT, WRITE_CLOUDS_ENTRY_POINT] },
             spec_constants: Some(&[skybox::SKYBOX_RESOLUTION, skybox::CLOUDS_RESOLUTION]),
             spv_file_name: COMPUTE_SKY_SPV,
         }, pipeline::PipelineCreateSettings {
-            shader_module_debug_name: "main render rasterization shader module",
             pipeline_debug_name: "main render pipeline",
             wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::GraphicsMeshShader { face_culling: true, task_shader: false },
             spec_constants: None,
             spv_file_name: RASTERIZED_MS_PASSTHROUGH_SPV,
         }, pipeline::PipelineCreateSettings {
-            shader_module_debug_name: "tesselation render rasterization shader module",
             pipeline_debug_name: "tesselation render pipeline",
             wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::GraphicsMeshShader { face_culling: true, task_shader: true },
             spec_constants: None,
             spv_file_name: RASTERIZED_MS_TESSELALTION_SPV,
         }, pipeline::PipelineCreateSettings {
-            shader_module_debug_name: "waves render rasterization shader module",
             pipeline_debug_name: "waves render pipeline",
             wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::GraphicsMeshShader { face_culling: true, task_shader: false },
             spec_constants: None,
             spv_file_name: RASTERIZED_MS_WAVES_SPV,
         }, pipeline::PipelineCreateSettings {
-            shader_module_debug_name: "background sky rasterization shader module",
             pipeline_debug_name: "background sky pipeline",
             wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Graphics { face_culling: false, vertex_input: vk::PipelineVertexInputStateCreateInfo::default() },
             spec_constants: None,
             spv_file_name: RASTERIZED_BACKGROUND_SPV,
+        }, pipeline::PipelineCreateSettings {
+            pipeline_debug_name: "generated render pipeline",
+            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::GraphicsMeshShader { face_culling: true, task_shader: false },
+            spec_constants: None,
+            spv_file_name: RASTERIZED_MS_GENERATED_1_SPV,
         }];
 
         // compile the pipelines in parallel
@@ -371,7 +372,7 @@ impl InternalApp {
         let mut indices: Vec<u32> = obj.indices;
 
         //indices.sort_by_key(|triangle| triangle.x + triangle.y + triangle.z);
-        //meshopt::optimize_vertex_cache_in_place(&mut indices, vertices.len());
+        meshopt::optimize_vertex_cache_in_place(&mut indices, vertices.len());
 
         let vertex_buffer = buffer::create_buffer(&device, &mut allocator, size_of::<vek::Vec3::<f32>>() * vertices.len(), &debug_marker, "vertex buffer", vk::BufferUsageFlags::VERTEX_BUFFER);
         buffer::write_to_buffer(&device, pool, queue, vertex_buffer.buffer, &mut allocator, bytemuck::cast_slice(vertices.as_slice()));
@@ -1375,6 +1376,11 @@ impl InternalApp {
         let triangle_count = self.index_count / 3;
         self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytemuck::bytes_of(&triangle_count));
         self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  triangle_count.div_ceil(32), 1, 1);
+
+        // render other objs
+        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_GENERATED_1_SPV]);
+        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.debug_type < 4 { vk::PolygonMode::FILL } else { vk::PolygonMode::LINE });
+        self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  8, 8, 8);
         
         // self.device.cmd_bind_vertex_buffers(cmd, 0, &[self.vertex_buffer.buffer], &[0]);
         // self.device.cmd_bind_index_buffer(cmd, self.index_buffer.buffer, 0, vk::IndexType::UINT32);

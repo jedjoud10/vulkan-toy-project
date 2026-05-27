@@ -81,7 +81,6 @@ impl GenericGraphicsPipeline {
 }
 
 pub struct PipelineCreateSettings<'a> {
-    pub shader_module_debug_name: &'static str,
     pub pipeline_debug_name: &'static str,
     pub spv_file_name: &'static str,
     pub wtf_kind_of_pipeline_is_this: PipelineCreateType<'a>,
@@ -109,7 +108,7 @@ pub unsafe fn create_generic_pipeline(
     pipeline_layout: vk::PipelineLayout,
     settings: PipelineCreateSettings,
 ) -> GenericPipeline {
-    let shader_module = create_shader_module(raw, device, binder, settings.shader_module_debug_name);
+    let shader_module = create_shader_module(raw, device, binder, settings.pipeline_debug_name);
     let spec_constants = settings.spec_constants;
     let pipeline_debug_name = settings.pipeline_debug_name;
 
@@ -160,7 +159,7 @@ pub unsafe fn create_generic_pipeline(
 }
 
 unsafe fn create_shader_module(raw: &[u32], device: &ash::Device, binder: &Option<ash::ext::debug_utils::Device>, name: &str) -> vk::ShaderModule {
-    log::debug!("creating shader shader module '{name}'");
+    log::debug!("creating shader module for '{name}'");
     let shader_module_create_info = vk::ShaderModuleCreateInfo::default()
         .code(raw)
         .flags(vk::ShaderModuleCreateFlags::empty());
@@ -169,7 +168,7 @@ unsafe fn create_shader_module(raw: &[u32], device: &ash::Device, binder: &Optio
         .create_shader_module(&shader_module_create_info, None)
         .unwrap();
     crate::debug::set_object_name(shader_module, binder, name);
-    log::debug!("created shader shader module '{name}'");
+    log::debug!("created shader module for '{name}'");
     shader_module
 }
 
