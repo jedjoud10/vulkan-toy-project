@@ -1,5 +1,5 @@
 #language slang 2026
-#include <other.slang>
+#include <utils/other.slang>
 
 [[vk::binding(0, 0)]]
 RWTexture3D<uint8_t4> sparse_voxel_texture;

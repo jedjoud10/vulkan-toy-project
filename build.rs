@@ -83,7 +83,7 @@ fn main() {
     
     let target_desc = TargetDesc::default().format(CompileTarget::Spirv);
     let targets = [target_desc];
-    let search_paths = [c"shaders".as_ptr(), c"shaders/noises".as_ptr()];
+    let search_paths = [c"shaders".as_ptr(), c"shaders/utils".as_ptr(), c"shaders/utils/noises".as_ptr()];
 
     let session_desc = SessionDesc::default()
         .targets(&targets)

@@ -46,15 +46,7 @@ pub unsafe fn create_buffer(
         })
         .unwrap();
 
-    let tmp = CString::from_str(name).unwrap();
-
-    if let Some(binder) = binder {
-        let marker = vk::DebugUtilsObjectNameInfoEXT::default()
-            .object_handle(buffer)
-            .object_name(tmp.as_c_str());
-        binder.set_debug_utils_object_name(&marker).unwrap();
-    }
-
+    crate::debug::set_object_name(buffer, binder, name);
     
     let device_memory = allocation.memory();
     device.bind_buffer_memory(buffer, device_memory, allocation.offset()).unwrap();

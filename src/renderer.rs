@@ -63,6 +63,7 @@ pub struct InternalApp {
     pool: vk::CommandPool,
     
     // pipelines
+    //generic_pipelines: HashMap<&'static str, pipeline::GenericPipeline>,
     sky_compute_pipeline: pipeline::SkyPipeline,
     post_process_compute_pipeline: pipeline::PostProcessPipeline,
     waves_rasterization_pipeline: pipeline::RasterizationRenderPipeline,
@@ -114,13 +115,14 @@ pub struct InternalApp {
 impl InternalApp {
     pub unsafe fn new(event_loop: &ActiveEventLoop, args: crate::Args) -> Self {
         let mut assets = HashMap::<&str, &[u32]>::new();
-        asset!("raytracer.spv", assets);
-        asset!("sky_compute.spv", assets);
-        asset!("post_process_compute.spv", assets);
-        asset!("voxel_interesting_compute.spv", assets);
-        asset!("rasterized.spv", assets);
-        asset!("waves_rasterized.spv", assets);
-        asset!("sky_background.spv", assets);
+        //asset!("raytracer.spv", assets);
+        asset!("compute_sky.spv", assets);
+        asset!("compute_post_process.spv", assets);
+        //asset!("voxel_interesting_compute.spv", assets);
+        asset!("rasterized_ms_tesselation.spv", assets);
+        asset!("rasterized_ms_passthrough.spv", assets);
+        asset!("rasterized_ms_waves.spv", assets);
+        asset!("rasterized_background.spv", assets);
         
 
         let window = event_loop
@@ -250,19 +252,19 @@ impl InternalApp {
         
 
 
-        let post_process_compute_pipeline = pipeline::create_post_process_pipeline(assets["post_process_compute.spv"], &device, &debug_marker, &args, main_pipeline_layout);
+        let post_process_compute_pipeline = pipeline::create_post_process_pipeline(assets["compute_post_process.spv"], &device, &debug_marker, &args, main_pipeline_layout);
         log::info!("created post process compute pipeline");
 
-        let rasterization_pipeline = pipeline::create_render_rasterization_pipeline(assets["rasterized.spv"], &device, &debug_marker, main_pipeline_layout, true);
+        let rasterization_pipeline = pipeline::create_render_rasterization_pipeline(assets["rasterized_ms_passthrough.spv"], &device, &debug_marker, main_pipeline_layout, true);
         log::info!("created main render rasterization pipeline");
 
-        let waves_rasterization_pipeline = pipeline::create_render_rasterization_pipeline(assets["waves_rasterized.spv"], &device, &debug_marker, main_pipeline_layout, false);
+        let waves_rasterization_pipeline = pipeline::create_render_rasterization_pipeline(assets["rasterized_ms_waves.spv"], &device, &debug_marker, main_pipeline_layout, false);
         log::info!("created waves rasterization pipeline");
 
-        let sky_compute_pipeline = pipeline::create_sky_pipeline(assets["sky_compute.spv"], &device, &debug_marker, main_pipeline_layout);
+        let sky_compute_pipeline = pipeline::create_sky_pipeline(assets["compute_sky.spv"], &device, &debug_marker, main_pipeline_layout);
         log::info!("created sky compute pipeline");
 
-        let rasterization_background_pipeline = pipeline::create_sky_rasterization_pipeline(assets["sky_background.spv"], &device, &debug_marker, main_pipeline_layout);
+        let rasterization_background_pipeline = pipeline::create_sky_rasterization_pipeline(assets["rasterized_background.spv"], &device, &debug_marker, main_pipeline_layout);
         log::info!("created main render rasterization pipeline");
 
         let samplers = samplers::Samplers::create_samplers(&device);
@@ -297,7 +299,7 @@ impl InternalApp {
         }
         */
 
-        buffer::write_to_buffer(&device, pool, queue, lights_buffer.buffer, &mut allocator, bytemuck::cast_slice(lights.as_slice()));
+        //buffer::write_to_buffer(&device, pool, queue, lights_buffer.buffer, &mut allocator, bytemuck::cast_slice(lights.as_slice()));
         log::info!("created lights buffer");
 
         let mut const_descriptor_sets = ConstantData::create_constant_descriptor_sets();
@@ -1329,12 +1331,13 @@ impl InternalApp {
 
         // render objs
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.rasterization_pipeline.pipeline);
+        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.debug_type < 4 { vk::PolygonMode::FILL } else { vk::PolygonMode::LINE });
+        self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  self.index_count / 3, 4, 4);
+        
         // self.device.cmd_bind_vertex_buffers(cmd, 0, &[self.vertex_buffer.buffer], &[0]);
         // self.device.cmd_bind_index_buffer(cmd, self.index_buffer.buffer, 0, vk::IndexType::UINT32);
         // self.device.cmd_draw_indexed(cmd, self.index_count, 1, 0, 0, 0);
-        // self.mesh_shader_device.cmd_draw_mesh_tasks(cmd, (self.index_count / 3).div_ceil(32), 1, 1);
-        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.debug_type < 4 { vk::PolygonMode::FILL } else { vk::PolygonMode::LINE });
-        self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  (self.index_count / 3), 1, 1);
+        //self.mesh_shader_device.cmd_draw_mesh_tasks(cmd, (self.index_count / 3).div_ceil(32), 1, 1);
 
         self.device.cmd_end_rendering(cmd);
         //self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::ALL_GRAPHICS, self.query_pool, 1);

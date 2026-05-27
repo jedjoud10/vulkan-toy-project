@@ -1,11 +1,9 @@
 #language slang 2026
-#include <ray_stuff_other.slang>
-#include <lighting.slang>
-#include <pbr.slang>
-#include <noises.slang>
-#include <bindless.slang>
-#include <font.slang>
-#include <uniform_thing.slang>
+#include "utils/lighting.slang"
+#include "utils/pbr.slang"
+#include "utils/noises.slang"
+#include "utils/bindless.slang"
+#include "utils/uniform_thing.slang"
 
 [SpecializationConstant] const uint DOWNSCALE_FACTOR = 1;
 

@@ -1,9 +1,9 @@
 #language slang 2026
 
-#include "noises.slang"
-#include "sky.slang"
-#include "bindless.slang"
-#include "uniform_thing.slang"
+#include "utils/noises.slang"
+#include "utils/sky.slang"
+#include "utils/bindless.slang"
+#include "utils/uniform_thing.slang"
 
 [SpecializationConstant] const uint SKYBOX_RESOLUTION = 32;
 [SpecializationConstant] const uint CLOUDS_RESOLUTION = 32;

@@ -9,7 +9,7 @@
 //               https://github.com/stegu/webgl-noise
 // 
 
-#include <commons.slang>
+#include "commons.slang"
 
 float snoise(float2 v)
   {

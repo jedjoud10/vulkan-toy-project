@@ -1,7 +1,7 @@
 #language slang 2026
-#include "sky.slang"
-#include "uniform_thing.slang"
-#include "bindless.slang"
+#include "utils/sky.slang"
+#include "utils/uniform_thing.slang"
+#include "utils/bindless.slang"
 
 static float2 positions[6] = float2[](
     float2(-1, -1), // top left

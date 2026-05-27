@@ -1,8 +1,8 @@
 #language slang 2026
-#include <ray_stuff_other.slang>
-#include <lighting.slang>
-#include <pbr.slang>
-#include <noises.slang>
+#include <utils/ray_stuff_other.slang>
+#include <utils/lighting.slang>
+#include <utils/pbr.slang>
+#include <utils/noises.slang>
 
 [[vk::binding(0, 0)]]
 RWTexture2D<float4> output;

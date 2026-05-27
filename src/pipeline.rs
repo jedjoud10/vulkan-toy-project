@@ -60,6 +60,36 @@ pub struct SingleEntryPointWrapper {
     pub pipeline: vk::Pipeline,
 }
 
+pub enum GenericPipeline {
+    Compute {
+        module: vk::ShaderModule,
+        entry_points: Vec<SingleEntryPointWrapper>,
+    },
+    Rasterized {
+        module: vk::ShaderModule,
+        pipeline: vk::Pipeline,
+    }
+}
+
+pub struct PipelineCreateSettings<'a> {
+    shader_module_debug_name: &'static str,
+    wtf_kind_of_pipeline_is_this: PipelineCreateType<'a>,
+    spec_constants: &'a [u32]
+} 
+
+pub enum PipelineCreateType<'a> {
+    Graphics {
+        face_culling: bool,
+    },
+    GraphicsMeshShader {
+        face_culling: bool,
+        task_shader: bool
+    },
+    Compute {
+        entry_points: &'a [&'static str],
+    }
+}
+
 pub struct MultiComputePipeline<const ENTRY_POINTS: usize> {
     pub module: vk::ShaderModule,
     pub entry_points: [SingleEntryPointWrapper; ENTRY_POINTS],
@@ -91,6 +121,45 @@ pub type PostProcessPipeline = MultiComputePipeline<3>;
 pub type SkyPipeline = MultiComputePipeline<2>;
 pub type RasterizationRenderPipeline = RasterizedPipeline;
 pub type RasterizationBackgroundPipeline = RasterizedPipeline;
+
+/*
+pub unsafe fn create_generic_pipeline(
+    raw: &[u32],
+    device: &ash::Device,
+    binder: &Option<ash::ext::debug_utils::Device>,
+    pipeline_layout: vk::PipelineLayout,
+    settings: PipelineCreateSettings,
+) -> GenericPipeline {
+    let shader_module = create_shader_module(raw, device, binder, settings.shader_module_debug_name);
+    let spec_constants = settings.spec_constants;
+
+    match settings.wtf_kind_of_pipeline_is_this {
+        PipelineCreateType::Graphics { face_culling } => {
+            create_graphics_pipeline(
+                device,
+                binder,
+                shader_module,
+                pipeline_layout,
+                spec_constants_vert,
+                spec_constants_frag,
+                vertex_input,
+                name,
+                face_culling
+            );
+        },
+        PipelineCreateType::GraphicsMeshShader { face_culling, task_shader } => todo!(),
+        PipelineCreateType::Compute { entry_points } => todo!(),
+    }
+
+    let clouds_entry_point = create_single_entry_point_pipeline(device, binder, shader_module, "write_clouds", pipeline_layout, Some(&spec_constants));
+    let skybox_entry_point = create_single_entry_point_pipeline(device, binder, shader_module, "write_skybox", pipeline_layout, Some(&spec_constants));
+    
+    GenericPipeline {
+        module: shader_module,
+        entry_points: [clouds_entry_point, skybox_entry_point],
+    }
+}
+*/
 
 pub unsafe fn create_sky_pipeline(
     raw: &[u32],
