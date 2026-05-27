@@ -18,6 +18,7 @@ mod others;
 mod constant_data;
 mod per_frame_data;
 mod samplers;
+mod tesselation;
 
 use clap::Parser;
 use std::ops::ControlFlow;

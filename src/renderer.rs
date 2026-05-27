@@ -69,8 +69,9 @@ pub struct InternalApp {
     rasterization_pipeline: pipeline::RasterizationRenderPipeline,
     rasterization_background_pipeline: pipeline::RasterizationBackgroundPipeline,
     
-    // mesh shader device
+    // extra devices
     mesh_shader_device: ash::ext::mesh_shader::Device,
+    extended_dynamic_state3_device: ash::ext::extended_dynamic_state3::Device,
 
     // descriptors & frames in flight
     main_descriptor_set: vk::DescriptorSet,
@@ -309,18 +310,34 @@ impl InternalApp {
         let thingy = include_bytes!("../models/thingy.obj");
         let obj = obj::load_obj::<obj::Position, &[u8], u32>(thingy).unwrap();
 
-        let positions = obj.vertices.into_iter().map(|x| vek::Vec3::<f32>::from(x.position)).collect::<Vec<_>>();
-        let indices = obj.indices.as_slice();
-        
-        let vertex_buffer = buffer::create_buffer(&device, &mut allocator, size_of::<vek::Vec3::<f32>>() * positions.len(), &debug_marker, "vertex buffer", vk::BufferUsageFlags::VERTEX_BUFFER);
-        buffer::write_to_buffer(&device, pool, queue, vertex_buffer.buffer, &mut allocator, bytemuck::cast_slice(positions.as_slice()));
+        // replace with vec reinterpret...
+        let mut vertices: Vec<vek::Vec3<f32>> = obj.vertices.into_iter().map(|x| vek::Vec3::<f32>::from(x.position)).collect::<Vec<_>>();
 
-        let index_buffer = buffer::create_buffer(&device, &mut allocator, size_of::<u32>()  * obj.indices.len(), &debug_marker, "index buffer", vk::BufferUsageFlags::INDEX_BUFFER);
-        let index_count = obj.indices.len() as u32;
-        buffer::write_to_buffer(&device, pool, queue, index_buffer.buffer, &mut allocator, bytemuck::cast_slice(indices));
+        let mut indices: Vec<u32> = obj.indices;
+        //let mut indices: Vec<vek::Vec3<u32>> = obj.indices.chunks_exact(3).map(|x| vek::Vec3::new(x[0], x[1], x[2])).collect::<Vec<_>>();
+
+        fn avg(triangle: vek::Vec3<u32>) -> u32 {
+            triangle.x + triangle.y + triangle.z
+        }
+
+        fn center(triangle: vek::Vec3<u32>, vertices: &[vek::Vec3<f32>]) -> vek::Vec3<f32> {
+            triangle.map(|x| vertices[x as usize]).sum() / 3.0
+        }
+
+        //indices.sort_by_key(|triangle| triangle.x + triangle.y + triangle.z);
+        meshopt::optimize_vertex_cache_in_place(&mut indices, vertices.len());
+
+        let vertex_buffer = buffer::create_buffer(&device, &mut allocator, size_of::<vek::Vec3::<f32>>() * vertices.len(), &debug_marker, "vertex buffer", vk::BufferUsageFlags::VERTEX_BUFFER);
+        buffer::write_to_buffer(&device, pool, queue, vertex_buffer.buffer, &mut allocator, bytemuck::cast_slice(vertices.as_slice()));
+
+        let index_buffer = buffer::create_buffer(&device, &mut allocator, size_of::<u32>()  * indices.len(), &debug_marker, "index buffer", vk::BufferUsageFlags::INDEX_BUFFER);
+        let index_count = indices.len() as u32;
+        buffer::write_to_buffer(&device, pool, queue, index_buffer.buffer, &mut allocator, bytemuck::cast_slice(indices.as_slice()));
 
         let mesh_shader_device = ash::ext::mesh_shader::Device::new(&instance, &device);
+        let extended_dynamic_state3_device = ash::ext::extended_dynamic_state3::Device::new(&instance, &device);
 
+        crate::tesselation::precompute_tesselation_buffer();
 
         Self {
             frame_count: 0,
@@ -371,6 +388,7 @@ impl InternalApp {
             index_count,
             mesh_shader_device,
             waves_rasterization_pipeline,
+            extended_dynamic_state3_device,
         }
     }
 
@@ -1306,7 +1324,9 @@ impl InternalApp {
         // self.device.cmd_bind_vertex_buffers(cmd, 0, &[self.vertex_buffer.buffer], &[0]);
         // self.device.cmd_bind_index_buffer(cmd, self.index_buffer.buffer, 0, vk::IndexType::UINT32);
         // self.device.cmd_draw_indexed(cmd, self.index_count, 1, 0, 0, 0);
-        self.mesh_shader_device.cmd_draw_mesh_tasks(cmd, self.index_count / 3, 1, 1);
+        // self.mesh_shader_device.cmd_draw_mesh_tasks(cmd, (self.index_count / 3).div_ceil(32), 1, 1);
+        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.debug_type % 2 == 0 { vk::PolygonMode::FILL } else { vk::PolygonMode::LINE });
+        self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  (self.index_count / 3), 1, 1);
 
         self.device.cmd_end_rendering(cmd);
         //self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::ALL_GRAPHICS, self.query_pool, 1);

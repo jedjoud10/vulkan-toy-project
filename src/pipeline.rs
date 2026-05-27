@@ -254,7 +254,7 @@ pub unsafe fn create_graphics_pipeline_mesh_shader(
         .module(shader_module);
     let stages = [mesh_shader_stage_create_info, fragment_shader_stage_create_info];
 
-    let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+    let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR, vk::DynamicState::POLYGON_MODE_EXT];
     let dynamic_state = vk::PipelineDynamicStateCreateInfo::default()
         .dynamic_states(&dynamic_states);
 
