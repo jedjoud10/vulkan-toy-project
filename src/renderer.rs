@@ -300,7 +300,7 @@ impl InternalApp {
             spv_file_name: RASTERIZED_BACKGROUND_SPV,
         }, pipeline::PipelineCreateSettings {
             pipeline_debug_name: "generated render pipeline",
-            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::GraphicsMeshShader { face_culling: true, task_shader: false },
+            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::GraphicsMeshShader { face_culling: true, task_shader: true },
             spec_constants: None,
             spv_file_name: RASTERIZED_MS_GENERATED_1_SPV,
         }];
@@ -1371,16 +1371,27 @@ impl InternalApp {
         //self.mesh_shader_device.cmd_draw_mesh_tasks(cmd, 32, 32, 1);
 
         // render objs
+        /*
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_PASSTHROUGH_SPV]);
         self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.debug_type < 4 { vk::PolygonMode::FILL } else { vk::PolygonMode::LINE });
         let triangle_count = self.index_count / 3;
         self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytemuck::bytes_of(&triangle_count));
         self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  triangle_count.div_ceil(32), 1, 1);
+        */
 
         // render other objs
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_GENERATED_1_SPV]);
         self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.debug_type < 4 { vk::PolygonMode::FILL } else { vk::PolygonMode::LINE });
-        self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  8, 8, 8);
+        for x in -4..4i32 {
+            for y in -3..3i32 {
+                for z in -4..4i32 {
+                    let chunk_offset = vek::Vec3::<i32>::new(x, y, z);
+                    self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytemuck::bytes_of(&chunk_offset));
+                    self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  1, 1, 1);
+                }
+            }
+        }
+        
         
         // self.device.cmd_bind_vertex_buffers(cmd, 0, &[self.vertex_buffer.buffer], &[0]);
         // self.device.cmd_bind_index_buffer(cmd, self.index_buffer.buffer, 0, vk::IndexType::UINT32);
