@@ -1,11 +1,23 @@
-pub fn precompute_tesselation_buffer() {
+use ash::vk;
+use bytemuck::{Pod, Zeroable};
+use gpu_allocator::vulkan::Allocator;
+
+struct TesselationLevel {
+    weights: Vec<vek::Vec3<f32>>,
+    triangles: Vec<vek::Vec3<u32>>,
+}
+
+
+
+pub unsafe fn precompute_tesselation_buffer(
+    device: &ash::Device,
+    allocator: &mut Allocator,
+    binder: &Option<ash::ext::debug_utils::Device>,
+    pool: vk::CommandPool,
+    queue: vk::Queue,
+) -> crate::buffer::Buffer {
     let depths = 4;
-    let max_verts = 66;
-    let max_tris = 64;
-    let mut tess_vert_count = format!("const static uint[{depths}] TESS_VERT_COUNT = {{");
-    let mut tess_tri_count = format!("const static uint[{depths}] TESS_TRI_COUNT = {{");
-    let mut tess_verts_weights = format!("const static float3[{max_verts}][{depths}] TESS_VERTICES_WEIGHTS = {{");
-    let mut tess_tris = format!("const static uint3[{max_tris}][{depths}] TESS_TRIANGLES = {{");
+    let mut levels = Vec::<TesselationLevel>::new();
 
     for tesselation_depth in 0..depths {
         let mut verts = vec![
@@ -41,28 +53,50 @@ pub fn precompute_tesselation_buffer() {
             previous_triangles.extend(next_triangles.iter());
         }
 
-        tess_vert_count.push_str(&format!("{},", verts.len()));
-        tess_tri_count.push_str(&format!("{},", next_triangles.len()));
-        
+        levels.push(TesselationLevel {
+            weights: verts,
+            triangles: next_triangles.into_iter().map(|x| x.as_::<u32>()).collect::<_>(),
+        });
+    }
 
-        tess_verts_weights.push('{');
-        for vertex in verts {
-            tess_verts_weights.push_str(&format!(" float3({}, {}, {}), ", vertex.x, vertex.y, vertex.z));
-        }
-        tess_verts_weights.push_str("},");
-
-        tess_tris.push('{');
-        for tri in next_triangles {
-            tess_tris.push_str(&format!(" uint3({}, {}, {}), ", tri.x, tri.y, tri.z));
-        }
-        tess_tris.push_str("},");
+    #[derive(Clone, Copy, Pod, Zeroable, Debug)]
+    #[repr(C)]
+    struct Header {
+        vertex_count: u32,
+        triangle_count: u32,
+        vertex_array_byte_offset: u32,
+        triangle_array_byte_offset: u32,
     }
     
+    let mut headers = Vec::<Header>::new();
+    let headers_size = size_of::<Header>() * depths;
+
+    let mut raw_bytes = Vec::<u8>::new();
+
+    for level in levels {
+        let vertex_bytes = bytemuck::cast_slice::<_, u8>(&level.weights);
+        let triangle_bytes = bytemuck::cast_slice::<_, u8>(&level.triangles);
+        
+
+        headers.push(Header {
+            vertex_count: level.weights.len() as u32,
+            triangle_count: level.triangles.len() as u32,
+            vertex_array_byte_offset: (raw_bytes.len() + headers_size) as u32,
+            triangle_array_byte_offset: (raw_bytes.len() + headers_size + vertex_bytes.len()) as u32,
+        });
+
+        raw_bytes.extend_from_slice(vertex_bytes);
+        raw_bytes.extend_from_slice(triangle_bytes);
+    }
+
+    dbg!(&headers);
 
 
+    let buffer = crate::buffer::create_buffer(device, allocator, raw_bytes.len() + headers_size as usize, binder, "tesselation geometry buffer", vk::BufferUsageFlags::STORAGE_BUFFER);
 
-    println!("{} }};", tess_vert_count);
-    println!("{} }};", tess_tri_count);
-    println!("{} }};", tess_verts_weights);
-    println!("{} }};", tess_tris);
+    crate::buffer::write_to_buffer_with_offset(device, pool, queue, buffer.buffer, allocator, bytemuck::cast_slice(&headers), 0);
+    crate::buffer::write_to_buffer_with_offset(device, pool, queue, buffer.buffer, allocator, &raw_bytes, headers_size as u64);
+    
+    
+    buffer
 }

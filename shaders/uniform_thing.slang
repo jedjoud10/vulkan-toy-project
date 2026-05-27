@@ -9,6 +9,7 @@ struct UniformThing {
     float2 screen_resolution;
     float2 padding;
     float4 position;
+    float4 forward;
     float4 sun;
     float4[6] camera_frustum_planes;
     uint32_t debug_type;

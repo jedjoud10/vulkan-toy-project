@@ -33,6 +33,7 @@ pub struct PerFrameUniformData {
     pub screen_resolution: vek::Vec2<f32>,
     pub _padding: vek::Vec2<f32>,
     pub position: vek::Vec4<f32>,
+    pub forward: vek::Vec4<f32>,
     pub sun: vek::Vec4<f32>,
     pub camera_frustum_planes: [vek::Vec4<f32>; 6],
     pub debug_type: u32,
@@ -168,7 +169,8 @@ pub unsafe fn create_render_rasterization_pipeline(
     raw: &[u32],
     device: &ash::Device,
     binder: &Option<ash::ext::debug_utils::Device>,
-    pipeline_layout: vk::PipelineLayout
+    pipeline_layout: vk::PipelineLayout,
+    task_shader: bool
 ) -> RasterizationRenderPipeline {
     /*
     let shader_module = create_shader_module(raw, device, binder, "main render rasterization shader module");
@@ -204,6 +206,7 @@ pub unsafe fn create_render_rasterization_pipeline(
         pipeline_layout,
         "main render",
         true,
+        task_shader,
     );
 
     RasterizationRenderPipeline { module: shader_module, pipeline }
@@ -231,14 +234,13 @@ pub unsafe fn create_graphics_pipeline_mesh_shader(
     pipeline_layout: vk::PipelineLayout,
     name: &str,
     face_culling: bool,
+    task_shader: bool,
 ) -> vk::Pipeline {
-    /*
     let task_shader_stage_create_info = vk::PipelineShaderStageCreateInfo::default()
         .flags(vk::PipelineShaderStageCreateFlags::empty())
         .name(c"task_main")
         .stage(vk::ShaderStageFlags::TASK_EXT)
         .module(shader_module);
-    */
 
 
     let mesh_shader_stage_create_info = vk::PipelineShaderStageCreateInfo::default()
@@ -252,7 +254,11 @@ pub unsafe fn create_graphics_pipeline_mesh_shader(
         .name(c"frag_main")
         .stage(vk::ShaderStageFlags::FRAGMENT)
         .module(shader_module);
-    let stages = [mesh_shader_stage_create_info, fragment_shader_stage_create_info];
+    let mut stages = SmallVec::<[vk::PipelineShaderStageCreateInfo; 3]>::from_slice(&[mesh_shader_stage_create_info, fragment_shader_stage_create_info]);
+
+    if task_shader {
+        stages.push(task_shader_stage_create_info);
+    }
 
     let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR, vk::DynamicState::POLYGON_MODE_EXT];
     let dynamic_state = vk::PipelineDynamicStateCreateInfo::default()

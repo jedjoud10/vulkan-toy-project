@@ -96,6 +96,7 @@ pub struct InternalApp {
     lights_buffer: buffer::Buffer,
     lights: Vec<vek::Vec4<f32>>,
     samplers: samplers::Samplers,
+    tesselation_buffer: buffer::Buffer,
     
     // other CPU stuff
     pub was_resized: bool,
@@ -252,10 +253,10 @@ impl InternalApp {
         let post_process_compute_pipeline = pipeline::create_post_process_pipeline(assets["post_process_compute.spv"], &device, &debug_marker, &args, main_pipeline_layout);
         log::info!("created post process compute pipeline");
 
-        let rasterization_pipeline = pipeline::create_render_rasterization_pipeline(assets["rasterized.spv"], &device, &debug_marker, main_pipeline_layout);
+        let rasterization_pipeline = pipeline::create_render_rasterization_pipeline(assets["rasterized.spv"], &device, &debug_marker, main_pipeline_layout, true);
         log::info!("created main render rasterization pipeline");
 
-        let waves_rasterization_pipeline = pipeline::create_render_rasterization_pipeline(assets["waves_rasterized.spv"], &device, &debug_marker, main_pipeline_layout);
+        let waves_rasterization_pipeline = pipeline::create_render_rasterization_pipeline(assets["waves_rasterized.spv"], &device, &debug_marker, main_pipeline_layout, false);
         log::info!("created waves rasterization pipeline");
 
         let sky_compute_pipeline = pipeline::create_sky_pipeline(assets["sky_compute.spv"], &device, &debug_marker, main_pipeline_layout);
@@ -337,7 +338,7 @@ impl InternalApp {
         let mesh_shader_device = ash::ext::mesh_shader::Device::new(&instance, &device);
         let extended_dynamic_state3_device = ash::ext::extended_dynamic_state3::Device::new(&instance, &device);
 
-        crate::tesselation::precompute_tesselation_buffer();
+        let tesselation_buffer = crate::tesselation::precompute_tesselation_buffer(&device, &mut allocator, &debug_marker, pool, queue);
 
         Self {
             frame_count: 0,
@@ -389,6 +390,7 @@ impl InternalApp {
             mesh_shader_device,
             waves_rasterization_pipeline,
             extended_dynamic_state3_device,
+            tesselation_buffer,
         }
     }
 
@@ -476,10 +478,10 @@ impl InternalApp {
             self.stats.start_benchmarking(self.frame_count);
         }
         if self.input.get_button(Button::Keyboard(KeyCode::KeyH)).pressed() {
-            self.debug_type = (self.debug_type as i32 + 1).rem_euclid(6) as u32;
+            self.debug_type = (self.debug_type as i32 + 1).rem_euclid(8) as u32;
         }
         if self.input.get_button(Button::Keyboard(KeyCode::KeyG)).pressed() {
-            self.debug_type = (self.debug_type as i32 - 1).rem_euclid(6) as u32;
+            self.debug_type = (self.debug_type as i32 - 1).rem_euclid(8) as u32;
         }
         if self.input.get_button(Button::Keyboard(KeyCode::KeyJ)).pressed() {
             let report = self.allocator.generate_report();
@@ -640,7 +642,11 @@ impl InternalApp {
             .buffer(self.index_buffer.buffer)
             .offset(0)
             .range(vk::WHOLE_SIZE);
-        let storage_buffer_infos = [descriptor_uniform_buffer_info, descriptor_vertex_buffer_info, descriptor_index_buffer_info];
+        let descriptor_tess_buffer_info = vk::DescriptorBufferInfo::default()
+            .buffer(self.tesselation_buffer.buffer)
+            .offset(0)
+            .range(vk::WHOLE_SIZE);
+        let storage_buffer_infos = [descriptor_uniform_buffer_info, descriptor_vertex_buffer_info, descriptor_index_buffer_info, descriptor_tess_buffer_info];
         let storage_buffer_write = vk::WriteDescriptorSet::default()
             .descriptor_count(storage_buffer_infos.len() as u32)
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
@@ -769,6 +775,8 @@ impl InternalApp {
             inv_projection_matrix: self.movement.proj_matrix.inverted(),
             screen_resolution: size_f32,
             position: self.movement.position.with_w(0f32),
+            forward: self.movement.forward().with_w(0f32),
+            
             sun: self.sun.normalized().with_w(0f32),
             camera_frustum_planes: camera_frustum_planes,
             debug_type: self.debug_type,
@@ -1325,7 +1333,7 @@ impl InternalApp {
         // self.device.cmd_bind_index_buffer(cmd, self.index_buffer.buffer, 0, vk::IndexType::UINT32);
         // self.device.cmd_draw_indexed(cmd, self.index_count, 1, 0, 0, 0);
         // self.mesh_shader_device.cmd_draw_mesh_tasks(cmd, (self.index_count / 3).div_ceil(32), 1, 1);
-        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.debug_type % 2 == 0 { vk::PolygonMode::FILL } else { vk::PolygonMode::LINE });
+        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.debug_type < 4 { vk::PolygonMode::FILL } else { vk::PolygonMode::LINE });
         self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  (self.index_count / 3), 1, 1);
 
         self.device.cmd_end_rendering(cmd);
@@ -1586,6 +1594,7 @@ impl InternalApp {
 
         self.index_buffer.destroy(&self.device, &mut self.allocator);
         self.vertex_buffer.destroy(&self.device, &mut self.allocator);
+        self.tesselation_buffer.destroy(&self.device, &mut self.allocator);
         
         self.sky_compute_pipeline.destroy(&self.device);
         log::info!("destroyed sky compute pipeline");

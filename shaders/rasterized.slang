@@ -30,56 +30,119 @@ VertexOutput vert_main(in float3 world) {
 */
 
 
-/*
 struct DummyPayload {
-    uint2 offset;
+    float3[3] verts;
+    uint fixed_task_lod;
 }
+
 // https://medium.com/@williscool/task-and-mesh-shaders-a-practical-guide-vulkan-and-slang-25baebe6388e
 [shader("task")]
 [numthreads(1, 1, 1)]
-void task_main(uint3 id : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID) {
-    let uniform_buffer = storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
-    DummyPayload localPayload;
-    localPayload.offset = id.xy * 7;
-    if (all(gtid == 0)) {
-    }
-    DispatchMesh(1, 1, 1, localPayload);
-}
-*/
+void task_main(uint3 id : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID) {
+    int dispatch_mesh_size = 1;
 
-const static uint[4] TESS_VERT_COUNT = {3,6,18,66, };
-const static uint[4] TESS_TRI_COUNT = {1,4,16,64, };
-const static float3[66][4] TESS_VERTICES_WEIGHTS = {{ float3(1, 0, 0),  float3(0, 1, 0),  float3(0, 0, 1), },{ float3(1, 0, 0),  float3(0, 1, 0),  float3(0, 0, 1),  float3(0.5, 0.5, 0),  float3(0.5, 0, 0.5),  float3(0, 0.5, 0.5), },{ float3(1, 0, 0),  float3(0, 1, 0),  float3(0, 0, 1),  float3(0.5, 0.5, 0),  float3(0.5, 0, 0.5),  float3(0, 0.5, 0.5),  float3(0.75, 0.25, 0),  float3(0.75, 0, 0.25),  float3(0.5, 0.25, 0.25),  float3(0.5, 0.25, 0.25),  float3(0.25, 0.25, 0.5),  float3(0.25, 0.5, 0.25),  float3(0.25, 0.5, 0.25),  float3(0, 0.75, 0.25),  float3(0.25, 0.75, 0),  float3(0.25, 0, 0.75),  float3(0, 0.25, 0.75),  float3(0.25, 0.25, 0.5), },{ float3(1, 0, 0),  float3(0, 1, 0),  float3(0, 0, 1),  float3(0.5, 0.5, 0),  float3(0.5, 0, 0.5),  float3(0, 0.5, 0.5),  float3(0.75, 0.25, 0),  float3(0.75, 0, 0.25),  float3(0.5, 0.25, 0.25),  float3(0.5, 0.25, 0.25),  float3(0.25, 0.25, 0.5),  float3(0.25, 0.5, 0.25),  float3(0.25, 0.5, 0.25),  float3(0, 0.75, 0.25),  float3(0.25, 0.75, 0),  float3(0.25, 0, 0.75),  float3(0, 0.25, 0.75),  float3(0.25, 0.25, 0.5),  float3(0.875, 0.125, 0),  float3(0.875, 0, 0.125),  float3(0.75, 0.125, 0.125),  float3(0.75, 0.125, 0.125),  float3(0.625, 0.125, 0.25),  float3(0.625, 0.25, 0.125),  float3(0.625, 0.25, 0.125),  float3(0.5, 0.375, 0.125),  float3(0.625, 0.375, 0),  float3(0.625, 0, 0.375),  float3(0.5, 0.125, 0.375),  float3(0.625, 0.125, 0.25),  float3(0.5, 0.125, 0.375),  float3(0.375, 0.125, 0.5),  float3(0.375, 0.25, 0.375),  float3(0.375, 0.25, 0.375),  float3(0.25, 0.375, 0.375),  float3(0.375, 0.375, 0.25),  float3(0.375, 0.375, 0.25),  float3(0.375, 0.5, 0.125),  float3(0.5, 0.375, 0.125),  float3(0.125, 0.375, 0.5),  float3(0.125, 0.5, 0.375),  float3(0.25, 0.375, 0.375),  float3(0.125, 0.5, 0.375),  float3(0, 0.625, 0.375),  float3(0.125, 0.625, 0.25),  float3(0.125, 0.625, 0.25),  float3(0.125, 0.75, 0.125),  float3(0.25, 0.625, 0.125),  float3(0.25, 0.625, 0.125),  float3(0.375, 0.625, 0),  float3(0.375, 0.5, 0.125),  float3(0, 0.875, 0.125),  float3(0.125, 0.875, 0),  float3(0.125, 0.75, 0.125),  float3(0.125, 0, 0.875),  float3(0, 0.125, 0.875),  float3(0.125, 0.125, 0.75),  float3(0.125, 0.125, 0.75),  float3(0.125, 0.25, 0.625),  float3(0.25, 0.125, 0.625),  float3(0.25, 0.125, 0.625),  float3(0.375, 0.125, 0.5),  float3(0.375, 0, 0.625),  float3(0, 0.375, 0.625),  float3(0.125, 0.375, 0.5),  float3(0.125, 0.25, 0.625), }, };
-const static uint3[64][4] TESS_TRIANGLES = {{ uint3(0, 1, 2), },{ uint3(0, 3, 4),  uint3(4, 3, 5),  uint3(5, 3, 1),  uint3(2, 4, 5), },{ uint3(0, 6, 7),  uint3(7, 6, 8),  uint3(8, 6, 3),  uint3(4, 7, 8),  uint3(4, 9, 10),  uint3(10, 9, 11),  uint3(11, 9, 3),  uint3(5, 10, 11),  uint3(5, 12, 13),  uint3(13, 12, 14),  uint3(14, 12, 3),  uint3(1, 13, 14),  uint3(2, 15, 16),  uint3(16, 15, 17),  uint3(17, 15, 4),  uint3(5, 16, 17), },{ uint3(0, 18, 19),  uint3(19, 18, 20),  uint3(20, 18, 6),  uint3(7, 19, 20),  uint3(7, 21, 22),  uint3(22, 21, 23),  uint3(23, 21, 6),  uint3(8, 22, 23),  uint3(8, 24, 25),  uint3(25, 24, 26),  uint3(26, 24, 6),  uint3(3, 25, 26),  uint3(4, 27, 28),  uint3(28, 27, 29),  uint3(29, 27, 7),  uint3(8, 28, 29),  uint3(4, 30, 31),  uint3(31, 30, 32),  uint3(32, 30, 9),  uint3(10, 31, 32),  uint3(10, 33, 34),  uint3(34, 33, 35),  uint3(35, 33, 9),  uint3(11, 34, 35),  uint3(11, 36, 37),  uint3(37, 36, 38),  uint3(38, 36, 9),  uint3(3, 37, 38),  uint3(5, 39, 40),  uint3(40, 39, 41),  uint3(41, 39, 10),  uint3(11, 40, 41),  uint3(5, 42, 43),  uint3(43, 42, 44),  uint3(44, 42, 12),  uint3(13, 43, 44),  uint3(13, 45, 46),  uint3(46, 45, 47),  uint3(47, 45, 12),  uint3(14, 46, 47),  uint3(14, 48, 49),  uint3(49, 48, 50),  uint3(50, 48, 12),  uint3(3, 49, 50),  uint3(1, 51, 52),  uint3(52, 51, 53),  uint3(53, 51, 13),  uint3(14, 52, 53),  uint3(2, 54, 55),  uint3(55, 54, 56),  uint3(56, 54, 15),  uint3(16, 55, 56),  uint3(16, 57, 58),  uint3(58, 57, 59),  uint3(59, 57, 15),  uint3(17, 58, 59),  uint3(17, 60, 61),  uint3(61, 60, 62),  uint3(62, 60, 15),  uint3(4, 61, 62),  uint3(5, 63, 64),  uint3(64, 63, 65),  uint3(65, 63, 16),  uint3(17, 64, 65), }, };
+    // get buffers and preamble stuff (I <3 bindless)
+    let uniforms = storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
+    let vertex_buffer = storage_buffers_readonly[1];
+    let index_buffer = storage_buffers_readonly[2];
+    let tess_buffer = storage_buffers_readonly[3];
+    
+    //float3 instance_offset = float3(gid.y * 10, 0, 0);
+    float3 instance_offset = float3(0, id.y * 5, id.z * 5);
+    
+    // using triangle index, load the triangle's vertices into a array
+    uint3 loaded_triangle = index_buffer.Load3(gid.x * 4 * 3);
+    float3[3] verts = {};    
+    for (int i = 0; i < 3; i++) {
+        float3 loaded_vertex = vertex_buffer.Load<float3>(loaded_triangle[i] * 4 * 3);
+        verts[i] = loaded_vertex + instance_offset;
+    }    
+
+    int fixed_task_lod = 0;
+    let fixed_header = tess_buffer.Load<Header>(4*4*fixed_task_lod);
+
+    DummyPayload payload = DummyPayload(verts, fixed_task_lod);
+    float3 center = (verts[0] + verts[1] + verts[2]) / 3.0;
+    float3 view = normalize(center - uniforms.position.xyz);
+
+    // backface culling
+    // https://stackoverflow.com/questions/19350792/calculate-normal-of-a-single-triangle-in-3d-space
+    float3 a = verts[2] - verts[0];
+    float3 b = verts[1] - verts[0];
+    float3 normal = normalize(cross(a,b));
+    if (dot(normal, view) < 0.0) {
+        dispatch_mesh_size = 0;
+    }
+    
+    // frustum culling
+    let camera_frustum_planes = uniforms.camera_frustum_planes;
+    for (int f = 0; f < 6; f++) {
+        float3 plane_normal = camera_frustum_planes[f].xyz;
+        float plane_distance = camera_frustum_planes[f].w;
+
+        if ((dot(plane_normal, center) + plane_distance) < (-0.2 * 2.0)) {
+            dispatch_mesh_size = 0;
+            break;
+        }
+    }
+
+    DispatchMesh(dispatch_mesh_size, 1, fixed_header.triangle_count, payload);
+}
+
+struct Header {
+    uint32_t vertex_count;
+    uint32_t triangle_count;
+    uint32_t vertex_array_byte_offset;
+    uint32_t triangle_array_byte_offset;
+}
+
 // https://medium.com/@williscool/task-and-mesh-shaders-a-practical-guide-vulkan-and-slang-25baebe6388e
 [shader("mesh")]
 [outputtopology("triangle")]
 [numthreads(66, 1, 1)]
-void mesh_main(out vertices VertexOutput vertices[128], out indices uint3 triangles[128], uint3 id : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID) {
+void mesh_main(out vertices VertexOutput vertices[128], out indices uint3 triangles[128], uint3 id : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID, payload DummyPayload muh_payload) {
+    // get buffers and preamble stuff (I <3 bindless)
     let uniforms = storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
-
-    let vertex_buffer = storage_buffers_readonly[1];
-    let index_buffer = storage_buffers_readonly[2];
+    let tess_buffer = storage_buffers_readonly[3];
+    float3[3] starting_verts = muh_payload.verts;   
+    float3[3] verts = {};   
     
-    uint3 loaded_triangle = index_buffer.Load3(gid.x * 4 * 3);
-    float3[3] verts = {};
-    
+    // apply first order tesselation (emitted by task shader)
+    let fixed_header = tess_buffer.Load<Header>(4*4*muh_payload.fixed_task_lod);
+    uint3 fixed_tri = tess_buffer.Load<uint3>(fixed_header.triangle_array_byte_offset + id.z * 4 * 3);
     for (int i = 0; i < 3; i++) {
-        float3 loaded_vertex = vertex_buffer.Load<float3>(loaded_triangle[i] * 4 * 3);
-        verts[i] = loaded_vertex;
+        float3 weights_fo = tess_buffer.Load<float3>(fixed_header.vertex_array_byte_offset + 4 * 3 * fixed_tri[i]);
+        verts[i] = starting_verts[0] * weights_fo.x + starting_verts[1] * weights_fo.y + starting_verts[2] * weights_fo.z;
     }    
-
-    
+        
+    // calculate LOD level based on distance to center of triangle
     float3 center = (verts[0] + verts[1] + verts[2]) / 3.0;
-    //int lod = 3 - clamp(floor(distance(center, uniforms.position.xyz) / 100.0), 0, 3);
-    int lod = 3;
+    float3 aabb_min = min3(verts[0], verts[1], verts[2]);
+    float3 aabb_max = max3(verts[0], verts[1], verts[2]);
 
-    if (gtid.x > TESS_VERT_COUNT[lod]) {
+    // project aabb to clip space
+    float4 clip_space_aabb_min = mul(float4(aabb_min, 1), uniforms.view_projection_matrix);
+    float4 clip_space_aabb_max = mul(float4(aabb_max, 1), uniforms.view_projection_matrix);
+    float4 size_clip_space = clip_space_aabb_max - clip_space_aabb_min;
+
+    float screen_heuristic = length(size_clip_space.xy) * 25.0;
+    float distance_heuristic = 1 - distance(center, uniforms.position.xyz) / 15.0;
+
+
+    int lod = clamp(floor(screen_heuristic + distance_heuristic), 0, 3);
+    //int lod = 3 - clamp(floor(distance(center, uniforms.position.xyz) / 10.0), 0, 3);
+    
+    // fetch header for LOD from CPU generated tesselation buffer
+    let header = tess_buffer.Load<Header>(4*4*lod);
+    
+    // FIXME: this is a big waste of the 63 other threads in the case that we are just spawning in a non-tesselated triangle...
+    // ideally this mesh shader would not even execute for non tesselated geometry
+    if (gtid.x > header.vertex_count) {
         return;
     }
     
-    //printf("%f %f %f", vertex.x, vertex.y, vertex.z);
-    float3 weights = TESS_VERTICES_WEIGHTS[lod][gtid.x];
+    // calculate world space and clip space position of tesselated vertex (per thread!)
+    float3 weights = tess_buffer.Load<float3>(header.vertex_array_byte_offset + gtid.x * 4 * 3);
     float3 weighted_sum = verts[0] * weights.x + verts[1] * weights.y + verts[2] * weights.z;
     float4 world_position = float4(weighted_sum, 1);
 
@@ -89,13 +152,14 @@ void mesh_main(out vertices VertexOutput vertices[128], out indices uint3 triang
 
     vertices[gtid.x].world_pos = world_position.xyz;
     vertices[gtid.x].sv_position = t;
-    vertices[gtid.x].meshlet_colour = hash33(gid);
-
-    if (gtid.x < TESS_TRI_COUNT[lod]) {
-        triangles[gtid.x] = TESS_TRIANGLES[lod][gtid.x];
+    vertices[gtid.x].meshlet_colour = hash33(gtid);
+    
+    if (gtid.x < header.triangle_count) {
+        uint3 tri = tess_buffer.Load<uint3>(header.triangle_array_byte_offset + gtid.x * 4 * 3);
+        triangles[gtid.x] = tri;
     }
     
-    SetMeshOutputCounts(TESS_VERT_COUNT[lod], TESS_TRI_COUNT[lod]);
+    SetMeshOutputCounts(header.vertex_count, header.triangle_count);
 }
 
 [shader("fragment")]

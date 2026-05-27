@@ -109,6 +109,18 @@ pub unsafe fn write_to_buffer(
     allocator: &mut Allocator,
     bytes: &[u8]
 ) {
+    write_to_buffer_with_offset(device, pool, queue, dst_buffer, allocator, bytes, 0);
+}
+
+pub unsafe fn write_to_buffer_with_offset(
+    device: &ash::Device,
+    pool: vk::CommandPool,
+    queue: vk::Queue,
+    dst_buffer: vk::Buffer,
+    allocator: &mut Allocator,
+    bytes: &[u8],
+    dst_offset: u64,
+) {
     let start = std::time::Instant::now();
     let cmd_buffer_create_info = vk::CommandBufferAllocateInfo::default()
         .command_buffer_count(1)
@@ -123,14 +135,14 @@ pub unsafe fn write_to_buffer(
     let staging_buffer_opt = if bytes.len() < BUFFER_WRITE_INLINE_MAX_BYTES_THRESHOLD {
         // inline (command buffer write) impl
         log::info!("writing {} to buffer, using inline path", bytes_formatted.display().si());
-        device.cmd_update_buffer(cmd, dst_buffer, 0, bytes);
+        device.cmd_update_buffer(cmd, dst_buffer, dst_offset, bytes);
         None
     } else {
         log::info!("writing {} to buffer, using staging buffer path", bytes_formatted.display().si());
         let (staging_buffer, allocation) = create_staging_buffer(device, allocator, bytes);
 
         let region = vk::BufferCopy2::default()
-            .dst_offset(0)
+            .dst_offset(dst_offset)
             .size(bytes.len() as u64)
             .src_offset(0);
 
