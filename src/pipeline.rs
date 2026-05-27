@@ -1,26 +1,9 @@
-use std::{ffi::CString, str::FromStr};
+use std::{collections::HashMap, ffi::CString, ops::{Deref, Index}, str::FromStr};
 
 use ash::vk;
 use bytemuck::{Pod, Zeroable};
 use smallvec::SmallVec;
 
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-pub struct PushConstants {
-    pub screen_resolution: vek::Vec2<f32>,
-    pub _padding: vek::Vec2<f32>,
-    pub matrix: vek::Mat4<f32>,
-    pub position: vek::Vec4<f32>,
-    pub sun: vek::Vec4<f32>,
-    pub debug_type: u32,
-    pub time: f32,
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-pub struct PushConstants3 {
-    pub screen_resolution: vek::Vec2<f32>,
-}
 
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
@@ -40,46 +23,75 @@ pub struct PerFrameUniformData {
     pub time: f32,
 }
 
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-pub struct PushConstants2 {
-    pub forward: vek::Vec4<f32>,
-    pub position: vek::Vec4<f32>,
-    pub sun: vek::Vec4<f32>,
-    pub tick: u32,
-    pub delta: f32,
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-pub struct SkyComputePushConstants {
-    pub sun: vek::Vec4<f32>,
-}
-
 pub struct SingleEntryPointWrapper {
     pub pipeline: vk::Pipeline,
+    pub debug_pipeline_name: &'static str,
 }
 
 pub enum GenericPipeline {
-    Compute {
-        module: vk::ShaderModule,
-        entry_points: Vec<SingleEntryPointWrapper>,
-    },
-    Rasterized {
-        module: vk::ShaderModule,
-        pipeline: vk::Pipeline,
+    Graphics(GenericGraphicsPipeline),
+    Compute(GenericComputePipeline),
+}
+
+pub struct GenericGraphicsPipeline {
+    pub debug_pipeline_name: &'static str,
+    pub module: vk::ShaderModule,
+    pub pipeline: vk::Pipeline, 
+}
+
+impl Deref for GenericGraphicsPipeline {
+    type Target = vk::Pipeline;
+
+    fn deref(&self) -> &Self::Target {
+        &self.pipeline
+    }
+}
+
+pub struct GenericComputePipeline {
+    pub module: vk::ShaderModule,
+    pub entry_points: HashMap<&'static str, SingleEntryPointWrapper>,
+}
+
+impl Index<&'static str> for GenericComputePipeline {
+    type Output = vk::Pipeline;
+
+    fn index(&self, index: &'static str) -> &Self::Output {
+        &self.entry_points[index].pipeline
+    }
+}
+
+impl GenericComputePipeline {
+    pub unsafe fn destroy(self, device: &ash::Device) {
+        for (_, single_entry_point_wrapper) in self.entry_points {
+            device.destroy_pipeline(single_entry_point_wrapper.pipeline, None);
+            log::info!("destroyed single entry point wrapper '{}' compute pipeline", single_entry_point_wrapper.debug_pipeline_name);
+        }
+        
+        device.destroy_shader_module(self.module, None);
+    }
+}
+
+impl GenericGraphicsPipeline {
+    pub unsafe fn destroy(self, device: &ash::Device) {
+        device.destroy_pipeline(self.pipeline, None);
+        device.destroy_shader_module(self.module, None);
+        
+        log::info!("destroyed '{}' graphic pipeline", self.debug_pipeline_name);
     }
 }
 
 pub struct PipelineCreateSettings<'a> {
-    shader_module_debug_name: &'static str,
-    wtf_kind_of_pipeline_is_this: PipelineCreateType<'a>,
-    spec_constants: &'a [u32]
+    pub shader_module_debug_name: &'static str,
+    pub pipeline_debug_name: &'static str,
+    pub spv_file_name: &'static str,
+    pub wtf_kind_of_pipeline_is_this: PipelineCreateType<'a>,
+    pub spec_constants: Option<&'a [u32]>
 } 
 
 pub enum PipelineCreateType<'a> {
     Graphics {
         face_culling: bool,
+        vertex_input: vk::PipelineVertexInputStateCreateInfo<'a>
     },
     GraphicsMeshShader {
         face_culling: bool,
@@ -90,39 +102,6 @@ pub enum PipelineCreateType<'a> {
     }
 }
 
-pub struct MultiComputePipeline<const ENTRY_POINTS: usize> {
-    pub module: vk::ShaderModule,
-    pub entry_points: [SingleEntryPointWrapper; ENTRY_POINTS],
-}
-
-pub struct RasterizedPipeline {
-    pub module: vk::ShaderModule,
-    pub pipeline: vk::Pipeline,
-}
-
-impl<const ENTRY_POINTS: usize> MultiComputePipeline<ENTRY_POINTS> {
-    pub unsafe fn destroy(self, device: &ash::Device) {
-        for single_entry_point_wrapper in self.entry_points {
-            device.destroy_pipeline(single_entry_point_wrapper.pipeline, None);
-        }
-        
-        device.destroy_shader_module(self.module, None);
-    }
-}
-
-impl RasterizedPipeline {
-    pub unsafe fn destroy(self, device: &ash::Device) {
-        device.destroy_pipeline(self.pipeline, None);
-        device.destroy_shader_module(self.module, None);
-    }
-}
-
-pub type PostProcessPipeline = MultiComputePipeline<3>;
-pub type SkyPipeline = MultiComputePipeline<2>;
-pub type RasterizationRenderPipeline = RasterizedPipeline;
-pub type RasterizationBackgroundPipeline = RasterizedPipeline;
-
-/*
 pub unsafe fn create_generic_pipeline(
     raw: &[u32],
     device: &ash::Device,
@@ -132,153 +111,52 @@ pub unsafe fn create_generic_pipeline(
 ) -> GenericPipeline {
     let shader_module = create_shader_module(raw, device, binder, settings.shader_module_debug_name);
     let spec_constants = settings.spec_constants;
+    let pipeline_debug_name = settings.pipeline_debug_name;
 
     match settings.wtf_kind_of_pipeline_is_this {
-        PipelineCreateType::Graphics { face_culling } => {
-            create_graphics_pipeline(
+        PipelineCreateType::Graphics { face_culling, vertex_input } => {
+            let pipeline = create_graphics_pipeline(
                 device,
                 binder,
                 shader_module,
                 pipeline_layout,
-                spec_constants_vert,
-                spec_constants_frag,
+                spec_constants,
+                spec_constants,
                 vertex_input,
-                name,
+                pipeline_debug_name,
                 face_culling
             );
+
+            log::info!("created '{}' graphics pipeline", pipeline_debug_name);
+
+            GenericPipeline::Graphics(GenericGraphicsPipeline { module: shader_module, pipeline, debug_pipeline_name: pipeline_debug_name })
         },
-        PipelineCreateType::GraphicsMeshShader { face_culling, task_shader } => todo!(),
-        PipelineCreateType::Compute { entry_points } => todo!(),
+        PipelineCreateType::GraphicsMeshShader { face_culling, task_shader } => {
+            let pipeline = create_graphics_pipeline_mesh_shader(
+                device,
+                binder,
+                shader_module,
+                pipeline_layout,
+                pipeline_debug_name,
+                face_culling,
+                task_shader,
+            );
+
+            log::info!("created '{}' graphics (mesh shader) pipeline", pipeline_debug_name);
+
+            GenericPipeline::Graphics (GenericGraphicsPipeline { module: shader_module, pipeline, debug_pipeline_name: pipeline_debug_name })
+        },
+        PipelineCreateType::Compute { entry_points } => {
+            log::info!("created '{}' compute pipeline", pipeline_debug_name);
+
+            GenericPipeline::Compute(GenericComputePipeline {
+                module: shader_module,
+                entry_points: entry_points.into_iter().map(|entry_point_name| {
+                    (*entry_point_name, create_single_entry_point_pipeline(device, binder, shader_module, *entry_point_name, pipeline_layout, spec_constants))
+                }).collect::<HashMap::<&'static str, SingleEntryPointWrapper>>()
+            })
+        },
     }
-
-    let clouds_entry_point = create_single_entry_point_pipeline(device, binder, shader_module, "write_clouds", pipeline_layout, Some(&spec_constants));
-    let skybox_entry_point = create_single_entry_point_pipeline(device, binder, shader_module, "write_skybox", pipeline_layout, Some(&spec_constants));
-    
-    GenericPipeline {
-        module: shader_module,
-        entry_points: [clouds_entry_point, skybox_entry_point],
-    }
-}
-*/
-
-pub unsafe fn create_sky_pipeline(
-    raw: &[u32],
-    device: &ash::Device,
-    binder: &Option<ash::ext::debug_utils::Device>,
-    pipeline_layout: vk::PipelineLayout
-) -> SkyPipeline {
-    let shader_module = create_shader_module(raw, device, binder, "sky compute shader module");
-
-    let size = size_of::<SkyComputePushConstants>();
-
-
-    let spec_constants = [crate::skybox::SKYBOX_RESOLUTION, crate::skybox::CLOUDS_RESOLUTION];
-
-
-    let clouds_entry_point = create_single_entry_point_pipeline(device, binder, shader_module, "write_clouds", pipeline_layout, Some(&spec_constants));
-    let skybox_entry_point = create_single_entry_point_pipeline(device, binder, shader_module, "write_skybox", pipeline_layout, Some(&spec_constants));
-    
-    MultiComputePipeline {
-        module: shader_module,
-        entry_points: [clouds_entry_point, skybox_entry_point],
-    }
-}
-
-
-pub unsafe fn create_post_process_pipeline(
-    raw: &[u32],
-    device: &ash::Device,
-    binder: &Option<ash::ext::debug_utils::Device>,
-    args: &crate::Args,
-    pipeline_layout: vk::PipelineLayout
-) -> PostProcessPipeline {
-    let shader_module = create_shader_module(raw, device, binder, "post process compute shader module");
-
-    let spec_constants = [args.downscale_factor];
-
-    let push_constant_size = Some(size_of::<PushConstants>());
-    let post_process_entry_point = create_single_entry_point_pipeline(device, binder, shader_module, "write_swapchain_image", pipeline_layout, Some(&spec_constants));
-
-    let push_constant_size2 = Some(size_of::<vek::Vec2<f32>>());
-    let bloom_downsample_entry_point = create_single_entry_point_pipeline(device, binder, shader_module, "bloom_downsample", pipeline_layout, None);
-    let bloom_upsample_entry_point = create_single_entry_point_pipeline(device, binder, shader_module, "bloom_upsample", pipeline_layout, None);
-
-
-    PostProcessPipeline {
-        module: shader_module,
-        entry_points: [post_process_entry_point, bloom_downsample_entry_point, bloom_upsample_entry_point],
-    }
-}
-
-pub unsafe fn create_sky_rasterization_pipeline(
-    raw: &[u32],
-    device: &ash::Device,
-    binder: &Option<ash::ext::debug_utils::Device>,
-    pipeline_layout: vk::PipelineLayout
-) -> RasterizationBackgroundPipeline {
-    let shader_module = create_shader_module(raw, device, binder, "rasterized shader module");
-
-    let pipeline = create_graphics_pipeline(
-        device,
-        binder,
-        shader_module,
-        pipeline_layout,
-        None,
-        None,
-        vk::PipelineVertexInputStateCreateInfo::default(),
-        "background sky",
-        false
-    );
-
-    RasterizationBackgroundPipeline { module: shader_module, pipeline }
-}
-
-
-pub unsafe fn create_render_rasterization_pipeline(
-    raw: &[u32],
-    device: &ash::Device,
-    binder: &Option<ash::ext::debug_utils::Device>,
-    pipeline_layout: vk::PipelineLayout,
-    task_shader: bool
-) -> RasterizationRenderPipeline {
-    /*
-    let shader_module = create_shader_module(raw, device, binder, "main render rasterization shader module");
-
-    let vertex_binding_descriptions = [vk::VertexInputBindingDescription::default().binding(0).input_rate(vk::VertexInputRate::VERTEX).stride(size_of::<vek::Vec3::<f32>>() as u32)];
-    let vertex_attribute_descriptions = [vk::VertexInputAttributeDescription::default().binding(0).format(vk::Format::R32G32B32_SFLOAT).location(0).offset(0)];
-    
-    let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
-        .vertex_binding_descriptions(&vertex_binding_descriptions)
-        .vertex_attribute_descriptions(&vertex_attribute_descriptions);
-    
-    let pipeline = create_graphics_pipeline(
-        device,
-        binder,
-        shader_module,
-        pipeline_layout,
-        None,
-        None,
-        vertex_input,
-        "main render",
-        true,
-    );
-
-    RasterizationRenderPipeline { module: shader_module, pipeline }
-    */
-
-    let shader_module = create_shader_module(raw, device, binder, "main render rasterization shader module");
-    
-    let pipeline = create_graphics_pipeline_mesh_shader(
-        device,
-        binder,
-        shader_module,
-        pipeline_layout,
-        "main render",
-        true,
-        task_shader,
-    );
-
-    RasterizationRenderPipeline { module: shader_module, pipeline }
 }
 
 unsafe fn create_shader_module(raw: &[u32], device: &ash::Device, binder: &Option<ash::ext::debug_utils::Device>, name: &str) -> vk::ShaderModule {
@@ -402,7 +280,7 @@ pub unsafe fn create_graphics_pipeline(
     
     vertex_input: vk::PipelineVertexInputStateCreateInfo<'_>,
     name: &str,
-    face_culling: bool,
+    face_culling: bool
 ) -> vk::Pipeline {
     let (data, entries) = convert_spec_constants(spec_constants_vert);
     let vertex_shader_stage_specialization_info = vk::SpecializationInfo::default()
@@ -499,7 +377,7 @@ pub unsafe fn create_single_entry_point_pipeline(
     device: &ash::Device,
     binder: &Option<ash::ext::debug_utils::Device>,
     compute_shader_module: vk::ShaderModule,
-    entry_point_name: &str,
+    entry_point_name: &'static str,
     pipeline_layout: vk::PipelineLayout,
     spec_constants: Option<&[u32]>
 ) -> SingleEntryPointWrapper {
@@ -532,7 +410,7 @@ pub unsafe fn create_single_entry_point_pipeline(
     
     crate::debug::set_object_name(compute_pipelines[0], binder, format!("entry point '{entry_point_name}' compute pipeline"));
 
-    SingleEntryPointWrapper { pipeline: compute_pipelines[0] }
+    SingleEntryPointWrapper { pipeline: compute_pipelines[0], debug_pipeline_name: entry_point_name }
 }
 
 fn convert_spec_constants(spec_constants: Option<&[u32]>) -> (Vec<u8>, Vec::<vk::SpecializationMapEntry>) {

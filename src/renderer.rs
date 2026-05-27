@@ -4,6 +4,8 @@ use bytemuck::Zeroable;
 use gpu_allocator::vulkan::Allocation;
 use rand::RngExt;
 use rand::SeedableRng;
+use rayon::iter::IntoParallelIterator;
+use rayon::iter::ParallelIterator;
 use smallvec::SmallVec;
 use crate::input::Button;
 use crate::input::Input;
@@ -31,6 +33,20 @@ use crate::debug;
 use crate::others;
 use crate::per_frame_data::PerFrameData;
 use crate::constant_data::ConstantData;
+
+const COMPUTE_POST_PROCESS_SPV: &'static str = "compute_post_process.spv";
+const BLOOM_UPSAMPLE_ENTRY_POINT: &'static str = "bloom_upsample";
+const BLOOM_DOWNSAMPLE_ENTRY_POINT: &'static str = "bloom_downsample";
+const WRITE_SWAPCHAIN_IMAGE_ENTRY_POINT: &'static str = "write_swapchain_image";
+const RASTERIZED_MS_WAVES_SPV: &str = "rasterized_ms_waves.spv";
+const COMPUTE_SKY_SPV: &str = "compute_sky.spv";
+const WRITE_CLOUDS_ENTRY_POINT: &str = "write_clouds";
+const WRITE_SKYBOX_ENTRY_POINT: &str = "write_skybox";
+const RASTERIZED_MS_PASSTHROUGH_SPV: &str = "rasterized_ms_passthrough.spv";
+const RASTERIZED_MS_TESSELALTION_SPV: &str = "rasterized_ms_tesselation.spv";
+const RASTERIZED_BACKGROUND_SPV: &str = "rasterized_background.spv";
+        
+
 
 pub struct InternalApp {
     // entry, physical device, logical device
@@ -63,13 +79,9 @@ pub struct InternalApp {
     pool: vk::CommandPool,
     
     // pipelines
-    //generic_pipelines: HashMap<&'static str, pipeline::GenericPipeline>,
-    sky_compute_pipeline: pipeline::SkyPipeline,
-    post_process_compute_pipeline: pipeline::PostProcessPipeline,
-    waves_rasterization_pipeline: pipeline::RasterizationRenderPipeline,
-    rasterization_pipeline: pipeline::RasterizationRenderPipeline,
-    rasterization_background_pipeline: pipeline::RasterizationBackgroundPipeline,
-    
+    graphics_pipelines: HashMap<&'static str, pipeline::GenericGraphicsPipeline>,
+    compute_pipelines: HashMap<&'static str, pipeline::GenericComputePipeline>,
+
     // extra devices
     mesh_shader_device: ash::ext::mesh_shader::Device,
     extended_dynamic_state3_device: ash::ext::extended_dynamic_state3::Device,
@@ -251,21 +263,62 @@ impl InternalApp {
         let main_pipeline_layout = pipeline::create_bindless_pipeline_layout(&device, &debug_marker, main_descriptor_set_layout);
         
 
+        let mut graphics_pipelines = HashMap::<&'static str, pipeline::GenericGraphicsPipeline>::new();
+        let mut compute_pipelines = HashMap::<&'static str, pipeline::GenericComputePipeline>::new();
 
-        let post_process_compute_pipeline = pipeline::create_post_process_pipeline(assets["compute_post_process.spv"], &device, &debug_marker, &args, main_pipeline_layout);
-        log::info!("created post process compute pipeline");
+        let settings = [pipeline::PipelineCreateSettings {
+            shader_module_debug_name: "post process compute shader module",
+            pipeline_debug_name: "post process compute pipeline",
+            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &[WRITE_SWAPCHAIN_IMAGE_ENTRY_POINT, BLOOM_DOWNSAMPLE_ENTRY_POINT, BLOOM_UPSAMPLE_ENTRY_POINT] },
+            spec_constants: Some(&[args.downscale_factor]),
+            spv_file_name: COMPUTE_POST_PROCESS_SPV,
+        }, pipeline::PipelineCreateSettings {
+            shader_module_debug_name: "sky compute shader module",
+            pipeline_debug_name: "sky compute pipeline",
+            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &[WRITE_SKYBOX_ENTRY_POINT, WRITE_CLOUDS_ENTRY_POINT] },
+            spec_constants: Some(&[skybox::SKYBOX_RESOLUTION, skybox::CLOUDS_RESOLUTION]),
+            spv_file_name: COMPUTE_SKY_SPV,
+        }, pipeline::PipelineCreateSettings {
+            shader_module_debug_name: "main render rasterization shader module",
+            pipeline_debug_name: "main render pipeline",
+            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::GraphicsMeshShader { face_culling: true, task_shader: false },
+            spec_constants: None,
+            spv_file_name: RASTERIZED_MS_PASSTHROUGH_SPV,
+        }, pipeline::PipelineCreateSettings {
+            shader_module_debug_name: "tesselation render rasterization shader module",
+            pipeline_debug_name: "tesselation render pipeline",
+            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::GraphicsMeshShader { face_culling: true, task_shader: true },
+            spec_constants: None,
+            spv_file_name: RASTERIZED_MS_TESSELALTION_SPV,
+        }, pipeline::PipelineCreateSettings {
+            shader_module_debug_name: "waves render rasterization shader module",
+            pipeline_debug_name: "waves render pipeline",
+            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::GraphicsMeshShader { face_culling: true, task_shader: false },
+            spec_constants: None,
+            spv_file_name: RASTERIZED_MS_WAVES_SPV,
+        }, pipeline::PipelineCreateSettings {
+            shader_module_debug_name: "background sky rasterization shader module",
+            pipeline_debug_name: "background sky pipeline",
+            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Graphics { face_culling: false, vertex_input: vk::PipelineVertexInputStateCreateInfo::default() },
+            spec_constants: None,
+            spv_file_name: RASTERIZED_BACKGROUND_SPV,
+        }];
 
-        let rasterization_pipeline = pipeline::create_render_rasterization_pipeline(assets["rasterized_ms_passthrough.spv"], &device, &debug_marker, main_pipeline_layout, true);
-        log::info!("created main render rasterization pipeline");
+        // compile the pipelines in parallel
+        // ouug shii :eyes:
+        let generic_pipelines = settings.into_par_iter().map(|setting| {
+            let spv_file_name = setting.spv_file_name;
+            let raw = assets[spv_file_name];
+            let pipeline = pipeline::create_generic_pipeline(raw, &device, &debug_marker, main_pipeline_layout, setting);
+            (spv_file_name, pipeline)
+        }).collect::<Vec<_>>();
 
-        let waves_rasterization_pipeline = pipeline::create_render_rasterization_pipeline(assets["rasterized_ms_waves.spv"], &device, &debug_marker, main_pipeline_layout, false);
-        log::info!("created waves rasterization pipeline");
-
-        let sky_compute_pipeline = pipeline::create_sky_pipeline(assets["compute_sky.spv"], &device, &debug_marker, main_pipeline_layout);
-        log::info!("created sky compute pipeline");
-
-        let rasterization_background_pipeline = pipeline::create_sky_rasterization_pipeline(assets["rasterized_background.spv"], &device, &debug_marker, main_pipeline_layout);
-        log::info!("created main render rasterization pipeline");
+        for (spv_file_name, pipeline) in generic_pipelines {
+            match pipeline {
+                pipeline::GenericPipeline::Graphics(generic_graphics_pipeline) => { graphics_pipelines.insert(spv_file_name, generic_graphics_pipeline); },
+                pipeline::GenericPipeline::Compute(generic_compute_pipeline) => { compute_pipelines.insert(spv_file_name, generic_compute_pipeline); },
+            }
+        }
 
         let samplers = samplers::Samplers::create_samplers(&device);
         log::info!("created samplers");        
@@ -310,25 +363,15 @@ impl InternalApp {
         let query_pool = others::create_query_pool(&device);
         let timestamp_period = physical_device_properties.properties.limits.timestamp_period;
 
-        let thingy = include_bytes!("../models/thingy.obj");
+        let thingy = include_bytes!("../models/bunny_subdivided.obj");
         let obj = obj::load_obj::<obj::Position, &[u8], u32>(thingy).unwrap();
 
         // replace with vec reinterpret...
-        let mut vertices: Vec<vek::Vec3<f32>> = obj.vertices.into_iter().map(|x| vek::Vec3::<f32>::from(x.position)).collect::<Vec<_>>();
-
+        let vertices: Vec<vek::Vec3<f32>> = obj.vertices.into_iter().map(|x| vek::Vec3::<f32>::from(x.position)).collect::<Vec<_>>();
         let mut indices: Vec<u32> = obj.indices;
-        //let mut indices: Vec<vek::Vec3<u32>> = obj.indices.chunks_exact(3).map(|x| vek::Vec3::new(x[0], x[1], x[2])).collect::<Vec<_>>();
-
-        fn avg(triangle: vek::Vec3<u32>) -> u32 {
-            triangle.x + triangle.y + triangle.z
-        }
-
-        fn center(triangle: vek::Vec3<u32>, vertices: &[vek::Vec3<f32>]) -> vek::Vec3<f32> {
-            triangle.map(|x| vertices[x as usize]).sum() / 3.0
-        }
 
         //indices.sort_by_key(|triangle| triangle.x + triangle.y + triangle.z);
-        meshopt::optimize_vertex_cache_in_place(&mut indices, vertices.len());
+        //meshopt::optimize_vertex_cache_in_place(&mut indices, vertices.len());
 
         let vertex_buffer = buffer::create_buffer(&device, &mut allocator, size_of::<vek::Vec3::<f32>>() * vertices.len(), &debug_marker, "vertex buffer", vk::BufferUsageFlags::VERTEX_BUFFER);
         buffer::write_to_buffer(&device, pool, queue, vertex_buffer.buffer, &mut allocator, bytemuck::cast_slice(vertices.as_slice()));
@@ -363,10 +406,6 @@ impl InternalApp {
             queue,
             pool,
             const_descriptor_sets,
-            sky_compute_pipeline,
-            rasterization_pipeline,
-            post_process_compute_pipeline,
-            rasterization_background_pipeline,
             descriptor_pool,
             query_pool,
             timestamp_period,
@@ -390,9 +429,10 @@ impl InternalApp {
             index_buffer,
             index_count,
             mesh_shader_device,
-            waves_rasterization_pipeline,
             extended_dynamic_state3_device,
             tesselation_buffer,
+            graphics_pipelines,
+            compute_pipelines,
         }
     }
 
@@ -809,7 +849,7 @@ impl InternalApp {
         self.device.cmd_bind_pipeline(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
-            self.sky_compute_pipeline.entry_points[0].pipeline,
+            self.compute_pipelines[COMPUTE_SKY_SPV][WRITE_CLOUDS_ENTRY_POINT],
         );
 
         self.device.cmd_dispatch(cmd, skybox::CLOUDS_RESOLUTION.div_ceil(8), skybox::CLOUDS_RESOLUTION.div_ceil(8), 1);
@@ -817,7 +857,7 @@ impl InternalApp {
         self.device.cmd_bind_pipeline(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
-            self.sky_compute_pipeline.entry_points[1].pipeline,
+            self.compute_pipelines[COMPUTE_SKY_SPV][WRITE_SKYBOX_ENTRY_POINT]
         );
 
         self.device.cmd_dispatch(cmd, skybox::SKYBOX_RESOLUTION.div_ceil(8), skybox::SKYBOX_RESOLUTION.div_ceil(8), 6);
@@ -1322,7 +1362,7 @@ impl InternalApp {
         self.device.cmd_begin_rendering(cmd, &rendering_info);
 
         // render background skybox and clouds
-        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.rasterization_background_pipeline.pipeline);
+        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_BACKGROUND_SPV]);
         self.device.cmd_draw(cmd, 6, 1, 0, 0);
 
         // render waves
@@ -1330,9 +1370,11 @@ impl InternalApp {
         //self.mesh_shader_device.cmd_draw_mesh_tasks(cmd, 32, 32, 1);
 
         // render objs
-        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.rasterization_pipeline.pipeline);
+        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_PASSTHROUGH_SPV]);
         self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.debug_type < 4 { vk::PolygonMode::FILL } else { vk::PolygonMode::LINE });
-        self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  self.index_count / 3, 4, 4);
+        let triangle_count = self.index_count / 3;
+        self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytemuck::bytes_of(&triangle_count));
+        self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  triangle_count.div_ceil(32), 1, 1);
         
         // self.device.cmd_bind_vertex_buffers(cmd, 0, &[self.vertex_buffer.buffer], &[0]);
         // self.device.cmd_bind_index_buffer(cmd, self.index_buffer.buffer, 0, vk::IndexType::UINT32);
@@ -1388,7 +1430,7 @@ impl InternalApp {
         self.device.cmd_bind_pipeline(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
-            self.post_process_compute_pipeline.entry_points[1].pipeline,
+            self.compute_pipelines[COMPUTE_POST_PROCESS_SPV][BLOOM_DOWNSAMPLE_ENTRY_POINT],
         );
 
         // there is no need to go down to the largest mip since we will be sampling from a smaller mip anyways
@@ -1455,7 +1497,7 @@ impl InternalApp {
         self.device.cmd_bind_pipeline(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
-            self.post_process_compute_pipeline.entry_points[2].pipeline,
+            self.compute_pipelines[COMPUTE_POST_PROCESS_SPV][BLOOM_UPSAMPLE_ENTRY_POINT],
         );
 
         for mip in (minimum_upsampling_mip..(const_data.bloom_mip_image_views.len() as u32 - 1)).rev() {
@@ -1529,7 +1571,7 @@ impl InternalApp {
         self.device.cmd_bind_pipeline(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
-            self.post_process_compute_pipeline.entry_points[0].pipeline,
+            self.compute_pipelines[COMPUTE_POST_PROCESS_SPV][WRITE_SWAPCHAIN_IMAGE_ENTRY_POINT],
         );
 
         self.device.cmd_dispatch(cmd, window_size_no_downscale.x.div_ceil(8), window_size_no_downscale.y.div_ceil(8), 1);
@@ -1598,22 +1640,15 @@ impl InternalApp {
         self.index_buffer.destroy(&self.device, &mut self.allocator);
         self.vertex_buffer.destroy(&self.device, &mut self.allocator);
         self.tesselation_buffer.destroy(&self.device, &mut self.allocator);
-        
-        self.sky_compute_pipeline.destroy(&self.device);
-        log::info!("destroyed sky compute pipeline");
-        
-        self.post_process_compute_pipeline.destroy(&self.device);
-        log::info!("destroyed post process compute pipeline");
 
-        self.rasterization_pipeline.destroy(&self.device);
-        log::info!("destroyed rasterization pipeline");
+        for (_, graphic_pipeline) in self.graphics_pipelines {
+            graphic_pipeline.destroy(&self.device);
+        }
 
-        self.waves_rasterization_pipeline.destroy(&self.device);
-        log::info!("destroyed waves rasterization pipeline");
-
-        self.rasterization_background_pipeline.destroy(&self.device);
-        log::info!("destroyed rasterization background pipeline");
-        
+        for (_, compute_pipeline) in self.compute_pipelines {
+            compute_pipeline.destroy(&self.device);
+        }
+                
         self.skybox.destroy(&self.device, &mut self.allocator);
         log::info!("destroyed skybox");
 
