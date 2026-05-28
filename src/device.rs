@@ -26,7 +26,6 @@ pub unsafe fn create_device_and_queue(
     let mut compute_derivatives = vk::PhysicalDeviceComputeShaderDerivativesFeaturesNV::default()
         .compute_derivative_group_quads(true)
         .compute_derivative_group_linear(true);
-     
     let mut shader_clock = vk::PhysicalDeviceShaderClockFeaturesKHR::default()
         .shader_device_clock(true)
         .shader_subgroup_clock(true); 
@@ -42,9 +41,11 @@ pub unsafe fn create_device_and_queue(
         .shader_int64(true)
         .sparse_binding(true)
         .sparse_residency_image3_d(true)
-        .fill_mode_non_solid(true);
+        .fill_mode_non_solid(true)
+        .pipeline_statistics_query(true);
     let mut device_features_12 = vk::PhysicalDeviceVulkan12Features::default()
         .storage_buffer8_bit_access(true)
+        .uniform_and_storage_buffer8_bit_access(true)
         .shader_float16(true)
         .shader_int8(true)
         .host_query_reset(true)
@@ -62,7 +63,6 @@ pub unsafe fn create_device_and_queue(
         .descriptor_binding_uniform_buffer_update_after_bind(true)
         .descriptor_binding_variable_descriptor_count(true)
         .runtime_descriptor_array(true);
-    
     let mut device_features_13 = vk::PhysicalDeviceVulkan13Features::default()
         .synchronization2(true)
         .maintenance4(true)

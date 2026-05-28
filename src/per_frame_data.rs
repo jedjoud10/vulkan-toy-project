@@ -6,7 +6,6 @@ pub const FRAMES_IN_FLIGHT: usize = 3;
 
 pub struct PerFrameData {
     pub present_complete_semaphore: vk::Semaphore,
-    pub render_finished_semaphore: vk::Semaphore,
     pub end_fence: vk::Fence,
     pub cmd: vk::CommandBuffer,    
     pub uniform_buffer: crate::buffer::Buffer,
@@ -22,11 +21,8 @@ impl PerFrameData {
         let present_complete_semaphore = device
             .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
             .unwrap();
-        let render_finished_semaphore = device
-            .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
-            .unwrap();
-        let end_fence = device.create_fence(&Default::default(), None).unwrap();
-        log::info!("created semaphores and fence");
+        let end_fence = device.create_fence(&vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED), None).unwrap();
+        log::info!("created semaphore and fence");
 
         let cmd_buffer_create_info = vk::CommandBufferAllocateInfo::default()
             .command_buffer_count(1)
@@ -40,7 +36,6 @@ impl PerFrameData {
 
         Self {
             present_complete_semaphore,
-            render_finished_semaphore,
             end_fence,
             cmd,
             uniform_buffer,
@@ -49,9 +44,8 @@ impl PerFrameData {
     
     pub unsafe fn destroy_everything(self, device: &ash::Device, cmd_pool: vk::CommandPool, allocator: &mut Allocator) {
         device.destroy_semaphore(self.present_complete_semaphore, None);
-        device.destroy_semaphore(self.render_finished_semaphore, None);
         device.destroy_fence(self.end_fence, None);
-        log::info!("destroyed semaphores and fences frame data");            
+        log::info!("destroyed semaphore and fences frame data");            
 
         device.free_command_buffers(cmd_pool, &[self.cmd]);
         log::info!("destroyed cmd buffer frame data");       

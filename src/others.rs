@@ -87,6 +87,19 @@ pub unsafe fn create_query_pool(
         .query_type(vk::QueryType::TIMESTAMP)
         .query_count(2);
     let query = device.create_query_pool(&create_info, None).unwrap();
+    device.reset_query_pool(query, 0, 2);
+    query
+}
+
+pub unsafe fn create_pipeline_stats_pool(
+    device: &ash::Device
+) -> vk::QueryPool {
+    let create_info = vk::QueryPoolCreateInfo::default()
+        .query_type(vk::QueryType::PIPELINE_STATISTICS)
+        .pipeline_statistics(vk::QueryPipelineStatisticFlags::FRAGMENT_SHADER_INVOCATIONS)
+        .query_count(1);
+    let query = device.create_query_pool(&create_info, None).unwrap();
+    device.reset_query_pool(query, 0, 1);
 
     query
 }

@@ -127,5 +127,8 @@ float3 transform_face_tangent_to_ws_normal(int global_face, float2 flattened) {
     return 0;
 }
 
+bool is_bit_set(uint32_t bitmask, int index) {
+    return ((bitmask >> index) & 1) == 1;
+}
 
 #endif

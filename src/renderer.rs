@@ -14,6 +14,7 @@ use vek::Clamp;
 use crate::input::Button;
 use crate::input::Input;
 use crate::movement::Movement;
+use crate::per_frame_data;
 use crate::samplers;
 use winit::event::MouseButton;
 use std::collections::HashMap;
@@ -95,7 +96,8 @@ pub struct InternalApp {
     main_descriptor_set: vk::DescriptorSet,
     main_descriptor_set_layout: vk::DescriptorSetLayout,
     main_pipeline_layout: vk::PipelineLayout,
-    frames_in_flight: Vec<PerFrameData>,
+    frames_in_flight: SmallVec<[PerFrameData; per_frame_data::FRAMES_IN_FLIGHT]>,
+    render_finished_semaphores: SmallVec<[vk::Semaphore; swapchain::SWAPCHAIN_IMAGES]>,
     descriptor_pool: vk::DescriptorPool,
     const_descriptor_sets: ConstantData,
             
@@ -109,6 +111,8 @@ pub struct InternalApp {
     
     // other GPU stuff
     query_pool: vk::QueryPool,
+    pipeline_statistics_query_pool: vk::QueryPool,
+
     timestamp_period: f32,
     skybox: skybox::Skybox,
     lights_buffer: buffer::Buffer,
@@ -347,9 +351,9 @@ impl InternalApp {
         );
         log::info!("created skybox");
 
-        let frames_in_flight = (0..crate::per_frame_data::FRAMES_IN_FLIGHT).into_iter().map(|_| {
+        let frames_in_flight = (0..per_frame_data::FRAMES_IN_FLIGHT).into_iter().map(|_| {
             PerFrameData::create_per_frame_data(&device, pool, &mut allocator, &debug_marker)
-        }).collect::<Vec<_>>();
+        }).collect::<SmallVec<[PerFrameData; per_frame_data::FRAMES_IN_FLIGHT]>>();
         log::info!("created frames in flight structures");
 
         const NUM_LIGHTS: usize = 500;
@@ -375,6 +379,7 @@ impl InternalApp {
         log::info!("created constant descriptor sets");
 
         let query_pool = others::create_query_pool(&device);
+        let pipeline_statistics_query_pool = others::create_pipeline_stats_pool(&device);
         let timestamp_period = physical_device_properties.properties.limits.timestamp_period;
 
         let thingy = include_bytes!("../models/bunny_subdivided.obj");
@@ -397,6 +402,10 @@ impl InternalApp {
 
         let tesselation_buffer = crate::tesselation::precompute_tesselation_buffer(&device, &mut allocator, &debug_marker, pool, queue);
         let debug_text_buffer = buffer::create_buffer(&device, &mut allocator, 1024, &debug_marker, "debug text", vk::BufferUsageFlags::STORAGE_BUFFER);
+
+        let render_finished_semaphores: SmallVec<[vk::Semaphore; 3]> = (0..swapchain::SWAPCHAIN_IMAGES).into_iter().map(|_| {
+            device.create_semaphore(&Default::default(), None).unwrap()
+        }).collect::<SmallVec<[vk::Semaphore; swapchain::SWAPCHAIN_IMAGES]>>();
 
         Self {
             frame_count: 0,
@@ -450,6 +459,8 @@ impl InternalApp {
             wireframe: false,
             toggles_bitmask: 0,
             debug_text_buffer,
+            pipeline_statistics_query_pool,
+            render_finished_semaphores,
         }
     }
 
@@ -498,6 +509,7 @@ impl InternalApp {
         self.const_descriptor_sets.recreate_rt_images_and_image_views_and_update_descriptor_sets(&self.device, &mut self.allocator, self.queue_family_index, extent, &self.debug_marker, self.args.downscale_factor);
         crate::constant_data::transfer_layout_for_images(&self.device, self.queue_family_index, &self.const_descriptor_sets, self.pool, self.queue);
                 
+        /*
         for frame in self.frames_in_flight.iter_mut() {
             self.device.destroy_semaphore(frame.present_complete_semaphore, None);
             self.device.destroy_semaphore(frame.render_finished_semaphore, None);
@@ -506,6 +518,7 @@ impl InternalApp {
             frame.render_finished_semaphore = self.device.create_semaphore(&create_info, None).unwrap();
             frame.present_complete_semaphore = self.device.create_semaphore(&create_info, None).unwrap();
         }
+        */
 
 
         self.device.device_wait_idle().unwrap();
@@ -588,12 +601,24 @@ impl InternalApp {
             log::error!("wait on fence err: {:?}", err);
             // return;
         } else {
+            // try to fetch timestamp queries
+            /*
             let mut timestamps = [0u64; 2];
-            let okay = self.device.get_query_pool_results(self.query_pool, 0, &mut timestamps, vk::QueryResultFlags::TYPE_64).is_ok();
+            let okay = self.device.get_query_pool_results(self.query_pool, 0, &mut timestamps, vk::QueryResultFlags::TYPE_64 | vk::QueryResultFlags::WAIT).is_ok();
             if okay {
                 let delta_in_ms = ((timestamps[1].saturating_sub(timestamps[0])) as f64 * self.timestamp_period as f64) / 1000000.0f64;
                 self.stats.push_query_timings(delta_in_ms);
             }
+            */
+
+            /*
+            // try to fetch pipeline statistics queriy
+            let mut data = [0u64; 1];
+            let okay = self.device.get_query_pool_results(self.pipeline_statistics_query_pool, 0, &mut data, vk::QueryResultFlags::TYPE_64).is_ok();
+            if okay {
+                dbg!(data);
+            }
+            */
         }
 
         let (acquired_swapchain_image_index, suboptimal) = self
@@ -620,7 +645,7 @@ impl InternalApp {
         }
 
         self.device.reset_fences(&[end_fence]).unwrap();
-        let render_finished_semaphore = [self.frames_in_flight[acquired_swapchain_image_index as usize].render_finished_semaphore];
+        let render_finished_semaphore = [self.render_finished_semaphores[acquired_swapchain_image_index as usize]];
 
         // create bindless descriptor write for storage images        
         let swapchain_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
@@ -755,39 +780,13 @@ impl InternalApp {
             .begin_command_buffer(cmd, &cmd_buffer_begin_info)
             .unwrap();
         self.device.cmd_reset_query_pool(cmd, self.query_pool, 0, 2);
-        self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::ALL_GRAPHICS, self.query_pool, 0);
+        self.device.cmd_reset_query_pool(cmd, self.pipeline_statistics_query_pool, 0, 1);
+        self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, self.query_pool, 0);
 
         let subresource_range = vk::ImageSubresourceRange::default()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
             .level_count(1)
             .layer_count(1);
-
-        /*
-        (self.velocities.par_iter_mut().zip(self.lights.par_iter())).enumerate().for_each(|(a, (velocity, light))| {
-            let mut force = vek::Vec3::<f32>::zero();
-            
-            for (b, other) in self.lights.iter().enumerate() {
-                if a != b {
-                    let vector = light.xyz() - other.xyz();
-                    force += vector.normalized() / (vector.len()*vector.len()) as f32;
-                }
-            }
-
-            *velocity += vek::Vec4::from_direction(force) * delta * 0.2f32;
-            // *velocity *= 0.995f32;
-            //velocity.y += light.y - 10.0;
-
-            velocity.y -= 9.81*9.81 * delta;
-        });
-
-        self.lights.par_iter_mut().zip(self.velocities.par_iter()).for_each(|(light, velocity)| {
-            *light += vek::Vec4::from_direction(velocity.xyz()) * delta;
-            // *light += vek::Vec4::new_direction(rand::random_range(-1f32..1f32), rand::random_range(-1f32..1f32), rand::random_range(-1f32..1f32)) * 0.1f32 * delta;
-            *light = light.clamped(-40f32, 40f32);
-        });
-
-        self.device.cmd_update_buffer(cmd, self.lights_buffer.buffer, 0, bytemuck::cast_slice(self.lights.as_slice()));
-        */
 
         let mut text = format!("CPU delta: {:.2}\nGPU main frame: {:.2}\n", delta*1000f32, self.stats.get_average_in_ms());
         text += &format!("pos: {:.2}\n", self.movement.position);
@@ -829,7 +828,7 @@ impl InternalApp {
 
         // wtf
         bytes.resize(bytes.len().div_ceil(4) * 4, 0);
-        self.device.cmd_update_buffer(cmd, self.debug_text_buffer.buffer, 0, &bytes);
+        //self.device.cmd_update_buffer(cmd, self.debug_text_buffer.buffer, 0, &bytes);
 
         // bind the descriptor set for subsequent pipelines
         self.device.cmd_bind_descriptor_sets(
@@ -900,13 +899,24 @@ impl InternalApp {
         let uniform_buffer_barrier = vk::BufferMemoryBarrier2::default()
             .buffer(uniform_buffer.buffer)
             .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
-            .dst_access_mask(vk::AccessFlags2::MEMORY_READ)
+            .dst_access_mask(vk::AccessFlags2::MEMORY_WRITE)
             .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
             .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)
             .size(vk::WHOLE_SIZE);
-        let buffer_memory_barriers = [uniform_buffer_barrier];
+        /*
+        let debug_text_buffer_barrier = vk::BufferMemoryBarrier2::default()
+            .buffer(self.debug_text_buffer.buffer)
+            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
+            .dst_access_mask(vk::AccessFlags2::MEMORY_WRITE)
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .size(vk::WHOLE_SIZE);
+        */
+        let buffer_memory_barriers = [uniform_buffer_barrier, /*debug_text_buffer_barrier*/];
         let dep = vk::DependencyInfo::default().buffer_memory_barriers(&buffer_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
@@ -974,430 +984,6 @@ impl InternalApp {
         let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
-        /*
-        //self.sun = vek::Vec3::new((elapsed * 0.1f32).sin(), (elapsed * 0.05).sin(), (elapsed * 0.1f32).cos()).normalized();
-
-
-
-        let lights_buffer_barrier = vk::BufferMemoryBarrier2::default()
-            .buffer(self.lights_buffer.buffer)
-            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
-            .dst_access_mask(vk::AccessFlags2::MEMORY_WRITE)
-            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(self.queue_family_index)
-            .size(vk::WHOLE_SIZE);
-        let uniform_buffer_barrier = vk::BufferMemoryBarrier2::default()
-            .buffer(uniform_buffer.buffer)
-            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
-            .dst_access_mask(vk::AccessFlags2::MEMORY_WRITE)
-            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(self.queue_family_index)
-            .size(vk::WHOLE_SIZE);
-        let image_memory_barriers = [];
-        let buffer_memory_barriers = [lights_buffer_barrier, uniform_buffer_barrier];
-        let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers).buffer_memory_barriers(&buffer_memory_barriers);
-        self.device.cmd_pipeline_barrier2(cmd, &dep);
-
-        
-
-
-
-        let matrix = self.movement.proj_matrix.inverted() * self.movement.view_matrix;
-
-        let push_constants = pipeline::PushConstants {
-            screen_resolution: size_f32,
-            _padding: Default::default(),
-            matrix,
-            position: self.movement.position.with_w(0f32),
-            sun: self.sun.normalized().with_w(0f32),
-            debug_type: self.debug_type,
-            time: elapsed,
-        };
-
-        let raw = bytemuck::bytes_of(&push_constants);
-
-        
-        let uniform_per_frame_data = pipeline::PerFrameUniformData {
-            view_matrix: self.movement.view_matrix,
-            projection_matrix: self.movement.proj_matrix,
-            inv_view_matrix: self.movement.view_matrix.inverted(),
-            inv_projection_matrix: self.movement.proj_matrix.inverted(),
-            screen_resolution: size_f32,
-            position: self.movement.position.with_w(0f32),
-            sun: self.sun.normalized().with_w(0f32),
-            debug_type: self.debug_type,
-            time: elapsed,
-
-            _padding: Default::default(),
-        };
-
-        self.device.cmd_update_buffer(cmd, uniform_buffer.buffer, 0, bytemuck::bytes_of(&uniform_per_frame_data));
-        
-        self.device.cmd_update_buffer(cmd, self.lights_buffer.buffer, 0, bytemuck::cast_slice(&self.lights));
-
-        if self.debug_type == 0 {
-            let rendered_image_barrier = vk::ImageMemoryBarrier2::default()
-                .old_layout(vk::ImageLayout::UNDEFINED)
-                .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .src_access_mask(vk::AccessFlags2::NONE)
-                .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
-                .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-                .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-                .src_queue_family_index(self.queue_family_index)
-                .dst_queue_family_index(self.queue_family_index)
-                .image(constant_descriptor_sets.rendered_image)
-                .subresource_range(subresource_range);
-            let image_memory_barriers = [rendered_image_barrier];
-            let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
-            self.device.cmd_pipeline_barrier2(cmd, &dep);
-
-            let render_area = vk::Rect2D::default()
-                .offset(vk::Offset2D::default())
-                .extent(vk::Extent2D::default().width(size.x).height(size.y));
-            let color_attachment = vk::RenderingAttachmentInfo::default()
-                .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0f32; 4] } })
-                .load_op(vk::AttachmentLoadOp::DONT_CARE)
-                .store_op(vk::AttachmentStoreOp::STORE)
-                .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .image_view(self.const_descriptor_sets.rendered_image_view);
-            let depth_attachment = vk::RenderingAttachmentInfo::default()
-                .clear_value(vk::ClearValue { depth_stencil: vk::ClearDepthStencilValue { depth: 1f32, stencil: 0 } })
-                .load_op(vk::AttachmentLoadOp::CLEAR)
-                .store_op(vk::AttachmentStoreOp::DONT_CARE)
-                .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
-                .image_view(self.const_descriptor_sets.rendered_depth_image_image_view);
-            let color_attachments = [color_attachment];
-            let rendering_info = vk::RenderingInfo::default()
-                .color_attachments(&color_attachments)
-                .depth_attachment(&depth_attachment)
-                .layer_count(1)
-                .render_area(render_area)
-                .view_mask(0);
-
-            let viewport = vk::Viewport::default().height(size.y as f32).width(size.x as f32).x(0f32).y(0f32).min_depth(0f32).max_depth(1f32);
-            self.device.cmd_set_viewport(cmd, 0, &[viewport]);
-            self.device.cmd_set_scissor(cmd, 0, &[render_area]);
-            
-            self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::ALL_GRAPHICS, self.query_pool, 0);
-            self.device.cmd_begin_rendering(cmd, &rendering_info);
-
-
-            // render background skybox and clouds
-            self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.rasterization_background_pipeline.pipeline);
-            self.device.cmd_draw(cmd, 6, 1, 0, 0);
-
-            /*
-            // render chunk meshes stuff
-            self.device.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::GRAPHICS, self.rasterization_pipeline.pipeline_layout, 0, &[per_frame_descriptor_sets.rasterizer_per_frame, constant_descriptor_sets.main_render_rasterization_render_pipeline_descriptor_set], &[]);
-            self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.rasterization_pipeline.pipeline);
-            self.device.cmd_bind_vertex_buffers(cmd, 0, &[self.meshed.vertex_buffer.buffer], &[0]);
-            self.device.cmd_bind_index_buffer(cmd, self.meshed.index_buffer.buffer, 0, vk::IndexType::UINT32);
-            for single_chunk in self.meshed.chunks.iter() {
-                self.device.cmd_draw_indexed(cmd, single_chunk.index_count as u32, 1, single_chunk.first_index as u32, single_chunk.vertex_start_offset as i32, 0);
-            }
-            
-            self.device.cmd_end_rendering(cmd);
-            */
-            self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::ALL_GRAPHICS, self.query_pool, 1);
-
-            let rendered_image_barrier = vk::ImageMemoryBarrier2::default()
-                .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .new_layout(vk::ImageLayout::GENERAL)
-                .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
-                .dst_access_mask(vk::AccessFlags2::MEMORY_READ)
-                .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-                .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-                .src_queue_family_index(self.queue_family_index)
-                .dst_queue_family_index(self.queue_family_index)
-                .image(constant_descriptor_sets.rendered_image)
-                .subresource_range(subresource_range);
-            let image_memory_barriers = [rendered_image_barrier];
-            let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
-            self.device.cmd_pipeline_barrier2(cmd, &dep);
-        } else {
-            
-        } 
-
-        self.device.cmd_bind_descriptor_sets(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.sky_compute_pipeline.entry_points[0].pipeline_layout,
-            0,
-            &[constant_descriptor_sets.sky_compute_pipeline_descriptor_set],
-            &[],
-        );
-        self.device.cmd_bind_pipeline(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.sky_compute_pipeline.entry_points[0].pipeline,
-        );
-
-        let push_constants = pipeline::SkyComputePushConstants {
-            sun: self.sun.normalized().with_w(elapsed),
-        };
-        self.device.cmd_push_constants(cmd, self.sky_compute_pipeline.entry_points[0].pipeline_layout, vk::ShaderStageFlags::COMPUTE, 0, bytemuck::bytes_of(&push_constants));
-        self.device.cmd_dispatch(cmd, skybox::CLOUDS_RESOLUTION.div_ceil(8), skybox::CLOUDS_RESOLUTION.div_ceil(8), 1);
-
-        self.device.cmd_bind_descriptor_sets(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.sky_compute_pipeline.entry_points[1].pipeline_layout,
-            0,
-            &[constant_descriptor_sets.sky_compute_pipeline_descriptor_set],
-            &[],
-        );
-        self.device.cmd_bind_pipeline(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.sky_compute_pipeline.entry_points[1].pipeline,
-        );
-
-        self.device.cmd_push_constants(cmd, self.sky_compute_pipeline.entry_points[1].pipeline_layout, vk::ShaderStageFlags::COMPUTE, 0, bytemuck::bytes_of(&push_constants));
-        self.device.cmd_dispatch(cmd, skybox::SKYBOX_RESOLUTION.div_ceil(8), skybox::SKYBOX_RESOLUTION.div_ceil(8), 6);
-        
-        let src_shader_write_to_shader_read = vk::ImageMemoryBarrier2::default()
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
-            .dst_access_mask(vk::AccessFlags2::SHADER_STORAGE_READ)
-            .src_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
-            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-            .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(self.queue_family_index)
-            .image(constant_descriptor_sets.rendered_image)
-            .subresource_range(subresource_range);
-        let skybox_subresource_range = vk::ImageSubresourceRange::default()
-            .aspect_mask(vk::ImageAspectFlags::COLOR)
-            .level_count(1)
-            .layer_count(6);
-        let clouds_subresource_range = vk::ImageSubresourceRange::default()
-            .aspect_mask(vk::ImageAspectFlags::COLOR)
-            .level_count(1)
-            .layer_count(1);
-        let skybox_image_barrier = vk::ImageMemoryBarrier2::default()
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
-            .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
-            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-            .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(self.queue_family_index)
-            .image(self.skybox.skybox_image)
-            .subresource_range(skybox_subresource_range);
-        let clouds_image_barrier = vk::ImageMemoryBarrier2::default()
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
-            .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
-            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-            .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(self.queue_family_index)
-            .image(self.skybox.clouds_image)
-            .subresource_range(clouds_subresource_range);
-        let image_memory_barriers = [src_shader_write_to_shader_read, skybox_image_barrier, clouds_image_barrier];
-        let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
-        self.device.cmd_pipeline_barrier2(cmd, &dep);
-
-        let full_passes_bloom = vk::ImageMemoryBarrier2::default()
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
-            .dst_access_mask(vk::AccessFlags2::SHADER_WRITE | vk::AccessFlags2::SHADER_READ)
-            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(self.queue_family_index)
-            .image(constant_descriptor_sets.bloom_image)
-            .subresource_range(vk::ImageSubresourceRange::default().level_count(vk::REMAINING_MIP_LEVELS).layer_count(1).aspect_mask(vk::ImageAspectFlags::COLOR).base_mip_level(0).base_array_layer(0));
-        let image_memory_barriers = [full_passes_bloom];
-        let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
-        self.device.cmd_pipeline_barrier2(cmd, &dep);
-
-        // execute bloom downsample passes
-        self.device.cmd_bind_pipeline(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.post_process_compute_pipeline.entry_points[1].pipeline,
-        );
-        for mip in 0..(constant_descriptor_sets.bloom_mip_image_views.len() as u32-1) {
-            // no need to pipeline barrier for the first pass, as we just waited for the render texture image to finish right before this
-            if mip > 0 {
-                // wait on previous mip level to be done
-                let previous_mip_level_subresource_range = vk::ImageSubresourceRange::default()
-                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                .base_array_layer(0)
-                .layer_count(1)
-                .base_mip_level(mip)
-                .level_count(1);
-                let previous_mip_image_memory_barrier = vk::ImageMemoryBarrier2::default()
-                    .old_layout(vk::ImageLayout::GENERAL)
-                    .new_layout(vk::ImageLayout::GENERAL)
-                    .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
-                    .dst_access_mask(vk::AccessFlags2::SHADER_READ)
-                    .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-                    .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-                    .src_queue_family_index(self.queue_family_index)
-                    .dst_queue_family_index(self.queue_family_index)
-                    .image(constant_descriptor_sets.bloom_image)
-                    .subresource_range(previous_mip_level_subresource_range);
-                let barriers = [previous_mip_image_memory_barrier];
-                let dep = vk::DependencyInfo::default().image_memory_barriers(&barriers);
-                self.device.cmd_pipeline_barrier2(cmd, &dep);
-            }
-            
-            
-            let previous_mip_size = size / (1 << (mip)); // larger mip
-            let next_mip_size = size / (1 << (mip+1)); // smaller mip
-
-            
-            
-            self.device.cmd_bind_descriptor_sets(
-                cmd,
-                vk::PipelineBindPoint::COMPUTE,
-                self.post_process_compute_pipeline.entry_points[1].pipeline_layout,
-                0,
-                &[constant_descriptor_sets.compositor_downsample_bloom[mip as usize]],
-                &[],
-            );
-            
-            let downsample_dispatch_push_constants = previous_mip_size.as_::<f32>();
-
-            self.device.cmd_push_constants(cmd, self.post_process_compute_pipeline.entry_points[1].pipeline_layout, vk::ShaderStageFlags::COMPUTE, 0, bytemuck::bytes_of(&downsample_dispatch_push_constants));
-            self.device.cmd_dispatch(cmd, next_mip_size.x.div_ceil(8), next_mip_size.y.div_ceil(8), 1);
-        }
-
-        let full_passes_bloom = vk::ImageMemoryBarrier2::default()
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .src_access_mask(vk::AccessFlags2::SHADER_WRITE | vk::AccessFlags2::SHADER_READ)
-            .dst_access_mask(vk::AccessFlags2::SHADER_WRITE | vk::AccessFlags2::SHADER_READ)
-            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-            .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(self.queue_family_index)
-            .image(constant_descriptor_sets.bloom_image)
-            .subresource_range(vk::ImageSubresourceRange::default().level_count(vk::REMAINING_MIP_LEVELS).layer_count(1).aspect_mask(vk::ImageAspectFlags::COLOR).base_mip_level(0).base_array_layer(0));
-        let image_memory_barriers = [full_passes_bloom];
-        let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
-        self.device.cmd_pipeline_barrier2(cmd, &dep);
-
-        // execute bloom upsample passes
-        self.device.cmd_bind_pipeline(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.post_process_compute_pipeline.entry_points[2].pipeline,
-        );
-
-        // there is no need to go down to the largest mip since we will be sampling from a smaller mip anyways
-        let minimum_upsampling_mip = 2;
-
-        for mip in (minimum_upsampling_mip..(constant_descriptor_sets.bloom_mip_image_views.len() as u32 - 1)).rev() {
-            // no need to pipeline barrier for the very first pass (we did a full pipeline barrier for the entire bloom image right before this)
-            if mip != constant_descriptor_sets.bloom_mip_image_views.len() as u32 - 2 {
-                // wait on previous mip level to be done
-                let previous_mip_level_subresource_range = vk::ImageSubresourceRange::default()
-                    .aspect_mask(vk::ImageAspectFlags::COLOR)
-                    .base_array_layer(0)
-                    .layer_count(1)
-                    .base_mip_level(mip+1)
-                    .level_count(1);
-                let previous_mip_image_memory_barrier = vk::ImageMemoryBarrier2::default()
-                    .old_layout(vk::ImageLayout::GENERAL)
-                    .new_layout(vk::ImageLayout::GENERAL)
-                    .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
-                    .dst_access_mask(vk::AccessFlags2::SHADER_READ)
-                    .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-                    .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-                    .src_queue_family_index(self.queue_family_index)
-                    .dst_queue_family_index(self.queue_family_index)
-                    .image(constant_descriptor_sets.bloom_image)
-                    .subresource_range(previous_mip_level_subresource_range);
-                let barriers = [previous_mip_image_memory_barrier];
-                let dep = vk::DependencyInfo::default().image_memory_barriers(&barriers);
-                self.device.cmd_pipeline_barrier2(cmd, &dep);
-            }
-            
-            
-            let previous_mip_size = size / (1 << (mip+1)); // smaller mip
-            let next_mip_size = size / (1 << (mip)); // larger mip
-
-            
-            
-            self.device.cmd_bind_descriptor_sets(
-                cmd,
-                vk::PipelineBindPoint::COMPUTE,
-                self.post_process_compute_pipeline.entry_points[2].pipeline_layout,
-                0,
-                &[constant_descriptor_sets.compositor_upsample_bloom[mip as usize]],
-                &[],
-            );
-            
-            let upsample_dispatch_push_constants = previous_mip_size.as_::<f32>();
-
-            self.device.cmd_push_constants(cmd, self.post_process_compute_pipeline.entry_points[2].pipeline_layout, vk::ShaderStageFlags::COMPUTE, 0, bytemuck::bytes_of(&upsample_dispatch_push_constants));
-            self.device.cmd_dispatch(cmd, next_mip_size.x.div_ceil(8), next_mip_size.y.div_ceil(8), 1);
-        }
-
-        let last_pass_bloom = vk::ImageMemoryBarrier2::default()
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
-            .dst_access_mask(vk::AccessFlags2::SHADER_READ)
-            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-            .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(self.queue_family_index)
-            .image(constant_descriptor_sets.bloom_image)
-            .subresource_range(vk::ImageSubresourceRange::default().level_count(vk::REMAINING_MIP_LEVELS).layer_count(1).aspect_mask(vk::ImageAspectFlags::COLOR).base_mip_level(0).base_array_layer(0));
-        let swapchain_image_undefined_to_blit_dst_layout_transition = vk::ImageMemoryBarrier2::default()
-            .old_layout(vk::ImageLayout::UNDEFINED)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .src_access_mask(vk::AccessFlags2::NONE)
-            .dst_access_mask(vk::AccessFlags2::SHADER_WRITE)
-            .src_stage_mask(vk::PipelineStageFlags2::NONE)
-            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(self.queue_family_index)
-            .image(swapchain_image)
-            .subresource_range(subresource_range);
-        let image_memory_barriers = [last_pass_bloom, swapchain_image_undefined_to_blit_dst_layout_transition];
-        let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
-        self.device.cmd_pipeline_barrier2(cmd, &dep);
-
-        // execute composition pass
-        self.device.cmd_bind_descriptor_sets(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.post_process_compute_pipeline.entry_points[0].pipeline_layout,
-            0,
-            //&[per_frame_descriptor_sets.compositor_per_frame, constant_descriptor_sets.compositor_compute_pipeline_descriptor_set],
-            &[constant_descriptor_sets.compositor, per_frame_descriptor_sets.compositor_per_frame],
-            &[],
-        );
-        self.device.cmd_bind_pipeline(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.post_process_compute_pipeline.entry_points[0].pipeline,
-        );
-
-        // TODO: remove duplicate push constants by saving to uniform buffer type shift
-        self.device.cmd_push_constants(
-            cmd,
-            self.post_process_compute_pipeline.entry_points[0].pipeline_layout,
-            vk::ShaderStageFlags::COMPUTE,
-            0,
-            raw,
-        );
-
-        self.device.cmd_dispatch(cmd, window_size_no_downscale.x.div_ceil(8), window_size_no_downscale.y.div_ceil(8), 1);
-        */
-
         let render_area = vk::Rect2D::default()
             .offset(vk::Offset2D::default())
             .extent(vk::Extent2D::default().width(size.x).height(size.y));
@@ -1420,6 +1006,8 @@ impl InternalApp {
             .layer_count(1)
             .render_area(render_area)
             .view_mask(0);
+
+        self.device.cmd_begin_query(cmd, self.pipeline_statistics_query_pool, 0, vk::QueryControlFlags::empty());
 
         let viewport = vk::Viewport::default().height(size.y as f32).width(size.x as f32).x(0f32).y(0f32).min_depth(0f32).max_depth(1f32);
         self.device.cmd_set_viewport(cmd, 0, &[viewport]);
@@ -1463,6 +1051,7 @@ impl InternalApp {
         //self.mesh_shader_device.cmd_draw_mesh_tasks(cmd, (self.index_count / 3).div_ceil(32), 1, 1);
 
         self.device.cmd_end_rendering(cmd);
+        self.device.cmd_end_query(cmd, self.pipeline_statistics_query_pool, 0);
 
 
         // transition rendered image from color attachment to sampled shader read (for bloom passes)
@@ -1672,7 +1261,7 @@ impl InternalApp {
         let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
-        self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::ALL_GRAPHICS, self.query_pool, 1);
+        self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::BOTTOM_OF_PIPE, self.query_pool, 1);
         self.device.end_command_buffer(cmd).unwrap();
 
         let cmds = [cmd];
@@ -1704,9 +1293,9 @@ impl InternalApp {
         self.stats.end_of_frame(self.frame_count);
         self.frame_count += 1;
 
-        // THERES STILL SOMETHING WRONG WITH FRAMES IN FLIGHT
-        // FUCK
-        self.device.wait_for_fences(&[end_fence], true, u64::MAX).unwrap();
+        // FIXME: THERES STILL SOMETHING WRONG WITH FRAMES IN FLIGHT
+        // FIXME: FUCK
+        //self.device.wait_for_fences(&[end_fence], true, u64::MAX).unwrap();
 
         //log::debug!("CPU thread took: {}us", (_end-_start).as_micros());
 
@@ -1741,7 +1330,8 @@ impl InternalApp {
         log::info!("destroyed debug text buffer");
 
         self.device.destroy_query_pool(self.query_pool, None);
-        log::info!("destroyed query pool");
+        self.device.destroy_query_pool(self.pipeline_statistics_query_pool, None);
+        log::info!("destroyed query pools");
 
         log::info!("waiting for all frame in flight fences...");
         let fences = self.frames_in_flight.iter().map(|x| x.end_fence).collect::<Vec<_>>();
@@ -1750,6 +1340,9 @@ impl InternalApp {
             .unwrap();
         for frame in self.frames_in_flight.into_iter() {
             frame.destroy_everything(&self.device, self.pool, &mut self.allocator);
+        }
+        for sem in self.render_finished_semaphores {
+            self.device.destroy_semaphore(sem, None);
         }
 
         self.const_descriptor_sets.destroy_rt_images_and_image_views(&self.device, self.descriptor_pool, &mut self.allocator);

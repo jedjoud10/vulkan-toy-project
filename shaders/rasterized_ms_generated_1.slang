@@ -1,4 +1,5 @@
 #language slang 2026
+#include "utils/other.slang"
 #include "utils/pbr.slang"
 #include "utils/bindless.slang"
 
@@ -106,6 +107,7 @@ groupshared Atomic<uint> triangle_count;
 struct DummyPayload {
     uint8_t[64] visible_meshlets;
     int3 offset_from_task_shader;
+    int3 task_shader_gid;
     int scale;
 }
 
@@ -165,6 +167,7 @@ void task_main(uint3 id : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID, ui
         payload = DummyPayload({});
         payload.scale = scale;
         payload.offset_from_task_shader = meshlet_offset;
+        payload.task_shader_gid = gid;
         visible_meshlets = 0;
     }
 
@@ -260,40 +263,48 @@ void mesh_main(out vertices VertexOutput vertices[128], out indices uint3 triang
     }
 
     if (all(gtid < MESHLET_SIZE_PLUS_ONE) && bitmask != 0 && bitmask != 0xFF) {
-        float3 avg = 0;
+        float3 inside_cell_offset_avg = 0;
         int count = 0;
 
         for (int edge = 0; edge < 12; edge++) {
-            uint3 p1_offsetted = cell + EDGE_POSITIONS_0[edge];
-            uint3 p2_offsetted = cell + EDGE_POSITIONS_1[edge];
+            uint3 p1_offsetted = EDGE_POSITIONS_0[edge];
+            uint3 p2_offsetted = EDGE_POSITIONS_1[edge];
 
-            uint p1_offsetted_index = offset_to_index(p1_offsetted, MESHLET_SIZE_PLUS_TWO);
-            uint p2_offsetted_index = offset_to_index(p2_offsetted, MESHLET_SIZE_PLUS_TWO);
+            uint p1_offsetted_index = offset_to_index(cell + p1_offsetted, MESHLET_SIZE_PLUS_TWO);
+            uint p2_offsetted_index = offset_to_index(cell + p2_offsetted, MESHLET_SIZE_PLUS_TWO);
             
             float d1 = cached_density[p1_offsetted_index];
             float d2 = cached_density[p2_offsetted_index];
             
             if (d1 < 0 ^ d2 < 0) {
                 float factor = unlerp(0, d1, d2);
-                avg += lerp(p1_offsetted, p2_offsetted, factor);
+                inside_cell_offset_avg += lerp(p1_offsetted, p2_offsetted, factor);
                 count++;
             }
         }
 
-        if (count > 0) {
-            let vertex_index = vertex_count.increment(MemoryOrder.Relaxed);
-            lookup[offset_to_index(cell, MESHLET_SIZE_PLUS_ONE)] = vertex_index;
+        let vertex_index = vertex_count.increment(MemoryOrder.Relaxed);
+        lookup[offset_to_index(cell, MESHLET_SIZE_PLUS_ONE)] = vertex_index;
 
-            float3 loaded_vertex = (avg / count) * payload.scale /* + floor(uniforms.position.xyz) */ + gid * MESHLET_SIZE + (int3)CHUNK_SIZE * chunk_offset;
+        float3 cell_offset = cell + (inside_cell_offset_avg / count);
+        cell_offset = cell + 0.5;
 
-            float4 world_position = float4(loaded_vertex, 1);
-            float4 t = mul(world_position, uniforms.view_projection_matrix);
-            t.y = -t.y;
-            t.x = -t.x;
-            vertices[vertex_index].world_pos = world_position.xyz;
-            vertices[vertex_index].sv_position = t;
-            vertices[vertex_index].meshlet_colour = hash33((int3)gid + chunk_offset + payload.scale);
+        float3 loaded_vertex = cell_offset * payload.scale /* + floor(uniforms.position.xyz) */ + gid * MESHLET_SIZE + (int3)CHUNK_SIZE * chunk_offset;
+
+        float4 world_position = float4(loaded_vertex, 1);
+        float4 t = mul(world_position, uniforms.view_projection_matrix);
+        t.y = -t.y;
+        t.x = -t.x;
+        vertices[vertex_index].world_pos = world_position.xyz;
+        vertices[vertex_index].sv_position = t;
+
+        float3 colour = 0;
+        if (is_bit_set(uniforms.toggles_bitmask, 2)) {
+            colour = hash33(payload.task_shader_gid);
+        } else {
+            colour = hash33((int3)gid + chunk_offset + payload.scale);
         }
+        vertices[vertex_index].meshlet_colour = colour;
     }
 
     GroupMemoryBarrierWithGroupSync();
@@ -369,7 +380,7 @@ void mesh_main(out vertices VertexOutput vertices[128], out indices uint3 triang
 
 [shader("fragment")]
 float4 frag_main(VertexOutput in_vert) : SV_Target {
-    let uniform_buffer = storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
+    let uniforms = storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
     let skybox_sampler = sampled_images_cube[SKYBOX_SAMPLER_IMAGE_IDX];
     let clouds_sampler = sampled_images[CLOUDS_SAMPLER_IMAGE_IDX];
     
@@ -377,7 +388,11 @@ float4 frag_main(VertexOutput in_vert) : SV_Target {
     
     //float3 normal = normalize(in_vert.normal + float3(snoise(world.xz * 0.124) * 0.01));
     float3 normal = -normalize(cross(ddy(in_vert.world_pos), ddx(in_vert.world_pos)));
-    float3 view = normalize(in_vert.world_pos - uniform_buffer.position.xyz);
+    float3 view = normalize(in_vert.world_pos - uniforms.position.xyz);
+
+    if (is_bit_set(uniforms.toggles_bitmask, 1)) {
+        return float4(in_vert.meshlet_colour, 1);
+    }
 
     /*
     float3 reflection = sample_skybox_and_clouds(world, reflect(view, normal), clouds_sampler, skybox_sampler);
@@ -395,13 +410,13 @@ float4 frag_main(VertexOutput in_vert) : SV_Target {
     float ao = 1.0;
     float shadow = 1.0; 
 
-    float3 ray_pos = uniform_buffer.position.xyz;
+    float3 ray_pos = uniforms.position.xyz;
 
     PbrSurfaceData pbr_surface_data = PbrSurfaceData(world, diffuse, normal, roughness, metallic, pow(ao, 1.4), shadow);
     CameraData camera_data = CameraData(view);
 
     // approximate sun color based on height
-    float3 sun = uniform_buffer.sun.xyz;
+    float3 sun = uniforms.sun.xyz;
     float3 sun_colour = sun_colour(sun.xyz);
     SunData sun_data = SunData(sun.xyz, sun.y > 0 ? (3.2 * sun_colour) : 0);
     SkyData sky_data = SkyData(skybox_sampler, clouds_sampler);

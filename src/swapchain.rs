@@ -1,6 +1,7 @@
 use std::ffi::{CStr, CString};
 use ash::vk;
 
+pub const SWAPCHAIN_IMAGES: usize = 3;
 
 pub unsafe fn create_swapchain(
     instance: &ash::Instance,
@@ -16,9 +17,7 @@ pub unsafe fn create_swapchain(
     Vec<vk::Image>,
     Vec<vk::ImageView>,
     vk::Format,
-) {
-    let num_swapchain_images = super::per_frame_data::FRAMES_IN_FLIGHT as u32;
-    
+) {    
     let present_modes: Vec<vk::PresentModeKHR> = surface_loader
         .get_physical_device_surface_present_modes(physical_device, surface_khr)
         .unwrap();
@@ -39,7 +38,7 @@ pub unsafe fn create_swapchain(
     
     let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
         .surface(surface_khr)
-        .min_image_count(num_swapchain_images)
+        .min_image_count(SWAPCHAIN_IMAGES as u32)
         .image_format(swapchain_format)
         .image_color_space(vk::ColorSpaceKHR::SRGB_NONLINEAR)
         .image_extent(extent)
