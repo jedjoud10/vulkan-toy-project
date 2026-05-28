@@ -116,7 +116,13 @@ pub struct InternalApp {
     velocities: Vec<vek::Vec4<f32>>,
     samplers: samplers::Samplers,
     tesselation_buffer: buffer::Buffer,
-    
+
+    // debug settings
+    debug_type: u32,
+    wireframe: bool,
+    toggles_bitmask: u32,
+    debug_text_buffer: buffer::Buffer,
+
     // other CPU stuff
     pub was_resized: bool,
     pub window: Window,
@@ -125,7 +131,6 @@ pub struct InternalApp {
     frame_count: u64,
     ticker: ticker::Ticker,
     sun: vek::Vec3<f32>,
-    debug_type: u32,
     args: crate::Args,
     stats: Statistics,
 }
@@ -391,6 +396,7 @@ impl InternalApp {
         let extended_dynamic_state3_device = ash::ext::extended_dynamic_state3::Device::new(&instance, &device);
 
         let tesselation_buffer = crate::tesselation::precompute_tesselation_buffer(&device, &mut allocator, &debug_marker, pool, queue);
+        let debug_text_buffer = buffer::create_buffer(&device, &mut allocator, 1024, &debug_marker, "debug text", vk::BufferUsageFlags::STORAGE_BUFFER);
 
         Self {
             frame_count: 0,
@@ -441,6 +447,9 @@ impl InternalApp {
             graphics_pipelines,
             compute_pipelines,
             velocities,
+            wireframe: false,
+            toggles_bitmask: 0,
+            debug_text_buffer,
         }
     }
 
@@ -533,6 +542,18 @@ impl InternalApp {
         if self.input.get_button(Button::Keyboard(KeyCode::KeyG)).pressed() {
             self.debug_type = (self.debug_type as i32 - 1).rem_euclid(8) as u32;
         }
+        if self.input.get_button(Button::Keyboard(KeyCode::KeyT)).pressed() {
+            self.wireframe = !self.wireframe; 
+        }
+        if self.input.get_button(Button::Keyboard(KeyCode::Digit1)).pressed() {
+            self.toggles_bitmask ^= 1;
+        }
+        if self.input.get_button(Button::Keyboard(KeyCode::Digit2)).pressed() {
+            self.toggles_bitmask ^= 2;
+        }
+        if self.input.get_button(Button::Keyboard(KeyCode::Digit3)).pressed() {
+            self.toggles_bitmask ^= 4;
+        }
         if self.input.get_button(Button::Keyboard(KeyCode::KeyJ)).pressed() {
             let report = self.allocator.generate_report();
             log::debug!("{:?}", report);
@@ -567,14 +588,12 @@ impl InternalApp {
             log::error!("wait on fence err: {:?}", err);
             // return;
         } else {
-            /*
             let mut timestamps = [0u64; 2];
             let okay = self.device.get_query_pool_results(self.query_pool, 0, &mut timestamps, vk::QueryResultFlags::TYPE_64).is_ok();
             if okay {
                 let delta_in_ms = ((timestamps[1].saturating_sub(timestamps[0])) as f64 * self.timestamp_period as f64) / 1000000.0f64;
                 self.stats.push_query_timings(delta_in_ms);
             }
-            */
         }
 
         let (acquired_swapchain_image_index, suboptimal) = self
@@ -635,27 +654,32 @@ impl InternalApp {
             .image_info(&storage_image_infos);       
 
         // create bindless descriptor write for storage buffers
-        let descriptor_uniform_buffer_info = vk::DescriptorBufferInfo::default()
-            .buffer(uniform_buffer.buffer)
-            .offset(0)
-            .range(vk::WHOLE_SIZE);
-        let descriptor_vertex_buffer_info = vk::DescriptorBufferInfo::default()
-            .buffer(self.vertex_buffer.buffer)
-            .offset(0)
-            .range(vk::WHOLE_SIZE);
-        let descriptor_index_buffer_info = vk::DescriptorBufferInfo::default()
-            .buffer(self.index_buffer.buffer)
-            .offset(0)
-            .range(vk::WHOLE_SIZE);
-        let descriptor_tess_buffer_info = vk::DescriptorBufferInfo::default()
-            .buffer(self.tesselation_buffer.buffer)
-            .offset(0)
-            .range(vk::WHOLE_SIZE);
-        let descriptor_lights_buffer_info = vk::DescriptorBufferInfo::default()
-            .buffer(self.lights_buffer.buffer)
-            .offset(0)
-            .range(vk::WHOLE_SIZE);
-        let storage_buffer_infos = [descriptor_uniform_buffer_info, descriptor_vertex_buffer_info, descriptor_index_buffer_info, descriptor_tess_buffer_info, descriptor_lights_buffer_info];
+        let storage_buffer_infos = [
+            vk::DescriptorBufferInfo::default()
+                .buffer(uniform_buffer.buffer)
+                .offset(0)
+                .range(vk::WHOLE_SIZE),
+            vk::DescriptorBufferInfo::default()
+                .buffer(self.vertex_buffer.buffer)
+                .offset(0)
+                .range(vk::WHOLE_SIZE),
+            vk::DescriptorBufferInfo::default()
+                .buffer(self.index_buffer.buffer)
+                .offset(0)
+                .range(vk::WHOLE_SIZE),
+            vk::DescriptorBufferInfo::default()
+                .buffer(self.tesselation_buffer.buffer)
+                .offset(0)
+                .range(vk::WHOLE_SIZE),
+            vk::DescriptorBufferInfo::default()
+                .buffer(self.lights_buffer.buffer)
+                .offset(0)
+                .range(vk::WHOLE_SIZE),
+            vk::DescriptorBufferInfo::default()
+                .buffer(self.debug_text_buffer.buffer)
+                .offset(0)
+                .range(vk::WHOLE_SIZE)
+        ];
         let storage_buffer_write = vk::WriteDescriptorSet::default()
             .descriptor_count(storage_buffer_infos.len() as u32)
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
@@ -731,12 +755,14 @@ impl InternalApp {
             .begin_command_buffer(cmd, &cmd_buffer_begin_info)
             .unwrap();
         self.device.cmd_reset_query_pool(cmd, self.query_pool, 0, 2);
+        self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::ALL_GRAPHICS, self.query_pool, 0);
 
         let subresource_range = vk::ImageSubresourceRange::default()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
             .level_count(1)
             .layer_count(1);
 
+        /*
         (self.velocities.par_iter_mut().zip(self.lights.par_iter())).enumerate().for_each(|(a, (velocity, light))| {
             let mut force = vek::Vec3::<f32>::zero();
             
@@ -748,7 +774,7 @@ impl InternalApp {
             }
 
             *velocity += vek::Vec4::from_direction(force) * delta * 0.2f32;
-            //*velocity *= 0.995f32;
+            // *velocity *= 0.995f32;
             //velocity.y += light.y - 10.0;
 
             velocity.y -= 9.81*9.81 * delta;
@@ -756,11 +782,54 @@ impl InternalApp {
 
         self.lights.par_iter_mut().zip(self.velocities.par_iter()).for_each(|(light, velocity)| {
             *light += vek::Vec4::from_direction(velocity.xyz()) * delta;
-            //*light += vek::Vec4::new_direction(rand::random_range(-1f32..1f32), rand::random_range(-1f32..1f32), rand::random_range(-1f32..1f32)) * 0.1f32 * delta;
+            // *light += vek::Vec4::new_direction(rand::random_range(-1f32..1f32), rand::random_range(-1f32..1f32), rand::random_range(-1f32..1f32)) * 0.1f32 * delta;
             *light = light.clamped(-40f32, 40f32);
         });
 
         self.device.cmd_update_buffer(cmd, self.lights_buffer.buffer, 0, bytemuck::cast_slice(self.lights.as_slice()));
+        */
+
+        let mut text = format!("CPU delta: {:.2}\nGPU main frame: {:.2}\n", delta*1000f32, self.stats.get_average_in_ms());
+        text += &format!("pos: {:.2}\n", self.movement.position);
+
+        let mut bytes = Vec::<u8>::new();
+
+        #[derive(Clone, Copy, Pod, Zeroable)]
+        #[repr(C)]
+        struct DebugTextLineHeader {
+            start_byte_offset: u32,
+            char_count: u32,
+        }
+
+        // write total number of lines
+        let total_num_lines = text.lines().count() as u32;
+        bytes.extend_from_slice(bytemuck::bytes_of(&total_num_lines));
+
+        // write headers for each line
+        let mut prefix_sum_chars_only = 0u32;
+        for line in text.lines() {
+            // calculate the total size in bytes prior to the actual text data
+            let mut total_size_prior = total_num_lines * size_of::<DebugTextLineHeader>() as u32;
+
+            // plus also the u32 to indicate the line count
+            total_size_prior += size_of::<u32>() as u32;
+
+            let header_for_line = DebugTextLineHeader {
+                start_byte_offset: total_size_prior + prefix_sum_chars_only, 
+                char_count: line.as_bytes().len() as u32,
+            };
+            
+            bytes.extend_from_slice(bytemuck::bytes_of(&header_for_line));
+            prefix_sum_chars_only += line.as_bytes().len() as u32;
+        }
+
+        for line in text.lines() {
+            bytes.extend_from_slice(line.as_bytes());
+        }
+
+        // wtf
+        bytes.resize(bytes.len().div_ceil(4) * 4, 0);
+        self.device.cmd_update_buffer(cmd, self.debug_text_buffer.buffer, 0, &bytes);
 
         // bind the descriptor set for subsequent pipelines
         self.device.cmd_bind_descriptor_sets(
@@ -820,6 +889,7 @@ impl InternalApp {
             camera_frustum_planes: camera_frustum_planes,
             debug_type: self.debug_type,
             time: elapsed,
+            toggles_bitmask: self.toggles_bitmask,
 
             _padding: Default::default(),
         };
@@ -1355,7 +1425,6 @@ impl InternalApp {
         self.device.cmd_set_viewport(cmd, 0, &[viewport]);
         self.device.cmd_set_scissor(cmd, 0, &[render_area]);
         
-        //self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::ALL_GRAPHICS, self.query_pool, 0);
         self.device.cmd_begin_rendering(cmd, &rendering_info);
 
         // render background skybox and clouds
@@ -1377,10 +1446,10 @@ impl InternalApp {
 
         // render other objs
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_GENERATED_1_SPV]);
-        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.debug_type < 4 { vk::PolygonMode::FILL } else { vk::PolygonMode::LINE });
-        for x in -2..2i32 {
+        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
+        for x in -4..4i32 {
             for y in -1..1i32 {
-                for z in -2..2i32 {
+                for z in -4..4i32 {
                     let chunk_offset = vek::Vec3::<i32>::new(x, y, z);
                     self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytemuck::bytes_of(&chunk_offset));
                     self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  4, 4, 4);
@@ -1394,7 +1463,6 @@ impl InternalApp {
         //self.mesh_shader_device.cmd_draw_mesh_tasks(cmd, (self.index_count / 3).div_ceil(32), 1, 1);
 
         self.device.cmd_end_rendering(cmd);
-        //self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::ALL_GRAPHICS, self.query_pool, 1);
 
 
         // transition rendered image from color attachment to sampled shader read (for bloom passes)
@@ -1604,6 +1672,7 @@ impl InternalApp {
         let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
+        self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::ALL_GRAPHICS, self.query_pool, 1);
         self.device.end_command_buffer(cmd).unwrap();
 
         let cmds = [cmd];
@@ -1666,6 +1735,10 @@ impl InternalApp {
 
         self.lights_buffer.destroy(&self.device, &mut self.allocator);
         log::info!("destroyed lights buffer");
+
+        
+        self.debug_text_buffer.destroy(&self.device, &mut self.allocator);
+        log::info!("destroyed debug text buffer");
 
         self.device.destroy_query_pool(self.query_pool, None);
         log::info!("destroyed query pool");

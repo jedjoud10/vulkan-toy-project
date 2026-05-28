@@ -20,6 +20,7 @@ pub struct PerFrameUniformData {
     pub sun: vek::Vec4<f32>,
     pub camera_frustum_planes: [vek::Vec4<f32>; 6],
     pub debug_type: u32,
+    pub toggles_bitmask: u32,
     pub time: f32,
 }
 

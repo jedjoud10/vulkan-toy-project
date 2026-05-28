@@ -3,7 +3,7 @@
 #include "utils/noises.slang"
 #include "utils/sky.slang"
 #include "utils/bindless.slang"
-#include "utils/uniform_thing.slang"
+
 
 [SpecializationConstant] const uint SKYBOX_RESOLUTION = 32;
 [SpecializationConstant] const uint CLOUDS_RESOLUTION = 32;

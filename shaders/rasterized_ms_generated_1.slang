@@ -1,6 +1,5 @@
 #language slang 2026
 #include "utils/pbr.slang"
-#include "utils/uniform_thing.slang"
 #include "utils/bindless.slang"
 
 struct VertexOutput {
@@ -13,18 +12,7 @@ float density(uint3 pos, uint3 gid, int3 chunk_offset) {
     let lights_buffer = storage_buffers_readonly[STORAGE_BUFFER_LIGHTS_BUFFER];
     let uniforms = storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
     float3 p = (float3)pos + gid * MESHLET_SIZE + chunk_offset * (int3)CHUNK_SIZE /* + floor(uniforms.position.xyz) */; 
-
-    float density = 200;
-    for (int i = 0; i < 500; i++) {
-        float4 loaded = lights_buffer.Load<float4>(i * 4 * 4);
-        float sphere = length(p - loaded.xyz) - 20;
-        density = min(sphere, density);
-    }
-
-    return density;
-    //return p.y + snoise(p * 0.05) * 10;
-
-    /*
+    
     float warp_scale = 0.2;
     float3 warp = float3(snoise(p*warp_scale + -2.213 + uniforms.time * 1.5), snoise(p*warp_scale + 4.12 -  uniforms.time * 1.01), snoise(p*warp_scale + 3.123 +  uniforms.time * 1.04));
 
@@ -33,11 +21,7 @@ float density(uint3 pos, uint3 gid, int3 chunk_offset) {
     float sphere = length(p - uniforms.position.xyz) - 10;
     density = max(density, -sphere);
     return density;
-    */
 }
-
-const static uint MESHLET_SIZE = 4;
-const static uint CHUNK_SIZE = MESHLET_SIZE * 4;
 
 uint3 index_to_offset(int index, int size) {
     let x = index % size;
@@ -49,7 +33,6 @@ uint3 index_to_offset(int index, int size) {
 int offset_to_index(uint3 offset, int size) {
     return  offset.x + offset.y * size + offset.z * size * size;
 }
-
 
 uint3[4] quad_vertex_offsets_for_axis(uint axis) {
     switch (axis) {
@@ -96,45 +79,13 @@ const static uint3[] EDGE_POSITIONS_1 = {
     uint3(0, 1, 1),
 };
 
-// Stolen from https://gist.github.com/dwilliamson/c041e3454a713e58baf6e4f8e5fffecd
-const static uint16_t[] EDGE_MASKS = {
-    0x0, 0x109, 0x203, 0x30a, 0x80c, 0x905, 0xa0f, 0xb06,
-    0x406, 0x50f, 0x605, 0x70c, 0xc0a, 0xd03, 0xe09, 0xf00,
-    0x190, 0x99, 0x393, 0x29a, 0x99c, 0x895, 0xb9f, 0xa96,
-    0x596, 0x49f, 0x795, 0x69c, 0xd9a, 0xc93, 0xf99, 0xe90,
-    0x230, 0x339, 0x33, 0x13a, 0xa3c, 0xb35, 0x83f, 0x936,
-    0x636, 0x73f, 0x435, 0x53c, 0xe3a, 0xf33, 0xc39, 0xd30,
-    0x3a0, 0x2a9, 0x1a3, 0xaa, 0xbac, 0xaa5, 0x9af, 0x8a6,
-    0x7a6, 0x6af, 0x5a5, 0x4ac, 0xfaa, 0xea3, 0xda9, 0xca0,
-    0x8c0, 0x9c9, 0xac3, 0xbca, 0xcc, 0x1c5, 0x2cf, 0x3c6,
-    0xcc6, 0xdcf, 0xec5, 0xfcc, 0x4ca, 0x5c3, 0x6c9, 0x7c0,
-    0x950, 0x859, 0xb53, 0xa5a, 0x15c, 0x55, 0x35f, 0x256,
-    0xd56, 0xc5f, 0xf55, 0xe5c, 0x55a, 0x453, 0x759, 0x650,
-    0xaf0, 0xbf9, 0x8f3, 0x9fa, 0x2fc, 0x3f5, 0xff, 0x1f6,
-    0xef6, 0xfff, 0xcf5, 0xdfc, 0x6fa, 0x7f3, 0x4f9, 0x5f0,
-    0xb60, 0xa69, 0x963, 0x86a, 0x36c, 0x265, 0x16f, 0x66,
-    0xf66, 0xe6f, 0xd65, 0xc6c, 0x76a, 0x663, 0x569, 0x460,
-    0x460, 0x569, 0x663, 0x76a, 0xc6c, 0xd65, 0xe6f, 0xf66,
-    0x66, 0x16f, 0x265, 0x36c, 0x86a, 0x963, 0xa69, 0xb60,
-    0x5f0, 0x4f9, 0x7f3, 0x6fa, 0xdfc, 0xcf5, 0xfff, 0xef6,
-    0x1f6, 0xff, 0x3f5, 0x2fc, 0x9fa, 0x8f3, 0xbf9, 0xaf0,
-    0x650, 0x759, 0x453, 0x55a, 0xe5c, 0xf55, 0xc5f, 0xd56,
-    0x256, 0x35f, 0x55, 0x15c, 0xa5a, 0xb53, 0x859, 0x950,
-    0x7c0, 0x6c9, 0x5c3, 0x4ca, 0xfcc, 0xec5, 0xdcf, 0xcc6,
-    0x3c6, 0x2cf, 0x1c5, 0xcc, 0xbca, 0xac3, 0x9c9, 0x8c0,
-    0xca0, 0xda9, 0xea3, 0xfaa, 0x4ac, 0x5a5, 0x6af, 0x7a6,
-    0x8a6, 0x9af, 0xaa5, 0xbac, 0xaa, 0x1a3, 0x2a9, 0x3a0,
-    0xd30, 0xc39, 0xf33, 0xe3a, 0x53c, 0x435, 0x73f, 0x636,
-    0x936, 0x83f, 0xb35, 0xa3c, 0x13a, 0x33, 0x339, 0x230,
-    0xe90, 0xf99, 0xc93, 0xd9a, 0x69c, 0x795, 0x49f, 0x596,
-    0xa96, 0xb9f, 0x895, 0x99c, 0x29a, 0x393, 0x99, 0x190,
-    0xf00, 0xe09, 0xd03, 0xc0a, 0x70c, 0x605, 0x50f, 0x406,
-    0xb06, 0xa0f, 0x905, 0x80c, 0x30a, 0x203, 0x109, 0x0,
-};
-
 float unlerp(float x, float a, float b) {
     return (x - a) / (b - a);
 }
+
+
+const static uint MESHLET_SIZE = 4;
+const static uint CHUNK_SIZE = MESHLET_SIZE * 4;
 
 // 1 element padding
 const static int MESHLET_SIZE_PLUS_ONE = MESHLET_SIZE+1;
@@ -151,9 +102,11 @@ groupshared uint[MESHLET_VOLUME_PLUS_ONE] lookup;
 groupshared Atomic<uint> vertex_count;
 groupshared Atomic<uint> triangle_count;
 
+// TODO: possible fast path using wave intrinsics instead?
 struct DummyPayload {
     uint8_t[64] visible_meshlets;
     int3 offset_from_task_shader;
+    int scale;
 }
 
 // used for the task shader
@@ -163,15 +116,55 @@ groupshared Atomic<uint> visible_meshlets;
 // https://medium.com/@williscool/task-and-mesh-shaders-a-practical-guide-vulkan-and-slang-25baebe6388e
 [shader("task")]
 [numthreads(64, 1, 1)]
-void task_main(uint3 id : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID, uniform int3 segment_offset) {
+void task_main(uint3 id : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID, uniform int3 chunk_offset_cs) {
     let uniforms = storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
 
     // chunk offset is from the groups of the task shader
-    int3 chunk_offset = (int3)gid + segment_offset * 4;
+    int3 meshlet_offset = (int3)gid + chunk_offset_cs * 4;
+    float3 chunk_offset_ws = (float3)CHUNK_SIZE * meshlet_offset; 
+    float3 chunk_center = (float3)CHUNK_SIZE * meshlet_offset + (float3)CHUNK_SIZE * 0.5; 
+
+    /*
+    // calculate LOD level based on distance to center of triangle
+    float3 aabb_min = (float3)chunk_offset * CHUNK_SIZE;
+    float3 aabb_max = (float3)chunk_offset * CHUNK_SIZE + (float3)CHUNK_SIZE;
+
+    float3 aabb_corners[8];
+    aabb_corners[0] = float3(aabb_min.x, aabb_min.y, aabb_min.z);
+    aabb_corners[1] = float3(aabb_max.x, aabb_min.y, aabb_min.z);
+    aabb_corners[2] = float3(aabb_min.x, aabb_max.y, aabb_min.z);
+    aabb_corners[3] = float3(aabb_max.x, aabb_max.y, aabb_min.z);
+    aabb_corners[4] = float3(aabb_min.x, aabb_min.y, aabb_max.z);
+    aabb_corners[5] = float3(aabb_max.x, aabb_min.y, aabb_max.z);
+    aabb_corners[6] = float3(aabb_min.x, aabb_max.y, aabb_max.z);
+    aabb_corners[7] = float3(aabb_max.x, aabb_max.y, aabb_max.z);
+
+    float2 ndc_min = float2(1e9, 1e9);
+    float2 ndc_max = float2(-1e9, -1e9);
+    for (int i = 0; i < 8; i++) {
+        float4 c = mul(float4(aabb_corners[i], 1.0), uniforms.view_projection_matrix);
+        float2 ndc = c.xy / c.w;
+        ndc_min = min(ndc_min, ndc);
+        ndc_max = max(ndc_max, ndc);
+    }
+
+    float2 size_ndc = ndc_max - ndc_min;
+    float screen_heuristic = 40.0 - length(size_ndc) * 10.0;
+
+
+    // this must be the same for the entire task shader group!
+    int lod = floor(clamp(log2(screen_heuristic), 0, 2));
+    */
+
+
+    // this must be the same for the entire task shader group!
+    int lod = floor(clamp(distance(chunk_center, uniforms.position.xyz) / 100, 0, 2));
+    int scale = 1 << lod;
 
     if (gtid.x == 0) {
         payload = DummyPayload({});
-        payload.offset_from_task_shader = chunk_offset;
+        payload.scale = scale;
+        payload.offset_from_task_shader = meshlet_offset;
         visible_meshlets = 0;
     }
 
@@ -180,26 +173,40 @@ void task_main(uint3 id : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID, ui
     int meshlet = gtid.x;
 
     uint3 meshlet_gid = index_to_offset(meshlet, 4);
-    float3 meshlet_center = (float3)meshlet_gid * MESHLET_SIZE + (float3)CHUNK_SIZE * chunk_offset + (float3)(MESHLET_SIZE / 2); 
 
-    bool meshlet_visible = true;   
+    float sphere_radius = CHUNK_SIZE;
 
-    // frustum culling
-    let camera_frustum_planes = uniforms.camera_frustum_planes;
-    for (int f = 0; f < 6; f++) {
-        float3 plane_normal = camera_frustum_planes[f].xyz;
-        float plane_distance = camera_frustum_planes[f].w;
+    // toggle debug frustum culling
+    if (uniforms.toggles_bitmask & 1 == 1) {
+        sphere_radius = 0.1;
+    }
 
-        if ((dot(plane_normal, meshlet_center) + plane_distance) < (-0.2 * 2.0)) {
-            meshlet_visible = false;
-            break;
+    // if LOD=0, we want all 4x4x4 meshlets to execute
+    // if LOD=1, we only want 2x2x2 meshlets to execute, those at the even coordinates (since each are now twice as big)
+    // if LOD=2, we only want 1 meshlet to execute and that one will represent the entire chunk that would have been spawned by one task shader group
+    if (all((meshlet_gid % scale) == 0)) {
+        float3 meshlet_center = (float3)meshlet_gid * MESHLET_SIZE + chunk_offset_ws + (float3)(MESHLET_SIZE / 2) * scale; 
+
+        bool meshlet_visible = true;   
+
+        // frustum culling
+        let camera_frustum_planes = uniforms.camera_frustum_planes;
+        for (int f = 0; f < 6; f++) {
+            float3 plane_normal = camera_frustum_planes[f].xyz;
+            float plane_distance = camera_frustum_planes[f].w;
+
+            if ((dot(plane_normal, meshlet_center) + plane_distance) < (-sphere_radius * 2.0)) {
+                meshlet_visible = false;
+                break;
+            }
+        }
+
+        if (meshlet_visible) {
+            uint index = visible_meshlets.increment(MemoryOrder.Relaxed);
+            payload.visible_meshlets[index] = (uint8_t)meshlet;
         }
     }
-
-    if (meshlet_visible) {
-        uint index = visible_meshlets.increment(MemoryOrder.Relaxed);
-        payload.visible_meshlets[index] = (uint8_t)meshlet;
-    }
+    
 
     GroupMemoryBarrierWithGroupSync();
 
@@ -222,8 +229,6 @@ void mesh_main(out vertices VertexOutput vertices[128], out indices uint3 triang
         triangle_count = 0;
     }
 
-    GroupMemoryBarrierWithGroupSync();
-
     int3 chunk_offset = payload.offset_from_task_shader;
     
     // group ID is "packed" from the task shader
@@ -235,7 +240,7 @@ void mesh_main(out vertices VertexOutput vertices[128], out indices uint3 triang
     uint3 cell = gtid;
 
     // cache density function and booleans
-    float cell_density = density(cell, gid, chunk_offset);
+    float cell_density = density(cell * payload.scale, gid, chunk_offset);
     bool cell_set = cell_density < 0;
     cached_is_set[offset_to_index(cell, MESHLET_SIZE_PLUS_TWO)] = cell_set;
     cached_density[offset_to_index(cell, MESHLET_SIZE_PLUS_TWO)] = cell_density;
@@ -279,7 +284,7 @@ void mesh_main(out vertices VertexOutput vertices[128], out indices uint3 triang
             let vertex_index = vertex_count.increment(MemoryOrder.Relaxed);
             lookup[offset_to_index(cell, MESHLET_SIZE_PLUS_ONE)] = vertex_index;
 
-            float3 loaded_vertex = avg / count /* + floor(uniforms.position.xyz) */ + gid * MESHLET_SIZE + (int3)CHUNK_SIZE * chunk_offset;
+            float3 loaded_vertex = (avg / count) * payload.scale /* + floor(uniforms.position.xyz) */ + gid * MESHLET_SIZE + (int3)CHUNK_SIZE * chunk_offset;
 
             float4 world_position = float4(loaded_vertex, 1);
             float4 t = mul(world_position, uniforms.view_projection_matrix);
@@ -287,7 +292,7 @@ void mesh_main(out vertices VertexOutput vertices[128], out indices uint3 triang
             t.x = -t.x;
             vertices[vertex_index].world_pos = world_position.xyz;
             vertices[vertex_index].sv_position = t;
-            vertices[vertex_index].meshlet_colour = hash33(packed_gid);
+            vertices[vertex_index].meshlet_colour = hash33((int3)gid + chunk_offset + payload.scale);
         }
     }
 
@@ -300,8 +305,7 @@ void mesh_main(out vertices VertexOutput vertices[128], out indices uint3 triang
         for (int axis = 0; axis < 3; axis++) {
             if (cell[axis] == MESHLET_SIZE) {
                 continue;
-            }
-        
+            }        
 
             uint3 next_cell = cell;
             next_cell[axis] += 1;
@@ -375,6 +379,7 @@ float4 frag_main(VertexOutput in_vert) : SV_Target {
     float3 normal = -normalize(cross(ddy(in_vert.world_pos), ddx(in_vert.world_pos)));
     float3 view = normalize(in_vert.world_pos - uniform_buffer.position.xyz);
 
+    /*
     float3 reflection = sample_skybox_and_clouds(world, reflect(view, normal), clouds_sampler, skybox_sampler);
 
     if (uniform_buffer.debug_type % 2 == 0) {
@@ -382,4 +387,25 @@ float4 frag_main(VertexOutput in_vert) : SV_Target {
     } else {
         return float4(reflection, 1);
     }
+        */
+
+    float3 diffuse = 0.5;
+    float roughness = 0.8;
+    float metallic = 0.2;
+    float ao = 1.0;
+    float shadow = 1.0; 
+
+    float3 ray_pos = uniform_buffer.position.xyz;
+
+    PbrSurfaceData pbr_surface_data = PbrSurfaceData(world, diffuse, normal, roughness, metallic, pow(ao, 1.4), shadow);
+    CameraData camera_data = CameraData(view);
+
+    // approximate sun color based on height
+    float3 sun = uniform_buffer.sun.xyz;
+    float3 sun_colour = sun_colour(sun.xyz);
+    SunData sun_data = SunData(sun.xyz, sun.y > 0 ? (3.2 * sun_colour) : 0);
+    SkyData sky_data = SkyData(skybox_sampler, clouds_sampler);
+
+    float3 colour = lighting(pbr_surface_data, camera_data, sun_data, sky_data);
+    return float4(colour, 1.0);
 }

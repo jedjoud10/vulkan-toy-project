@@ -1,6 +1,6 @@
 #language slang 2026
 #include "utils/pbr.slang"
-#include "utils/uniform_thing.slang"
+
 #include "utils/bindless.slang"
 
 

@@ -1,6 +1,23 @@
 #ifndef BINDLESS
 #define BINDLESS
 
+struct UniformThing {
+    float4x4 view_matrix;
+    float4x4 projection_matrix;
+    float4x4 inv_view_matrix;
+    float4x4 inv_projection_matrix;
+    float4x4 view_projection_matrix;
+    float2 screen_resolution;
+    float2 padding;
+    float4 position;
+    float4 forward;
+    float4 sun;
+    float4[6] camera_frustum_planes;
+    uint32_t debug_type;
+    uint32_t toggles_bitmask;
+    float32_t time;
+};
+
 const static uint SWAPCHAIN_STORAGE_IMAGE_IDX = 0;
 const static uint RENDERED_STORAGE_IMAGE_IDX = 1;
 const static uint SKYBOX_STORAGE_IMAGE_IDX = 2;
@@ -11,6 +28,7 @@ const static uint STORAGE_BUFFER_VERTEX_BUFFER_IDX = 1;
 const static uint STORAGE_BUFFER_INDEX_BUFFER = 2;
 const static uint STORAGE_BUFFER_TESS_BUFFER = 3;
 const static uint STORAGE_BUFFER_LIGHTS_BUFFER = 4;
+const static uint STORAGE_BUFFER_DEBUG_TEXT_LINES = 5;
 
 const static uint SKYBOX_SAMPLER_IMAGE_IDX = 0;
 const static uint CLOUDS_SAMPLER_IMAGE_IDX = 1;

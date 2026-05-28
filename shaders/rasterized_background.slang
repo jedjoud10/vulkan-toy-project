@@ -1,6 +1,6 @@
 #language slang 2026
 #include "utils/sky.slang"
-#include "utils/uniform_thing.slang"
+
 #include "utils/bindless.slang"
 
 static float2 positions[6] = float2[](

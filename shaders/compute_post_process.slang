@@ -3,9 +3,56 @@
 #include "utils/pbr.slang"
 #include "utils/noises.slang"
 #include "utils/bindless.slang"
-#include "utils/uniform_thing.slang"
+#include "utils/font.slang"
+
+struct DebugTextLineHeader {
+    uint32_t start_byte_offset;
+    uint32_t char_count;
+}
+        
+void render_debug_font(uint2 id, inout float3 color) {
+    // font scaling
+    id /= 2;
+
+    // the font we are using is 8x8
+    uint2 pixel_offset_inside_char = id % 8;
+
+    // do some flipping and convert to index in range [0..64)
+    pixel_offset_inside_char.y = 7 - pixel_offset_inside_char.y;
+    uint pixel_index_inside_char = pixel_offset_inside_char.x + pixel_offset_inside_char.y * 8; 
+    
+    uint char_index = id.x / 8;
+    uint line_index = id.y / 8;
+
+    
+    let font_buffer = storage_buffers_readonly[STORAGE_BUFFER_DEBUG_TEXT_LINES];
+    let total_num_lines = font_buffer.Load<uint32_t>(0);
+
+    // only render the required number of lines
+    if (line_index >= total_num_lines) {
+        return;
+    }
+
+    // get header for this line
+    // 4 is the byte size of uint32
+    // 4 * 2 is the byte size of the header itself
+    let header = font_buffer.Load<DebugTextLineHeader>(4 + line_index * 4 * 2); 
+
+    // only render the required number of characters
+    if (char_index >= header.char_count) {
+        return;
+    }
+
+    // the CPU has already applied the byte offset to start_byte_offset
+    uint64_t char = font8x8_basic[font_buffer.Load<uint8_t>(char_index + header.start_byte_offset)];
+
+    if (((char >> pixel_index_inside_char) & 1) == 1) {
+        color = 1.0;
+    }
+}
 
 [SpecializationConstant] const uint DOWNSCALE_FACTOR = 1;
+
 
 
 
@@ -18,8 +65,6 @@ void write_swapchain_image(uint3 id: SV_DispatchThreadID) {
     let swapchain_image = storage_images[SWAPCHAIN_STORAGE_IMAGE_IDX];
     let entire_bloom_image = sampled_images[ENTIRE_BLOOM_SAMPLED_IMAGE_IDX];
     let uniform_thing = storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
-
-     
 
 #ifdef SHORT_CIRCUIT_NO_TONEMAPPING
     swapchain_image[id.xy] = pre_compose[id.xy / DOWNSCALE_FACTOR];
@@ -70,6 +115,8 @@ void write_swapchain_image(uint3 id: SV_DispatchThreadID) {
     
     //float vignette = saturate(length(abs(screen_uvs_negative_one_to_one)) * 0.8 - 0.8);
     //col = lerp(col, 0.0, vignette);
+
+    render_debug_font(id.xy, col);
 
 
     swapchain_image[dst_coords] = float4(col, 0);
