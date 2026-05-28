@@ -41,7 +41,8 @@ pub unsafe fn create_device_and_queue(
         .shader_int16(true)
         .shader_int64(true)
         .sparse_binding(true)
-        .sparse_residency_image3_d(true);
+        .sparse_residency_image3_d(true)
+        .fill_mode_non_solid(true);
     let mut device_features_12 = vk::PhysicalDeviceVulkan12Features::default()
         .storage_buffer8_bit_access(true)
         .shader_float16(true)

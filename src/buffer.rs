@@ -113,6 +113,10 @@ pub unsafe fn write_to_buffer_with_offset(
     bytes: &[u8],
     dst_offset: u64,
 ) {
+    if bytes.is_empty() {
+        return;
+    }
+
     let start = std::time::Instant::now();
     let cmd_buffer_create_info = vk::CommandBufferAllocateInfo::default()
         .command_buffer_count(1)

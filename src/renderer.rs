@@ -4,9 +4,13 @@ use bytemuck::Zeroable;
 use gpu_allocator::vulkan::Allocation;
 use rand::RngExt;
 use rand::SeedableRng;
+use rayon::iter::IndexedParallelIterator;
 use rayon::iter::IntoParallelIterator;
+use rayon::iter::IntoParallelRefIterator;
+use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
 use smallvec::SmallVec;
+use vek::Clamp;
 use crate::input::Button;
 use crate::input::Input;
 use crate::movement::Movement;
@@ -46,6 +50,7 @@ const RASTERIZED_MS_PASSTHROUGH_SPV: &str = "rasterized_ms_passthrough.spv";
 const RASTERIZED_MS_TESSELALTION_SPV: &str = "rasterized_ms_tesselation.spv";
 const RASTERIZED_MS_GENERATED_1_SPV: &str = "rasterized_ms_generated_1.spv";
 const RASTERIZED_BACKGROUND_SPV: &str = "rasterized_background.spv";
+        
 
 
 pub struct InternalApp {
@@ -108,6 +113,7 @@ pub struct InternalApp {
     skybox: skybox::Skybox,
     lights_buffer: buffer::Buffer,
     lights: Vec<vek::Vec4<f32>>,
+    velocities: Vec<vek::Vec4<f32>>,
     samplers: samplers::Samplers,
     tesselation_buffer: buffer::Buffer,
     
@@ -263,6 +269,7 @@ impl InternalApp {
         let (descriptor_pool, main_descriptor_set_layout, main_descriptor_set) = others::create_descriptor_pool_and_bindless_descriptor_set(&device, &debug_marker);
 
         let main_pipeline_layout = pipeline::create_bindless_pipeline_layout(&device, &debug_marker, main_descriptor_set_layout);
+        log::info!("created bindless pipeline layout");
         
 
         let mut graphics_pipelines = HashMap::<&'static str, pipeline::GenericGraphicsPipeline>::new();
@@ -307,6 +314,7 @@ impl InternalApp {
 
         // compile the pipelines in parallel
         // ouug shii :eyes:
+        log::info!("creating pipelines...");
         let generic_pipelines = settings.into_par_iter().map(|setting| {
             let spv_file_name = setting.spv_file_name;
             let raw = assets[spv_file_name];
@@ -339,21 +347,21 @@ impl InternalApp {
         }).collect::<Vec<_>>();
         log::info!("created frames in flight structures");
 
-        const NUM_LIGHTS: usize = 100;
+        const NUM_LIGHTS: usize = 500;
 
         let lights_buffer = buffer::create_buffer(&device, &mut allocator, size_of::<vek::Vec4<f32>>() * NUM_LIGHTS, &debug_marker, "lights buffer", vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
         let mut lights = Vec::<vek::Vec4<f32>>::new();
 
-        /*
         for _i in 0..NUM_LIGHTS {
-            let x = rand::random_range((voxel::TOTAL_SIZE as f32 / 2.0f32 - 10f32)..(voxel::TOTAL_SIZE as f32 / 2.0f32 + 10f32));
-            let y = rand::random_range(0f32..(voxel::TOTAL_SIZE as f32));
-            let z = rand::random_range((voxel::TOTAL_SIZE as f32 / 2.0f32 - 10f32)..(voxel::TOTAL_SIZE as f32 / 2.0f32 + 10f32));
+            let x = rand::random_range(-10f32..10f32);
+            let y = rand::random_range(-10f32..10f32);
+            let z = rand::random_range(-10f32..10f32);
             lights.push(vek::Vec4::new(x,y,z, 1.0));
         }
-        */
 
-        //buffer::write_to_buffer(&device, pool, queue, lights_buffer.buffer, &mut allocator, bytemuck::cast_slice(lights.as_slice()));
+        let velocities = vec![vek::Vec4::<f32>::zero(); NUM_LIGHTS];
+
+        buffer::write_to_buffer(&device, pool, queue, lights_buffer.buffer, &mut allocator, bytemuck::cast_slice(lights.as_slice()));
         log::info!("created lights buffer");
 
         let mut const_descriptor_sets = ConstantData::create_constant_descriptor_sets();
@@ -367,11 +375,9 @@ impl InternalApp {
         let thingy = include_bytes!("../models/bunny_subdivided.obj");
         let obj = obj::load_obj::<obj::Position, &[u8], u32>(thingy).unwrap();
 
-        // replace with vec reinterpret...
+        // TODO: replace with vec reinterpret...
         let vertices: Vec<vek::Vec3<f32>> = obj.vertices.into_iter().map(|x| vek::Vec3::<f32>::from(x.position)).collect::<Vec<_>>();
         let mut indices: Vec<u32> = obj.indices;
-
-        //indices.sort_by_key(|triangle| triangle.x + triangle.y + triangle.z);
         meshopt::optimize_vertex_cache_in_place(&mut indices, vertices.len());
 
         let vertex_buffer = buffer::create_buffer(&device, &mut allocator, size_of::<vek::Vec3::<f32>>() * vertices.len(), &debug_marker, "vertex buffer", vk::BufferUsageFlags::VERTEX_BUFFER);
@@ -434,6 +440,7 @@ impl InternalApp {
             tesselation_buffer,
             graphics_pipelines,
             compute_pipelines,
+            velocities,
         }
     }
 
@@ -583,49 +590,7 @@ impl InternalApp {
         let swapchain_image = self.swapchain_images[acquired_swapchain_image_index as usize]; // then compose onto this...
         let swapchain_image_view = self.swapchain_image_views[acquired_swapchain_image_index as usize];
 
-               
-
-        /*
-        //log::debug!("frame in flight index: {frame_in_flight_index}, acquire swapchain image index: {acquired_swapchain_image_index}");
-
-        let descriptor_swapchain_image_view_info = vk::DescriptorImageInfo::default()
-            .image_view(swapchain_image_view)
-            .image_layout(vk::ImageLayout::GENERAL)
-            .sampler(vk::Sampler::null());
-
-        // rt image for compositor (write only)
-        let composition_compute_descriptor_image_infos_1 = [descriptor_swapchain_image_view_info];
-        let composition_compute_image_descriptor_write_1 = vk::WriteDescriptorSet::default()
-            .descriptor_count(1)
-            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-            .dst_binding(0)
-            .dst_set(per_frame_descriptor_sets.compositor_per_frame)
-            .image_info(&composition_compute_descriptor_image_infos_1);
-
-
-        let descriptor_uniform_buffer_info = vk::DescriptorBufferInfo::default()
-            .buffer(uniform_buffer.buffer)
-            .offset(0)
-            .range(vk::WHOLE_SIZE);
-        let render_rasterization_per_frame_buffer_infos = [descriptor_uniform_buffer_info];
-        let render_rasterization_descriptor_write = vk::WriteDescriptorSet::default()
-            .descriptor_count(1)
-            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-            .dst_binding(0)
-            .dst_set(per_frame_descriptor_sets.rasterizer_per_frame)
-            .buffer_info(&render_rasterization_per_frame_buffer_infos);
-
-        let background_rasterization_per_frame_buffer_infos = [descriptor_uniform_buffer_info];
-        let background_rasterization_descriptor_write = vk::WriteDescriptorSet::default()
-            .descriptor_count(1)
-            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-            .dst_binding(0)
-            .dst_set(per_frame_descriptor_sets.background_rasterizer_per_frame)
-            .buffer_info(&background_rasterization_per_frame_buffer_infos);
-
-        // update per frame descriptor sets
-        self.device.update_descriptor_sets(&[composition_compute_image_descriptor_write_1, render_rasterization_descriptor_write, background_rasterization_descriptor_write], &[]);
-        */
+        
         if suboptimal || self.was_resized {
             log::debug!("suboptimal: {suboptimal}");
             log::debug!("was resized: {}", self.was_resized);
@@ -636,10 +601,7 @@ impl InternalApp {
         }
 
         self.device.reset_fences(&[end_fence]).unwrap();
-
         let render_finished_semaphore = [self.frames_in_flight[acquired_swapchain_image_index as usize].render_finished_semaphore];
-
-        
 
         // create bindless descriptor write for storage images        
         let swapchain_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
@@ -689,7 +651,11 @@ impl InternalApp {
             .buffer(self.tesselation_buffer.buffer)
             .offset(0)
             .range(vk::WHOLE_SIZE);
-        let storage_buffer_infos = [descriptor_uniform_buffer_info, descriptor_vertex_buffer_info, descriptor_index_buffer_info, descriptor_tess_buffer_info];
+        let descriptor_lights_buffer_info = vk::DescriptorBufferInfo::default()
+            .buffer(self.lights_buffer.buffer)
+            .offset(0)
+            .range(vk::WHOLE_SIZE);
+        let storage_buffer_infos = [descriptor_uniform_buffer_info, descriptor_vertex_buffer_info, descriptor_index_buffer_info, descriptor_tess_buffer_info, descriptor_lights_buffer_info];
         let storage_buffer_write = vk::WriteDescriptorSet::default()
             .descriptor_count(storage_buffer_infos.len() as u32)
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
@@ -745,7 +711,12 @@ impl InternalApp {
         const BLOOM_MIPS_STORAGE_IMAGE_START_IDX: u32 = 4; // bloom needs to be last since it is dynamically allocated (can have a dynamic number of bloom mips, depending on screen res)
         
         const UNIFORM_BUFFER_THINGY_IDX: u32 = 0;
+        const STORAGE_BUFFER_VERTEX_BUFFER_IDX: u32 = 1;
+        const STORAGE_BUFFER_INDEX_BUFFER: u32 = 2;
+        const STORAGE_BUFFER_TESS_BUFFER: u32 = 3;
+        const STORAGE_BUFFER_SPH: u32 = 4;
         
+
         const SKYBOX_SAMPLER_IMAGE_IDX: u32 = 0;
         const CLOUDS_SAMPLER_IMAGE_IDX: u32 = 1;
         const RENDERED_SAMPLER_IMAGE_IDX: u32 = 2;
@@ -765,6 +736,31 @@ impl InternalApp {
             .aspect_mask(vk::ImageAspectFlags::COLOR)
             .level_count(1)
             .layer_count(1);
+
+        (self.velocities.par_iter_mut().zip(self.lights.par_iter())).enumerate().for_each(|(a, (velocity, light))| {
+            let mut force = vek::Vec3::<f32>::zero();
+            
+            for (b, other) in self.lights.iter().enumerate() {
+                if a != b {
+                    let vector = light.xyz() - other.xyz();
+                    force += vector.normalized() / (vector.len()*vector.len()) as f32;
+                }
+            }
+
+            *velocity += vek::Vec4::from_direction(force) * delta * 0.2f32;
+            //*velocity *= 0.995f32;
+            //velocity.y += light.y - 10.0;
+
+            velocity.y -= 9.81*9.81 * delta;
+        });
+
+        self.lights.par_iter_mut().zip(self.velocities.par_iter()).for_each(|(light, velocity)| {
+            *light += vek::Vec4::from_direction(velocity.xyz()) * delta;
+            //*light += vek::Vec4::new_direction(rand::random_range(-1f32..1f32), rand::random_range(-1f32..1f32), rand::random_range(-1f32..1f32)) * 0.1f32 * delta;
+            *light = light.clamped(-40f32, 40f32);
+        });
+
+        self.device.cmd_update_buffer(cmd, self.lights_buffer.buffer, 0, bytemuck::cast_slice(self.lights.as_slice()));
 
         // bind the descriptor set for subsequent pipelines
         self.device.cmd_bind_descriptor_sets(
@@ -1382,17 +1378,16 @@ impl InternalApp {
         // render other objs
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_GENERATED_1_SPV]);
         self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.debug_type < 4 { vk::PolygonMode::FILL } else { vk::PolygonMode::LINE });
-        for x in -4..4i32 {
-            for y in -3..3i32 {
-                for z in -4..4i32 {
+        for x in -2..2i32 {
+            for y in -1..1i32 {
+                for z in -2..2i32 {
                     let chunk_offset = vek::Vec3::<i32>::new(x, y, z);
                     self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytemuck::bytes_of(&chunk_offset));
-                    self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  1, 1, 1);
+                    self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  4, 4, 4);
                 }
             }
         }
-        
-        
+                
         // self.device.cmd_bind_vertex_buffers(cmd, 0, &[self.vertex_buffer.buffer], &[0]);
         // self.device.cmd_bind_index_buffer(cmd, self.index_buffer.buffer, 0, vk::IndexType::UINT32);
         // self.device.cmd_draw_indexed(cmd, self.index_count, 1, 0, 0, 0);
