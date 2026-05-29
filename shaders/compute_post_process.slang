@@ -10,7 +10,7 @@ struct DebugTextLineHeader {
     uint32_t char_count;
 }
         
-void render_debug_font(uint2 id, inout float3 color) {
+void render_debug_font_raw(uint2 id, inout float3 color, float3 font_colour) {
     // font scaling
     id /= 2;
 
@@ -18,7 +18,6 @@ void render_debug_font(uint2 id, inout float3 color) {
     uint2 pixel_offset_inside_char = id % 8;
 
     // do some flipping and convert to index in range [0..64)
-    pixel_offset_inside_char.y = 7 - pixel_offset_inside_char.y;
     uint pixel_index_inside_char = pixel_offset_inside_char.x + pixel_offset_inside_char.y * 8; 
     
     uint char_index = id.x / 8;
@@ -32,6 +31,9 @@ void render_debug_font(uint2 id, inout float3 color) {
     if (line_index >= total_num_lines) {
         return;
     }
+
+    // invert line order
+    line_index = (total_num_lines-1) - line_index;
 
     // get header for this line
     // 4 is the byte size of uint32
@@ -47,8 +49,18 @@ void render_debug_font(uint2 id, inout float3 color) {
     uint64_t char = font8x8_basic[font_buffer.Load<uint8_t>(char_index + header.start_byte_offset)];
 
     if (((char >> pixel_index_inside_char) & 1) == 1) {
-        color = 1.0;
+        color = font_colour;
     }
+}
+
+void render_debug_font(uint2 id, inout float3 color) {
+    for (int x = -1; x < 2; x++) {
+        for (int y = -1; y < 2; y++) {
+            render_debug_font_raw((int2)id + int2(x,y) * 2, color, all(int2(x, y) == 0) ? 1.0 : 0.0);
+        }
+    }
+
+    render_debug_font_raw(id, color, 1.0);
 }
 
 [SpecializationConstant] const uint DOWNSCALE_FACTOR = 1;
@@ -64,7 +76,7 @@ void write_swapchain_image(uint3 id: SV_DispatchThreadID) {
     let pre_compose = storage_images[RENDERED_STORAGE_IMAGE_IDX];
     let swapchain_image = storage_images[SWAPCHAIN_STORAGE_IMAGE_IDX];
     let entire_bloom_image = sampled_images[ENTIRE_BLOOM_SAMPLED_IMAGE_IDX];
-    let uniform_thing = storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
+    let uniforms = storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
 
 #ifdef SHORT_CIRCUIT_NO_TONEMAPPING
     swapchain_image[id.xy] = pre_compose[id.xy / DOWNSCALE_FACTOR];
@@ -75,7 +87,7 @@ void write_swapchain_image(uint3 id: SV_DispatchThreadID) {
     uint2 dst_coords = id.xy;
     
     
-    float2 screen_uvs_negative_one_to_one = ((float2)src_coords) / uniform_thing.screen_resolution;
+    float2 screen_uvs_negative_one_to_one = ((float2)src_coords) / uniforms.screen_resolution;
     screen_uvs_negative_one_to_one *= 2.0;
     screen_uvs_negative_one_to_one -= 1.0;
     screen_uvs_negative_one_to_one.y = -screen_uvs_negative_one_to_one.y;
@@ -116,7 +128,10 @@ void write_swapchain_image(uint3 id: SV_DispatchThreadID) {
     //float vignette = saturate(length(abs(screen_uvs_negative_one_to_one)) * 0.8 - 0.8);
     //col = lerp(col, 0.0, vignette);
 
-    render_debug_font(id.xy, col);
+    uint2 text_pixel_id = id.xy;
+    // start at the bottom left instead...
+    text_pixel_id.y = (uint)uniforms.screen_resolution.y - text_pixel_id.y;
+    render_debug_font(text_pixel_id, col);
 
 
     swapchain_image[dst_coords] = float4(col, 0);
