@@ -5,3 +5,5 @@
 - After rebooting post that BSOD, the task/mesh shaders will work.
 
 Idk if this is because I am riding on UB somewhere in the task/mesh shader or if it's simply shit AMD drivers on windows.
+
+- Also IIRC (from yesterday lol) it crashes the driver if you try to read from the `groupshared` `vertices` or `triangles` memory in the mesh shader :P

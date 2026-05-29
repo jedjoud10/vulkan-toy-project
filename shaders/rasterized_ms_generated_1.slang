@@ -105,8 +105,7 @@ groupshared uint[MESHLET_VOLUME_PLUS_ONE] lookup;
 groupshared Atomic<uint> vertex_count;
 groupshared Atomic<uint> triangle_count;
 
-// TODO: possible fast path using wave intrinsics instead?
-struct DummyPayload {
+struct TaskShaderPayload {
     uint8_t[64] visible_meshlets;
     int3 offset_from_task_shader;
     int3 task_shader_gid;
@@ -114,7 +113,7 @@ struct DummyPayload {
 }
 
 // used for the task shader
-groupshared DummyPayload payload;
+groupshared TaskShaderPayload payload;
 groupshared Atomic<uint> visible_meshlets;
 
 // https://medium.com/@williscool/task-and-mesh-shaders-a-practical-guide-vulkan-and-slang-25baebe6388e
@@ -166,7 +165,7 @@ void task_main(uint3 id : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID, ui
     int scale = 1 << lod;
 
     if (gtid.x == 0) {
-        payload = DummyPayload({});
+        payload = TaskShaderPayload({});
         payload.scale = scale;
         payload.offset_from_task_shader = group_offset;
         payload.task_shader_gid = gid;
@@ -225,7 +224,7 @@ void task_main(uint3 id : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID, ui
 [shader("mesh")]
 [outputtopology("triangle")]
 [numthreads(6, 6, 6)]
-void mesh_main(out vertices VertexOutput vertices[128], out indices uint3 triangles[256], uint3 gtid : SV_GroupThreadID, uint3 packed_gid : SV_GroupID, payload DummyPayload payload) {
+void mesh_main(out vertices VertexOutput vertices[128], out indices uint3 triangles[256], uint3 gtid : SV_GroupThreadID, uint3 packed_gid : SV_GroupID, payload TaskShaderPayload payload) {
     let uniforms = storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
     
     // initialize group shared memory

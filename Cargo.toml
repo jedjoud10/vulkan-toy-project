@@ -7,7 +7,7 @@ edition = "2024"
 
 [dependencies]
 winit = "0.30.5"
-bytemuck = { version = "1.21.0", features = ["derive"] }
+bytemuck = { version = "1.25.0", features = ["derive", "extern_crate_alloc"] }
 ash = "0.38.0"
 vek = { version = "0.17.1", features = ["bytemuck", "serde"]}
 raw-window-handle = "0.6.2"
@@ -32,6 +32,7 @@ flate2 = "1.1.9"
 fixedbitset = "0.5.7"
 obj-rs = "0.7.0"
 meshopt = "0.6.2"
+include_dir = "0.7.4"
 
 [build-dependencies]
 shader-slang = { git = "https://github.com/FloatyMonkey/slang-rs.git" }

@@ -3,6 +3,8 @@ use bytemuck::Pod;
 use bytemuck::Zeroable;
 use bytesize::ByteSize;
 use gpu_allocator::vulkan::Allocation;
+use include_dir::Dir;
+use include_dir::include_dir;
 use rand::RngExt;
 use rand::SeedableRng;
 use rayon::iter::IndexedParallelIterator;
@@ -12,6 +14,7 @@ use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
 use smallvec::SmallVec;
 use vek::Clamp;
+use vek::num_integer::Integer;
 use crate::input::Button;
 use crate::input::Input;
 use crate::movement::Movement;
@@ -50,6 +53,7 @@ const WRITE_SKYBOX_ENTRY_POINT: &str = "write_skybox";
 const RASTERIZED_MS_PASSTHROUGH_SPV: &str = "rasterized_ms_passthrough.spv";
 const RASTERIZED_MS_TESSELALTION_SPV: &str = "rasterized_ms_tesselation.spv";
 const RASTERIZED_MS_GENERATED_1_SPV: &str = "rasterized_ms_generated_1.spv";
+const RASTERIZED_MS_GENERATED_GRASS_SPV: &str = "rasterized_ms_generated_grass.spv";
 const RASTERIZED_BACKGROUND_SPV: &str = "rasterized_background.spv";
         
 
@@ -139,19 +143,25 @@ pub struct InternalApp {
     stats: Statistics,
 }
 
+static COMPILED_SHADERS: Dir = include_dir!("$CARGO_MANIFEST_DIR/compiled_shaders");
+
 impl InternalApp {
     pub unsafe fn new(event_loop: &ActiveEventLoop, args: crate::Args) -> Self {
-        let mut assets = HashMap::<&str, &[u32]>::new();
-        //asset!("raytracer.spv", assets);
-        asset!("compute_sky.spv", assets);
-        asset!("compute_post_process.spv", assets);
-        //asset!("voxel_interesting_compute.spv", assets);
-        asset!("rasterized_ms_tesselation.spv", assets);
-        asset!("rasterized_ms_passthrough.spv", assets);
-        asset!("rasterized_ms_generated_1.spv", assets);
+        let mut assets = HashMap::<&str, Vec<u32>>::new();
 
-        asset!("rasterized_background.spv", assets);
-        
+        for file in COMPILED_SHADERS.files() {
+            let len = file.contents().len();
+            assert!(len.is_multiple_of(4));
+
+            let mut vec = vec![0u32; len / 4];
+            let dst_slice = bytemuck::cast_slice_mut::<u32, u8>(vec.as_mut_slice());
+
+            dst_slice.copy_from_slice(file.contents());
+
+            let file_name = file.path().file_name().unwrap().to_str().unwrap();
+            log::debug!("added shader '{file_name}' to assets");
+            assets.insert(file_name, vec);
+        }
 
         let window = event_loop
             .create_window(Window::default_attributes())
@@ -235,7 +245,7 @@ impl InternalApp {
                 device: device.clone(),
                 physical_device,
                 debug_settings: gpu_allocator::AllocatorDebugSettings {
-                    log_leaks_on_shutdown: false,
+                    log_leaks_on_shutdown: true,
                     log_frees: false,
                     ..Default::default()
                 },
@@ -314,6 +324,11 @@ impl InternalApp {
             wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::GraphicsMeshShader { face_culling: true, task_shader: true },
             spec_constants: None,
             spv_file_name: RASTERIZED_MS_GENERATED_1_SPV,
+        }, pipeline::PipelineCreateSettings {
+            pipeline_debug_name: "grass render pipeline",
+            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::GraphicsMeshShader { face_culling: false, task_shader: true },
+            spec_constants: None,
+            spv_file_name: RASTERIZED_MS_GENERATED_GRASS_SPV,
         }];
 
         // compile the pipelines in parallel
@@ -321,7 +336,7 @@ impl InternalApp {
         log::info!("creating pipelines...");
         let generic_pipelines = settings.into_par_iter().map(|setting| {
             let spv_file_name = setting.spv_file_name;
-            let raw = assets[spv_file_name];
+            let raw = &assets[spv_file_name];
             let pipeline = pipeline::create_generic_pipeline(raw, &device, &debug_marker, main_pipeline_layout, setting);
             (spv_file_name, pipeline)
         }).collect::<Vec<_>>();
@@ -788,8 +803,6 @@ impl InternalApp {
         text += &format!("debug type: {}\n", self.debug_type);
         text += &format!("toggles bitmask: {:#032b}\n", self.toggles_bitmask);
         text += &format!("wireframe: {}\n", self.wireframe);
-        text += &format!("wireframe: {}\n", self.wireframe);
-
 
         let report = self.allocator.generate_report();
         let reserved_bytes = ByteSize::b(report.total_reserved_bytes).display().iec();
@@ -1042,10 +1055,11 @@ impl InternalApp {
         */
 
         // render other objs
+        /*
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_GENERATED_1_SPV]);
         self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
         for x in -1..1i32 {
-            for y in -1..1i32 {
+            for y in -0..1i32 {
                 for z in -1..1i32 {
                     #[derive(Clone, Copy, Pod, Zeroable)]
                     #[repr(C)]
@@ -1071,7 +1085,12 @@ impl InternalApp {
                 }
             }
         }
-
+        */
+        
+        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_GENERATED_GRASS_SPV]);
+        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
+        self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  1, 1, 1);
+        
         
         self.device.cmd_end_rendering(cmd);
         self.device.cmd_end_query(cmd, self.pipeline_statistics_query_pool, 0);

@@ -8,6 +8,7 @@ struct VertexOutput {
     float3 world_pos;
     float3 colour;
     float4 sv_position : SV_Position;
+    float4 user;
 };
 
 VertexOutput transform_vertex(
@@ -26,6 +27,7 @@ VertexOutput transform_vertex(
     vert.world_pos = world_position.xyz;
     vert.sv_position = t;
     vert.colour = colour;
+    vert.user = 0.0;
     return vert;
 }
 

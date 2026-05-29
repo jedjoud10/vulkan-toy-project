@@ -163,17 +163,17 @@ float noise(float3 p) {
     float ozz = hash13(floor(p) + float3(1, 0, 0));
     float ozo = hash13(floor(p) + float3(1, 0, 1));
 
-    float zoz = hash13(floor(float3(0, 1, 0) + p));
-    float zoo = hash13(floor(float3(0, 1, 0) + p) + float3(0, 0, 1));
-    float ooz = hash13(floor(float3(0, 1, 0) + p) + float3(1, 0, 0));
-    float ooo = hash13(floor(float3(0, 1, 0) + p) + float3(1, 0, 1));
+    float zoz = hash13(float3(0, 1, 0) + floor(p));
+    float zoo = hash13(float3(0, 1, 0) + floor(p) + float3(0, 0, 1));
+    float ooz = hash13(float3(0, 1, 0) + floor(p) + float3(1, 0, 0));
+    float ooo = hash13(float3(0, 1, 0) + floor(p) + float3(1, 0, 1));
 
     float3 uv = frac(p);
     
 
     // TODO: optimize
-    float bottom = lerp(lerp(zzz, zzo, uv.x), lerp(ozz, ozo, uv.x), uv.z);
-    float top = lerp(lerp(zoz, zoo, uv.x), lerp(ooz, ooo, uv.x), uv.z);
+    float bottom = lerp(lerp(zzz, zzo, uv.z), lerp(ozz, ozo, uv.z), uv.x);
+    float top = lerp(lerp(zoz, zoo, uv.z), lerp(ooz, ooo, uv.z), uv.x);
 
     return lerp(bottom, top, uv.y) * 2 - 1;
 }
