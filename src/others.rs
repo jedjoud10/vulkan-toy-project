@@ -6,26 +6,27 @@ pub const STORAGE_IMAGE_COUNT: u32 = 160;
 pub const STORAGE_BUFFER_COUNT: u32 = 60;
 pub const UNIFORM_BUFFER_COUNT: u32 = 60;
 pub const COMBINED_IMAGE_SAMPLER_COUNT: u32 = 40;
+pub const MAX_DESCRIPTOR_SETS: u32 = crate::per_frame_data::FRAMES_IN_FLIGHT as u32;
 
 
-pub unsafe fn create_descriptor_pool_and_bindless_descriptor_set(device: &ash::Device, binder: &Option<ash::ext::debug_utils::Device>) -> (vk::DescriptorPool, vk::DescriptorSetLayout, vk::DescriptorSet) {
+pub unsafe fn create_descriptor_pool_and_bindless_descriptor_set(device: &ash::Device, binder: &Option<ash::ext::debug_utils::Device>) -> (vk::DescriptorPool, vk::DescriptorSetLayout) {
     let images = vk::DescriptorPoolSize::default()
-        .descriptor_count(STORAGE_IMAGE_COUNT)
+        .descriptor_count(STORAGE_IMAGE_COUNT*MAX_DESCRIPTOR_SETS)
         .ty(vk::DescriptorType::STORAGE_IMAGE);
     let storage_buffers = vk::DescriptorPoolSize::default()
-        .descriptor_count(STORAGE_BUFFER_COUNT)
+        .descriptor_count(STORAGE_BUFFER_COUNT*MAX_DESCRIPTOR_SETS)
         .ty(vk::DescriptorType::STORAGE_BUFFER);
     let dynamic_buffers = vk::DescriptorPoolSize::default()
-        .descriptor_count(UNIFORM_BUFFER_COUNT)
+        .descriptor_count(UNIFORM_BUFFER_COUNT*MAX_DESCRIPTOR_SETS)
         .ty(vk::DescriptorType::UNIFORM_BUFFER);
     let combined_image_samplers = vk::DescriptorPoolSize::default()
-        .descriptor_count(COMBINED_IMAGE_SAMPLER_COUNT)
+        .descriptor_count(COMBINED_IMAGE_SAMPLER_COUNT*MAX_DESCRIPTOR_SETS)
         .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER);
     let descriptor_pool_sizes = [images, storage_buffers, dynamic_buffers, combined_image_samplers];
 
     let descriptor_pool_create_info = vk::DescriptorPoolCreateInfo::default()
         .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET | vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND)
-        .max_sets(1)
+        .max_sets(MAX_DESCRIPTOR_SETS)
         .pool_sizes(&descriptor_pool_sizes);
     let descriptor_pool = device
         .create_descriptor_pool(&descriptor_pool_create_info, None)
@@ -66,17 +67,7 @@ pub unsafe fn create_descriptor_pool_and_bindless_descriptor_set(device: &ash::D
     crate::debug::set_object_name(descriptor_set_layout, binder, "main descriptor set layout");
     log::info!("created bindless descriptor set layout");
 
-
-    let layouts = [descriptor_set_layout];
-    let allocate_info = vk::DescriptorSetAllocateInfo::default()
-        .descriptor_pool(descriptor_pool)
-        .set_layouts(&layouts);
-
-    let descriptor_set = device.allocate_descriptor_sets(&allocate_info).unwrap()[0];
-    crate::debug::set_object_name(descriptor_set, binder, "main descriptor set");
-    log::info!("created bindless descriptor set");
-
-    (descriptor_pool, descriptor_set_layout, descriptor_set)
+    (descriptor_pool, descriptor_set_layout)
 }
 
 

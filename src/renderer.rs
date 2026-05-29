@@ -93,7 +93,6 @@ pub struct InternalApp {
     extended_dynamic_state3_device: ash::ext::extended_dynamic_state3::Device,
 
     // descriptors & frames in flight
-    main_descriptor_set: vk::DescriptorSet,
     main_descriptor_set_layout: vk::DescriptorSetLayout,
     main_pipeline_layout: vk::PipelineLayout,
     frames_in_flight: SmallVec<[PerFrameData; per_frame_data::FRAMES_IN_FLIGHT]>,
@@ -112,7 +111,7 @@ pub struct InternalApp {
     // other GPU stuff
     query_pool: vk::QueryPool,
     pipeline_statistics_query_pool: vk::QueryPool,
-
+    
     timestamp_period: f32,
     skybox: skybox::Skybox,
     lights_buffer: buffer::Buffer,
@@ -120,6 +119,7 @@ pub struct InternalApp {
     velocities: Vec<vek::Vec4<f32>>,
     samplers: samplers::Samplers,
     tesselation_buffer: buffer::Buffer,
+    uniform_buffer: buffer::Buffer,
 
     // debug settings
     debug_type: u32,
@@ -272,10 +272,11 @@ impl InternalApp {
             &device,
             extent,
             &debug_marker,
+            None,
         );
         log::info!("created swapchain with {} images", swapchain_images.len());
 
-        let (descriptor_pool, main_descriptor_set_layout, main_descriptor_set) = others::create_descriptor_pool_and_bindless_descriptor_set(&device, &debug_marker);
+        let (descriptor_pool, main_descriptor_set_layout) = others::create_descriptor_pool_and_bindless_descriptor_set(&device, &debug_marker);
 
         let main_pipeline_layout = pipeline::create_bindless_pipeline_layout(&device, &debug_marker, main_descriptor_set_layout);
         log::info!("created bindless pipeline layout");
@@ -352,7 +353,7 @@ impl InternalApp {
         log::info!("created skybox");
 
         let frames_in_flight = (0..per_frame_data::FRAMES_IN_FLIGHT).into_iter().map(|_| {
-            PerFrameData::create_per_frame_data(&device, pool, &mut allocator, &debug_marker)
+            PerFrameData::create_per_frame_data(&device, pool, descriptor_pool, &mut allocator, main_descriptor_set_layout, &debug_marker)
         }).collect::<SmallVec<[PerFrameData; per_frame_data::FRAMES_IN_FLIGHT]>>();
         log::info!("created frames in flight structures");
 
@@ -403,9 +404,18 @@ impl InternalApp {
         let tesselation_buffer = crate::tesselation::precompute_tesselation_buffer(&device, &mut allocator, &debug_marker, pool, queue);
         let debug_text_buffer = buffer::create_buffer(&device, &mut allocator, 1024, &debug_marker, "debug text", vk::BufferUsageFlags::STORAGE_BUFFER);
 
-        let render_finished_semaphores: SmallVec<[vk::Semaphore; 3]> = (0..swapchain::SWAPCHAIN_IMAGES).into_iter().map(|_| {
+        let render_finished_semaphores: SmallVec<[vk::Semaphore; swapchain::SWAPCHAIN_IMAGES]> = (0..swapchain::SWAPCHAIN_IMAGES).into_iter().map(|_| {
             device.create_semaphore(&Default::default(), None).unwrap()
         }).collect::<SmallVec<[vk::Semaphore; swapchain::SWAPCHAIN_IMAGES]>>();
+
+        let uniform_buffer = crate::buffer::create_buffer(
+            &device,
+            &mut allocator,
+            size_of::<pipeline::PerFrameUniformData>(),
+            &debug_marker,
+            "per frame uniform buffer",
+            vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST
+        );
 
         Self {
             frame_count: 0,
@@ -444,7 +454,6 @@ impl InternalApp {
             samplers,
             swapchain_images,
             swapchain_image_views,
-            main_descriptor_set,
             main_descriptor_set_layout,
             main_pipeline_layout,
             vertex_buffer,
@@ -461,6 +470,7 @@ impl InternalApp {
             debug_text_buffer,
             pipeline_statistics_query_pool,
             render_finished_semaphores,
+            uniform_buffer,
         }
     }
 
@@ -478,17 +488,12 @@ impl InternalApp {
         self.was_resized = false;
         self.device.device_wait_idle().unwrap();
 
-        self.swapchain_loader
-            .destroy_swapchain(self.swapchain, None);
-        for swapchain_image_view in self.swapchain_image_views.iter() {
-            self.device.destroy_image_view(*swapchain_image_view, None);
-        }
-
         let width = self.window.inner_size().width;
         let height = self.window.inner_size().height;
         
         let extent = vk::Extent2D { width, height };
 
+        // recreate swapchain (pass in old swapchain as well) 
         let (swapchain_loader, swapchain, swapchain_images, swapchain_image_views, swapchain_format) = swapchain::create_swapchain(
             &self.instance,
             &self.surface_loader,
@@ -497,7 +502,15 @@ impl InternalApp {
             &self.device,
             extent,
             &self.debug_marker,
+            Some(self.swapchain)
         );
+
+        // destroy old swapchain and image views...
+        self.swapchain_loader
+            .destroy_swapchain(self.swapchain, None);
+        for swapchain_image_view in self.swapchain_image_views.iter() {
+            self.device.destroy_image_view(*swapchain_image_view, None);
+        }
 
         self.swapchain_loader = swapchain_loader;
         self.swapchain_format = swapchain_format;
@@ -508,17 +521,18 @@ impl InternalApp {
         self.const_descriptor_sets.destroy_rt_images_and_image_views(&self.device, self.descriptor_pool, &mut self.allocator);
         self.const_descriptor_sets.recreate_rt_images_and_image_views_and_update_descriptor_sets(&self.device, &mut self.allocator, self.queue_family_index, extent, &self.debug_marker, self.args.downscale_factor);
         crate::constant_data::transfer_layout_for_images(&self.device, self.queue_family_index, &self.const_descriptor_sets, self.pool, self.queue);
-                
-        /*
+
+
         for frame in self.frames_in_flight.iter_mut() {
             self.device.destroy_semaphore(frame.present_complete_semaphore, None);
-            self.device.destroy_semaphore(frame.render_finished_semaphore, None);
-
-            let create_info = vk::SemaphoreCreateInfo::default();
-            frame.render_finished_semaphore = self.device.create_semaphore(&create_info, None).unwrap();
-            frame.present_complete_semaphore = self.device.create_semaphore(&create_info, None).unwrap();
+            frame.present_complete_semaphore = self.device.create_semaphore(&Default::default(), None).unwrap();
         }
-        */
+
+        for render_finished_semaphore in self.render_finished_semaphores.iter_mut() {
+            self.device.destroy_semaphore(*render_finished_semaphore, None);
+            let create_info = vk::SemaphoreCreateInfo::default();
+            *render_finished_semaphore = self.device.create_semaphore(&Default::default(), None).unwrap();
+        }
 
 
         self.device.device_wait_idle().unwrap();
@@ -589,7 +603,7 @@ impl InternalApp {
             present_complete_semaphore,
             end_fence,
             cmd,
-            uniform_buffer,
+            main_descriptor_set,
             ..
         } = &self.frames_in_flight[frame_in_flight_index as usize];
 
@@ -601,15 +615,17 @@ impl InternalApp {
             log::error!("wait on fence err: {:?}", err);
             // return;
         } else {
-            // try to fetch timestamp queries
-            /*
-            let mut timestamps = [0u64; 2];
-            let okay = self.device.get_query_pool_results(self.query_pool, 0, &mut timestamps, vk::QueryResultFlags::TYPE_64 | vk::QueryResultFlags::WAIT).is_ok();
-            if okay {
-                let delta_in_ms = ((timestamps[1].saturating_sub(timestamps[0])) as f64 * self.timestamp_period as f64) / 1000000.0f64;
-                self.stats.push_query_timings(delta_in_ms);
+            // wait for a few frames so that the queries get populated
+            if self.frame_count > per_frame_data::FRAMES_IN_FLIGHT as u64 {
+                // try to fetch timestamp queries
+                let mut timestamps = [0u64; 2];
+                let okay = self.device.get_query_pool_results(self.query_pool, 0, &mut timestamps, vk::QueryResultFlags::TYPE_64 | vk::QueryResultFlags::WAIT).is_ok();
+                if okay {
+                    let delta_in_ms = ((timestamps[1].saturating_sub(timestamps[0])) as f64 * self.timestamp_period as f64) / 1000000.0f64;
+                    self.stats.push_query_timings(delta_in_ms);
+                }
             }
-            */
+
 
             /*
             // try to fetch pipeline statistics queriy
@@ -675,13 +691,13 @@ impl InternalApp {
             .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
             .dst_binding(0)
             .dst_array_element(0)
-            .dst_set(self.main_descriptor_set)
+            .dst_set(*main_descriptor_set)
             .image_info(&storage_image_infos);       
 
         // create bindless descriptor write for storage buffers
         let storage_buffer_infos = [
             vk::DescriptorBufferInfo::default()
-                .buffer(uniform_buffer.buffer)
+                .buffer(self.uniform_buffer.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
             vk::DescriptorBufferInfo::default()
@@ -709,7 +725,7 @@ impl InternalApp {
             .descriptor_count(storage_buffer_infos.len() as u32)
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
             .dst_binding(1)
-            .dst_set(self.main_descriptor_set)
+            .dst_set(*main_descriptor_set)
             .buffer_info(&storage_buffer_infos);
 
         // create bindless descriptor write for combined image samplers
@@ -744,7 +760,7 @@ impl InternalApp {
             .descriptor_count(sampled_image_infos.len() as u32)
             .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .dst_binding(2)
-            .dst_set(self.main_descriptor_set)
+            .dst_set(*main_descriptor_set)
             .image_info(&sampled_image_infos);
 
         // update the bindless descriptor set
@@ -828,7 +844,7 @@ impl InternalApp {
 
         // wtf
         bytes.resize(bytes.len().div_ceil(4) * 4, 0);
-        //self.device.cmd_update_buffer(cmd, self.debug_text_buffer.buffer, 0, &bytes);
+        self.device.cmd_update_buffer(cmd, self.debug_text_buffer.buffer, 0, &bytes);
 
         // bind the descriptor set for subsequent pipelines
         self.device.cmd_bind_descriptor_sets(
@@ -836,7 +852,7 @@ impl InternalApp {
             vk::PipelineBindPoint::COMPUTE,
             self.main_pipeline_layout,
             0,
-            &[self.main_descriptor_set],
+            &[*main_descriptor_set],
             &[],
         );
         self.device.cmd_bind_descriptor_sets(
@@ -844,7 +860,7 @@ impl InternalApp {
             vk::PipelineBindPoint::GRAPHICS,
             self.main_pipeline_layout,
             0,
-            &[self.main_descriptor_set],
+            &[*main_descriptor_set],
             &[],
         );
 
@@ -893,11 +909,11 @@ impl InternalApp {
             _padding: Default::default(),
         };
 
-        self.device.cmd_update_buffer(cmd, uniform_buffer.buffer, 0, bytemuck::bytes_of(&uniform_per_frame_data));
+        self.device.cmd_update_buffer(cmd, self.uniform_buffer.buffer, 0, bytemuck::bytes_of(&uniform_per_frame_data));
 
 
         let uniform_buffer_barrier = vk::BufferMemoryBarrier2::default()
-            .buffer(uniform_buffer.buffer)
+            .buffer(self.uniform_buffer.buffer)
             .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
             .dst_access_mask(vk::AccessFlags2::MEMORY_WRITE)
             .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
@@ -905,7 +921,6 @@ impl InternalApp {
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)
             .size(vk::WHOLE_SIZE);
-        /*
         let debug_text_buffer_barrier = vk::BufferMemoryBarrier2::default()
             .buffer(self.debug_text_buffer.buffer)
             .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
@@ -915,8 +930,7 @@ impl InternalApp {
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)
             .size(vk::WHOLE_SIZE);
-        */
-        let buffer_memory_barriers = [uniform_buffer_barrier, /*debug_text_buffer_barrier*/];
+        let buffer_memory_barriers = [uniform_buffer_barrier, debug_text_buffer_barrier];
         let dep = vk::DependencyInfo::default().buffer_memory_barriers(&buffer_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
@@ -1007,6 +1021,7 @@ impl InternalApp {
             .render_area(render_area)
             .view_mask(0);
 
+        
         self.device.cmd_begin_query(cmd, self.pipeline_statistics_query_pool, 0, vk::QueryControlFlags::empty());
 
         let viewport = vk::Viewport::default().height(size.y as f32).width(size.x as f32).x(0f32).y(0f32).min_depth(0f32).max_depth(1f32);
@@ -1024,30 +1039,51 @@ impl InternalApp {
         //self.mesh_shader_device.cmd_draw_mesh_tasks(cmd, 32, 32, 1);
 
         // render objs
-        /*
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_PASSTHROUGH_SPV]);
-        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.debug_type < 4 { vk::PolygonMode::FILL } else { vk::PolygonMode::LINE });
+        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
         let triangle_count = self.index_count / 3;
         self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytemuck::bytes_of(&triangle_count));
         self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  triangle_count.div_ceil(32), 1, 1);
-        */
 
+        /*
         // render other objs
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_GENERATED_1_SPV]);
         self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
-        for x in -4..4i32 {
+        for x in -1..1i32 {
             for y in -1..1i32 {
-                for z in -4..4i32 {
+                for z in -1..1i32 {
+                    #[derive(Clone, Copy, Pod, Zeroable)]
+                    #[repr(C)]
+                    struct PushConstantsStuff {
+                        chunk_offset: vek::Vec3::<i32>,
+                        lod: u32,
+                    }
+                    
                     let chunk_offset = vek::Vec3::<i32>::new(x, y, z);
-                    self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytemuck::bytes_of(&chunk_offset));
-                    self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  4, 4, 4);
+                    /*
+                    int3 group_offset = (int3)gid + chunk_offset_cs * 8;
+                    float3 chunk_offset_ws = (float3)CHUNK_SIZE * group_offset; 
+                    float3 chunk_center = (float3)CHUNK_SIZE * group_offset + (float3)CHUNK_SIZE * 0.5; 
+                    let lod = floor(clamp(distance(chunk_center, uniforms.position.xyz) / 100, 0, 2));
+                    */
+                    let lod = 0;
+                    let pc = PushConstantsStuff {
+                        chunk_offset,
+                        lod,
+                    };
+                    self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytemuck::bytes_of(&pc));
+                    self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  8, 8, 8);
                 }
             }
         }
+        */
+
                 
         // self.device.cmd_bind_vertex_buffers(cmd, 0, &[self.vertex_buffer.buffer], &[0]);
         // self.device.cmd_bind_index_buffer(cmd, self.index_buffer.buffer, 0, vk::IndexType::UINT32);
         // self.device.cmd_draw_indexed(cmd, self.index_count, 1, 0, 0, 0);
+        //self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_PASSTHROUGH_SPV]);
+        //self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
         //self.mesh_shader_device.cmd_draw_mesh_tasks(cmd, (self.index_count / 3).div_ceil(32), 1, 1);
 
         self.device.cmd_end_rendering(cmd);
@@ -1325,6 +1361,8 @@ impl InternalApp {
         self.lights_buffer.destroy(&self.device, &mut self.allocator);
         log::info!("destroyed lights buffer");
 
+        self.uniform_buffer.destroy(&self.device, &mut self.allocator);
+        log::info!("destroyed per frame uniform buffer");    
         
         self.debug_text_buffer.destroy(&self.device, &mut self.allocator);
         log::info!("destroyed debug text buffer");
@@ -1365,9 +1403,10 @@ impl InternalApp {
         self.device.destroy_command_pool(self.pool, None);
         log::info!("destroyed cmd pool");
         
+        /*
         self.device.free_descriptor_sets(self.descriptor_pool, &[self.main_descriptor_set]).unwrap();
         log::info!("freed bindless descriptor set");
-
+        */
         self.device.destroy_descriptor_set_layout(self.main_descriptor_set_layout, None);
         log::info!("destroyed bindless descriptor set layout");
         

@@ -1,7 +1,9 @@
 use std::ffi::{CStr, CString};
 use ash::vk;
 
-pub const SWAPCHAIN_IMAGES: usize = 3;
+// for some reason using 2 gives the least amount of microstuttering???
+// idfk...
+pub const SWAPCHAIN_IMAGES: usize = 2;
 
 pub unsafe fn create_swapchain(
     instance: &ash::Instance,
@@ -11,6 +13,7 @@ pub unsafe fn create_swapchain(
     device: &ash::Device,
     extent: vk::Extent2D,
     binder: &Option<ash::ext::debug_utils::Device>,
+    last_swapchain: Option<vk::SwapchainKHR>,
 ) -> (
     ash::khr::swapchain::Device,
     vk::SwapchainKHR,
@@ -52,7 +55,7 @@ pub unsafe fn create_swapchain(
         )
         .clipped(true)
         .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
-        .old_swapchain(vk::SwapchainKHR::null())
+        .old_swapchain(last_swapchain.unwrap_or(vk::SwapchainKHR::null()))
         .present_mode(vk::PresentModeKHR::IMMEDIATE);
 
     let swapchain_loader = ash::khr::swapchain::Device::new(instance, device);
