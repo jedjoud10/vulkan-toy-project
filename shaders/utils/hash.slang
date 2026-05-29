@@ -147,12 +147,35 @@ float4 hash44(float4 p4)
 
 float noise(float2 p) {
     float zz = hash12(floor(p));
-    float zo = hash12(floor(p) + float2(1, 0));
-    float oz = hash12(floor(p) + float2(0, 1));
+    float zo = hash12(floor(p) + float2(0, 1));
+    float oz = hash12(floor(p) + float2(1, 0));
     float oo = hash12(floor(p) + float2(1, 1));
 
     float2 uv = frac(p);
+
+    // TODO: optimize
     return lerp(lerp(zz, zo, uv.x), lerp(oz, oo, uv.x), uv.y) * 2 - 1;
+}
+
+float noise(float3 p) {
+    float zzz = hash13(floor(p));
+    float zzo = hash13(floor(p) + float3(0, 0, 1));
+    float ozz = hash13(floor(p) + float3(1, 0, 0));
+    float ozo = hash13(floor(p) + float3(1, 0, 1));
+
+    float zoz = hash13(floor(float3(0, 1, 0) + p));
+    float zoo = hash13(floor(float3(0, 1, 0) + p) + float3(0, 0, 1));
+    float ooz = hash13(floor(float3(0, 1, 0) + p) + float3(1, 0, 0));
+    float ooo = hash13(floor(float3(0, 1, 0) + p) + float3(1, 0, 1));
+
+    float3 uv = frac(p);
+    
+
+    // TODO: optimize
+    float bottom = lerp(lerp(zzz, zzo, uv.x), lerp(ozz, ozo, uv.x), uv.z);
+    float top = lerp(lerp(zoz, zoo, uv.x), lerp(ooz, ooo, uv.x), uv.z);
+
+    return lerp(bottom, top, uv.y) * 2 - 1;
 }
 
 #endif

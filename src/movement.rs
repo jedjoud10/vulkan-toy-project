@@ -100,14 +100,11 @@ impl Movement {
         self.target_fov = self.target_fov.clamp(0.05, 179.5);
         self.fov += (self.target_fov-self.fov).clamp(-100f32, 100f32) * delta * 20f32;
 
-        self.proj_matrix = vek::Mat4::<f32>::perspective_rh_no(horizontal_to_vertical(self.fov.clamp(0.0001f32, 180f32), ratio), ratio, 0.5f32, 10000.0f32);
-        //self.proj_matrix = vek::Mat4::<f32>::infinite_perspective_rh(horizontal_to_vertical(self.fov, ratio), ratio, 1.0f32);
+        
         let rot = vek::Mat4::from(self.rotation);
-
         let forward = rot.mul_direction(-vek::Vec3::unit_z());
         let right = rot.mul_direction(vek::Vec3::unit_x());
         let up = rot.mul_direction(vek::Vec3::unit_y());
-        self.view_matrix = vek::Mat4::look_at_rh(self.position, forward + self.position, up);
 
         let velocity = forward * self.local_velocity.y + right * self.local_velocity.x;
         self.velocity = vek::Vec3::lerp(
@@ -149,6 +146,12 @@ impl Movement {
                 self.rotation = self.snapshots[*idx].rotation;
                 self.fov = self.snapshots[*idx].fov;
             }
+
+            
+        
+        // recalculate projection matrices
+        self.proj_matrix = vek::Mat4::<f32>::perspective_rh_no(horizontal_to_vertical(self.fov.clamp(0.0001f32, 180f32), ratio), ratio, 0.5f32, 10000.0f32);
+        self.view_matrix = vek::Mat4::look_at_rh(self.position, forward + self.position, up);
     }
     
     pub fn forward(&self) -> vek::Vec3<f32> {

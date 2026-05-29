@@ -1,6 +1,7 @@
 use ash::vk;
 use bytemuck::Pod;
 use bytemuck::Zeroable;
+use bytesize::ByteSize;
 use gpu_allocator::vulkan::Allocation;
 use rand::RngExt;
 use rand::SeedableRng;
@@ -43,7 +44,6 @@ const COMPUTE_POST_PROCESS_SPV: &'static str = "compute_post_process.spv";
 const BLOOM_UPSAMPLE_ENTRY_POINT: &'static str = "bloom_upsample";
 const BLOOM_DOWNSAMPLE_ENTRY_POINT: &'static str = "bloom_downsample";
 const WRITE_SWAPCHAIN_IMAGE_ENTRY_POINT: &'static str = "write_swapchain_image";
-const RASTERIZED_MS_WAVES_SPV: &str = "rasterized_ms_waves.spv";
 const COMPUTE_SKY_SPV: &str = "compute_sky.spv";
 const WRITE_CLOUDS_ENTRY_POINT: &str = "write_clouds";
 const WRITE_SKYBOX_ENTRY_POINT: &str = "write_skybox";
@@ -148,7 +148,6 @@ impl InternalApp {
         //asset!("voxel_interesting_compute.spv", assets);
         asset!("rasterized_ms_tesselation.spv", assets);
         asset!("rasterized_ms_passthrough.spv", assets);
-        asset!("rasterized_ms_waves.spv", assets);
         asset!("rasterized_ms_generated_1.spv", assets);
 
         asset!("rasterized_background.spv", assets);
@@ -305,11 +304,6 @@ impl InternalApp {
             wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::GraphicsMeshShader { face_culling: true, task_shader: true },
             spec_constants: None,
             spv_file_name: RASTERIZED_MS_TESSELALTION_SPV,
-        }, pipeline::PipelineCreateSettings {
-            pipeline_debug_name: "waves render pipeline",
-            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::GraphicsMeshShader { face_culling: true, task_shader: false },
-            spec_constants: None,
-            spv_file_name: RASTERIZED_MS_WAVES_SPV,
         }, pipeline::PipelineCreateSettings {
             pipeline_debug_name: "background sky pipeline",
             wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Graphics { face_culling: false, vertex_input: vk::PipelineVertexInputStateCreateInfo::default() },
@@ -769,23 +763,8 @@ impl InternalApp {
         // TODO: ideally, these would:
         // 1. be dynamically allocated using some sort of per-frame arena with indexing
         // 2. be passed to the shader either using a uniform buffer (since these are constant anyways)
-        const SWAPCHAIN_STORAGE_IMAGE_IDX: u32 = 0;
-        const RENDERED_STORAGE_IMAGE_IDX: u32 = 1;
-        const SKYBOX_STORAGE_IMAGE_IDX: u32 = 2;
-        const CLOUDS_STORAGE_IMAGE_IDX: u32 = 3;
         const BLOOM_MIPS_STORAGE_IMAGE_START_IDX: u32 = 4; // bloom needs to be last since it is dynamically allocated (can have a dynamic number of bloom mips, depending on screen res)
-        
-        const UNIFORM_BUFFER_THINGY_IDX: u32 = 0;
-        const STORAGE_BUFFER_VERTEX_BUFFER_IDX: u32 = 1;
-        const STORAGE_BUFFER_INDEX_BUFFER: u32 = 2;
-        const STORAGE_BUFFER_TESS_BUFFER: u32 = 3;
-        const STORAGE_BUFFER_SPH: u32 = 4;
-        
-
-        const SKYBOX_SAMPLER_IMAGE_IDX: u32 = 0;
-        const CLOUDS_SAMPLER_IMAGE_IDX: u32 = 1;
         const RENDERED_SAMPLER_IMAGE_IDX: u32 = 2;
-        const ENTIRE_BLOOM_SAMPLER_IMAGE_IDX: u32 = 3;
         const BLOOM_MIPS_SAMPLED_IMAGE_START_IDX: u32 = 4; // bloom needs to be last since it is dynamically allocated (can have a dynamic number of bloom mips, depending on screen res)
 
 
@@ -806,6 +785,17 @@ impl InternalApp {
 
         let mut text = format!("CPU delta: {:.2}\nGPU main frame: {:.2}\n", delta*1000f32, self.stats.get_average_in_ms());
         text += &format!("pos: {:.2}\n", self.movement.position);
+        text += &format!("debug type: {}\n", self.debug_type);
+        text += &format!("toggles bitmask: {:#032b}\n", self.toggles_bitmask);
+        text += &format!("wireframe: {}\n", self.wireframe);
+        text += &format!("wireframe: {}\n", self.wireframe);
+
+
+        let report = self.allocator.generate_report();
+        let reserved_bytes = ByteSize::b(report.total_reserved_bytes).display().iec();
+        let allocated_bytes = ByteSize::b(report.total_reserved_bytes).display().iec();
+        text += &format!("reserved bytes: {}\n", reserved_bytes);
+        text += &format!("allocated bytes: {}\n", allocated_bytes);
 
         let mut bytes = Vec::<u8>::new();
 
@@ -1034,18 +1024,23 @@ impl InternalApp {
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_BACKGROUND_SPV]);
         self.device.cmd_draw(cmd, 6, 1, 0, 0);
 
-        // render waves
-        //self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.waves_rasterization_pipeline.pipeline);
-        //self.mesh_shader_device.cmd_draw_mesh_tasks(cmd, 32, 32, 1);
-
-        // render objs
+        /*
+        // render objs using mesh shaders (passthrough) 
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_PASSTHROUGH_SPV]);
         self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
         let triangle_count = self.index_count / 3;
         self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytemuck::bytes_of(&triangle_count));
         self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  triangle_count.div_ceil(32), 1, 1);
+        */
 
+        // render objs (tesselated)
         /*
+        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_TESSELALTION_SPV]);
+        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
+        let triangle_count = self.index_count / 3;
+        self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  triangle_count, 1, 1);
+        */
+
         // render other objs
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_GENERATED_1_SPV]);
         self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
@@ -1076,16 +1071,8 @@ impl InternalApp {
                 }
             }
         }
-        */
 
-                
-        // self.device.cmd_bind_vertex_buffers(cmd, 0, &[self.vertex_buffer.buffer], &[0]);
-        // self.device.cmd_bind_index_buffer(cmd, self.index_buffer.buffer, 0, vk::IndexType::UINT32);
-        // self.device.cmd_draw_indexed(cmd, self.index_count, 1, 0, 0, 0);
-        //self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_PASSTHROUGH_SPV]);
-        //self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
-        //self.mesh_shader_device.cmd_draw_mesh_tasks(cmd, (self.index_count / 3).div_ceil(32), 1, 1);
-
+        
         self.device.cmd_end_rendering(cmd);
         self.device.cmd_end_query(cmd, self.pipeline_statistics_query_pool, 0);
 

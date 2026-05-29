@@ -4,12 +4,6 @@ pub struct Skybox {
     pub skybox_image: vk::Image,
     pub skybox_image_view: vk::ImageView,
     pub skybox_array_image_view: vk::ImageView,
-
-    /*
-    pub ambient_skybox_image: vk::Image,
-    pub ambient_skybox_image_view: vk::ImageView,
-    pub ambient_skybox_array_image_view: vk::ImageView,
-    */
     
     pub clouds_image: vk::Image,
     pub clouds_image_view: vk::ImageView,
@@ -23,12 +17,6 @@ impl Skybox {
         device.destroy_image_view(self.skybox_image_view, None);
         device.destroy_image_view(self.skybox_array_image_view, None);
         device.destroy_image(self.skybox_image, None);
-
-        /*
-        device.destroy_image_view(self.ambient_skybox_image_view, None);
-        device.destroy_image_view(self.ambient_skybox_array_image_view, None);
-        device.destroy_image(self.ambient_skybox_image, None);
-        */
                 
         device.destroy_image(self.clouds_image, None);
         device.destroy_image_view(self.clouds_image_view, None);
@@ -41,7 +29,6 @@ impl Skybox {
 }
 
 pub const SKYBOX_RESOLUTION: u32 = 256;
-pub const AMBIENT_DIFFUSE_SKYBOX_RESOLUTION: u32 = 32;
 pub const CLOUDS_RESOLUTION: u32 = 512;
 const FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
 
