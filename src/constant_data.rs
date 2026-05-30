@@ -1,11 +1,6 @@
 use ash::vk;
 use gpu_allocator::vulkan::Allocation;
 
-use crate::pipeline;
-use crate::samplers;
-use crate::skybox;
-use crate::buffer;
-
 pub struct ConstantData {    
     pub rendered_image: vk::Image,
     pub rendered_image_allocation: Option<Allocation>,
@@ -144,7 +139,7 @@ impl ConstantData {
         }
     }
     
-    pub unsafe fn destroy_rt_images_and_image_views(&mut self, device: &ash::Device, descriptor_pool: vk::DescriptorPool, allocator: &mut gpu_allocator::vulkan::Allocator) {
+    pub unsafe fn destroy_rt_images_and_image_views(&mut self, device: &ash::Device, allocator: &mut gpu_allocator::vulkan::Allocator) {
         device.destroy_image_view(self.rendered_image_view, None);
         device.destroy_image_view(self.entire_bloom_image_view, None);
         device.destroy_image_view(self.rendered_depth_image_image_view, None);

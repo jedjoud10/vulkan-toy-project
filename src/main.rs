@@ -1,4 +1,6 @@
 #![allow(unsafe_op_in_unsafe_fn)]
+#![allow(unused)]
+
 
 mod debug;
 mod device;

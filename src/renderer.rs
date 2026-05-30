@@ -28,7 +28,6 @@ use winit::keyboard::KeyCode;
 use winit::raw_window_handle::HasDisplayHandle;
 use winit::window::Window;
 use crate::statistics::Statistics;
-use crate::asset;
 
 use crate::swapchain;
 use crate::ticker;
@@ -527,7 +526,7 @@ impl InternalApp {
         self.swapchain_image_views = swapchain_image_views;
         self.swapchain = swapchain;
 
-        self.const_descriptor_sets.destroy_rt_images_and_image_views(&self.device, self.descriptor_pool, &mut self.allocator);
+        self.const_descriptor_sets.destroy_rt_images_and_image_views(&self.device, &mut self.allocator);
         self.const_descriptor_sets.recreate_rt_images_and_image_views_and_update_descriptor_sets(&self.device, &mut self.allocator, self.queue_family_index, extent, &self.debug_marker, self.args.downscale_factor);
         crate::constant_data::transfer_layout_for_images(&self.device, self.queue_family_index, &self.const_descriptor_sets, self.pool, self.queue);
 
@@ -803,6 +802,7 @@ impl InternalApp {
         text += &format!("debug type: {}\n", self.debug_type);
         text += &format!("toggles bitmask: {:#032b}\n", self.toggles_bitmask);
         text += &format!("wireframe: {}\n", self.wireframe);
+        text += &format!("updating frustum: {}\n", self.movement.update_frustum);
 
         let report = self.allocator.generate_report();
         let reserved_bytes = ByteSize::b(report.total_reserved_bytes).display().iec();
@@ -873,25 +873,7 @@ impl InternalApp {
 
         let size_f32 = size.map(|x| x as f32);
 
-        // https://github.com/jedjoud10/cflake-engine/blob/3369199f0cfa8b220edc0363a76401b50c83fada/crates/math/src/bounds/frustum.rs#L47
-        let camera_frustum_planes = {
-            let columns = (self.movement.proj_matrix * self.movement.view_matrix).transposed().into_col_arrays();
-            let columns = columns
-                .into_iter()
-                .map(vek::Vec4::from)
-                .collect::<SmallVec<[vek::Vec4<f32>; 4]>>();
-
-            // Magic from https://www.braynzarsoft.net/viewtutorial/q16390-34-aabb-cpu-side-frustum-culling
-            // And also from https://gamedev.stackexchange.com/questions/156743/finding-the-normals-of-the-planes-of-a-view-frustum
-            // YAY https://stackoverflow.com/questions/12836967/extracting-view-frustum-planes-gribb-hartmann-method
-            let left = columns[3] + columns[0];
-            let right = columns[3] - columns[0];
-            let top = columns[3] - columns[1];
-            let bottom = columns[3] + columns[1];
-            let near = columns[3] + columns[2];
-            let far = columns[3] - columns[2];
-            [top, bottom, left, right, near, far]
-        };
+        
 
         let uniform_per_frame_data = pipeline::PerFrameUniformData {
             view_matrix: self.movement.view_matrix,
@@ -904,7 +886,7 @@ impl InternalApp {
             forward: self.movement.forward().with_w(0f32),
             
             sun: self.sun.normalized().with_w(0f32),
-            camera_frustum_planes: camera_frustum_planes,
+            camera_frustum_planes: self.movement.camera_frustum_planes,
             debug_type: self.debug_type,
             time: elapsed,
             toggles_bitmask: self.toggles_bitmask,
@@ -1089,7 +1071,7 @@ impl InternalApp {
         
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_GENERATED_GRASS_SPV]);
         self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
-        self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  1, 1, 1);
+        self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  16, 16, 1);
         
         
         self.device.cmd_end_rendering(cmd);
@@ -1389,7 +1371,7 @@ impl InternalApp {
             self.device.destroy_semaphore(sem, None);
         }
 
-        self.const_descriptor_sets.destroy_rt_images_and_image_views(&self.device, self.descriptor_pool, &mut self.allocator);
+        self.const_descriptor_sets.destroy_rt_images_and_image_views(&self.device, &mut self.allocator);
         log::info!("destroyed const descriptor sets");
 
         for swapchain_image_view in self.swapchain_image_views {
@@ -1409,10 +1391,6 @@ impl InternalApp {
         self.device.destroy_command_pool(self.pool, None);
         log::info!("destroyed cmd pool");
         
-        /*
-        self.device.free_descriptor_sets(self.descriptor_pool, &[self.main_descriptor_set]).unwrap();
-        log::info!("freed bindless descriptor set");
-        */
         self.device.destroy_descriptor_set_layout(self.main_descriptor_set_layout, None);
         log::info!("destroyed bindless descriptor set layout");
         

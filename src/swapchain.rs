@@ -1,4 +1,3 @@
-use std::ffi::{CStr, CString};
 use ash::vk;
 
 // for some reason using 2 gives the least amount of microstuttering???

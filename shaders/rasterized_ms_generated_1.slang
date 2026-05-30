@@ -3,6 +3,7 @@
 #include "utils/pbr.slang"
 #include "utils/bindless.slang"
 #include "utils/mesh_shader_commons.slang"
+#include "utils/culling.slang"
 
 
 float density(uint3 pos, uint3 gid, int3 chunk_offset) {
@@ -21,7 +22,8 @@ float density(uint3 pos, uint3 gid, int3 chunk_offset) {
     //density += 1 - abs(snoise(p * 0.2 + warp));
     */
     float sphere = length(p) - 10;
-    return p.y - (1 - abs(snoise(p * 0.01))) * 20;
+    
+    return p.y - (1 - abs(snoise(p * 0.01 + uniforms.time * 0.2))) * 20;
     
     //return sin(p.x * 0.2) * 10 + p.y;
 }
@@ -161,8 +163,9 @@ void task_main(uint3 id : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID, ui
 
 
     // this must be the same for the entire task shader group!
-    // int lod = floor(clamp(distance(chunk_center, uniforms.position.xyz) / 100, 0, 2));
-    int scale = 1 << lod;
+    // int lod2 = floor(clamp(distance(chunk_center, uniforms.position.xyz) / 100, 0, 2));
+    // int scale = 1 << lod2;
+    int scale = 1;
 
     if (gtid.x == 0) {
         payload = TaskShaderPayload({});
@@ -189,22 +192,14 @@ void task_main(uint3 id : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID, ui
 
     bool meshlet_visible = true;   
 
+    /*
     if (abs(density(meshlet_center, meshlet_gid, group_offset)) > (CHUNK_SIZE*2)) {
         meshlet_visible = false;
     }
+    */
 
-    // frustum culling
-    if (meshlet_visible) {
-        let camera_frustum_planes = uniforms.camera_frustum_planes;
-        for (int f = 0; f < 6; f++) {
-            float3 plane_normal = camera_frustum_planes[f].xyz;
-            float plane_distance = camera_frustum_planes[f].w;
-
-            if ((dot(plane_normal, meshlet_center) + plane_distance) < (-sphere_radius * 2.0)) {
-                meshlet_visible = false;
-                break;
-            }
-        }
+    if (!frustum_cull_sphere_is_visible(meshlet_center, box_aabb_half_extent_to_sphere_radius(MESHLET_SIZE))) {
+        meshlet_visible = false;
     }
 
     if (meshlet_visible) {

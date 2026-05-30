@@ -25,7 +25,7 @@ pub unsafe fn create_descriptor_pool_and_bindless_descriptor_set(device: &ash::D
     let descriptor_pool_sizes = [images, storage_buffers, dynamic_buffers, combined_image_samplers];
 
     let descriptor_pool_create_info = vk::DescriptorPoolCreateInfo::default()
-        .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET | vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND)
+        .flags(vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND)
         .max_sets(MAX_DESCRIPTOR_SETS)
         .pool_sizes(&descriptor_pool_sizes);
     let descriptor_pool = device
@@ -112,23 +112,6 @@ pub unsafe fn find_appropriate_queue_family_index(
             let compute = props.queue_flags.contains(vk::QueueFlags::COMPUTE);
             let has_timestamps = props.timestamp_valid_bits > 0;
             present && graphics && compute && has_timestamps
-        })
-        .unwrap()
-}
-
-pub unsafe fn find_async_compute_queue(
-    _physical_device: vk::PhysicalDevice,
-    queue_family_properties: Vec<vk::QueueFamilyProperties>,
-) -> usize {
-    queue_family_properties
-        .iter()
-        .enumerate()
-        .position(|(_i, props)| {
-            let graphics = props.queue_flags.contains(vk::QueueFlags::GRAPHICS);
-            let compute = props.queue_flags.contains(vk::QueueFlags::COMPUTE);
-            let transfer = props.queue_flags.contains(vk::QueueFlags::TRANSFER);
-
-            !graphics & compute & !transfer
         })
         .unwrap()
 }

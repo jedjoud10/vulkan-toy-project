@@ -52,4 +52,8 @@ Sampler2D<float4> sampled_images[];
 [[vk::binding(2, 0)]]
 SamplerCube<float4> sampled_images_cube[];
 
+UniformThing load_per_frame_uniforms() {
+    return storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
+}
+
 #endif
