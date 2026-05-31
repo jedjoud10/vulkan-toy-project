@@ -17,7 +17,7 @@ mod utils;
 mod renderer;
 mod skybox;
 mod others;
-mod constant_data;
+mod render_targets_data;
 mod per_frame_data;
 mod samplers;
 mod tesselation;

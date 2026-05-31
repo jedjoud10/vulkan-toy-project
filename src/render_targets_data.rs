@@ -1,7 +1,7 @@
 use ash::vk;
 use gpu_allocator::vulkan::Allocation;
 
-pub struct ConstantData {    
+pub struct RenderTargetsData {    
     pub rendered_image: vk::Image,
     pub rendered_image_allocation: Option<Allocation>,
     pub rendered_depth_image: vk::Image,
@@ -16,7 +16,7 @@ pub struct ConstantData {
     pub entire_bloom_image_view: vk::ImageView,
 }
 
-impl ConstantData {
+impl RenderTargetsData {
     pub unsafe fn create_constant_descriptor_sets(
     ) -> Self {
         Self {
@@ -219,7 +219,7 @@ unsafe fn create_image(
 pub unsafe fn transfer_layout_for_images(
     device: &ash::Device,
     queue_family_index: u32,
-    const_data: &ConstantData,
+    const_data: &RenderTargetsData,
     pool: vk::CommandPool,
     queue: vk::Queue,
 ) {

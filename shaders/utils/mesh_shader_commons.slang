@@ -33,8 +33,7 @@ VertexOutput transform_vertex(
 
 float4 shared_frag_shading(VertexOutput in_vert) {
     let uniforms = storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
-    let skybox_sampler = sampled_images_cube[SKYBOX_SAMPLER_IMAGE_IDX];
-    let clouds_sampler = sampled_images[CLOUDS_SAMPLER_IMAGE_IDX];
+
     
     float3 world = in_vert.world_pos;
     
@@ -56,12 +55,11 @@ float4 shared_frag_shading(VertexOutput in_vert) {
     float3 sun = uniforms.sun.xyz;
     float3 sun_colour = sun_colour(sun.xyz);
     SunData sun_data = SunData(sun.xyz, sun.y > 0 ? (3.2 * sun_colour) : 0);
-    SkyData sky_data = SkyData(skybox_sampler, clouds_sampler);
 
-    float3 colour = lighting(pbr_surface_data, camera_data, sun_data, sky_data);
+    float3 colour = lighting(pbr_surface_data, camera_data, sun_data);
 
-    float3 reflection = sample_skybox_and_clouds(world, reflect(view, normal), clouds_sampler, skybox_sampler);
-    float3 refraction = sample_skybox_and_clouds(world, refract(view, normal, 0.95), clouds_sampler, skybox_sampler);
+    float3 reflection = sample_skybox_and_clouds(world, reflect(view, normal));
+    float3 refraction = sample_skybox_and_clouds(world, refract(view, normal, 0.95));
 
     if (uniforms.debug_type == 0) {
         return float4(colour, 1);

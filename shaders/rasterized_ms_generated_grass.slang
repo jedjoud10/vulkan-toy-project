@@ -8,6 +8,7 @@
 struct TaskShaderPayload {
     uint2 task_shader_offset;
     float fractional_z_workgroup_invocations;
+    float width_multiplier;
 }
 
 [shader("task")]
@@ -19,12 +20,12 @@ void task_main(uint3 id : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID, ui
     float2 center_2d = gid.xy * SUPER_PATCH_SIZE_WORLD_SIZE + SUPER_PATCH_SIZE_WORLD_SIZE * 0.5;
     float3 center = float3(center_2d.x, 0, center_2d.y);
     
-    float fractional_z_workgroup_invocations = clamp(16 - distance(center, uniforms.position.xyz) / 8.0 + 1.0, 0, 16);
+    float fractional_z_workgroup_invocations = clamp(16 - distance(center, uniforms.position.xyz) / 8.0 + 1.0, 0, 16) + 2;
     uint z_workgroup_invocations = (uint)ceil(fractional_z_workgroup_invocations);
     //z_workgroup_invocations = clamp(z_workgroup_invocations, 1, 8);
     
-    //float width_multiplier = (8 - z_workgroup_invocations) + 1;
-    float width_multiplier = 1.0;
+    float width_multiplier = max(((16 - fractional_z_workgroup_invocations)) * 0.5, 1);
+    //float width_multiplier = 1.0;
     
     
     if (!frustum_cull_sphere_is_visible(center, box_aabb_half_extent_to_sphere_radius(SUPER_PATCH_SIZE_WORLD_SIZE * 0.5))) {
@@ -33,7 +34,7 @@ void task_main(uint3 id : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID, ui
     
     // 8x8 patches
     // z value can be used to increase density
-    TaskShaderPayload payload = TaskShaderPayload(gid.xy, fractional_z_workgroup_invocations);
+    TaskShaderPayload payload = TaskShaderPayload(gid.xy, fractional_z_workgroup_invocations, width_multiplier);
     DispatchMesh(8, 8, z_workgroup_invocations, payload);
 }
 
@@ -85,7 +86,7 @@ void mesh_main(out vertices VertexOutput vertices[64], out indices uint3 triangl
     float factor = (float)(vertex_index_for_blade / 2) / (NUM_VERTICES_PER_BLADE / 2);
     float factor_horizontal = (vertex_index_for_blade % 2);
     float2 uv = float2(factor_horizontal, factor);
-    float side = (factor_horizontal * 2.0 - 1.0) * WIDTH;
+    float side = (factor_horizontal * 2.0 - 1.0) * WIDTH * payload.width_multiplier;
 
     float3 p1_modified = p1 + float3(0, changes.y, 0);
     float3 p2_modified = p2 + float3(0, changes.y * 2.0, changes.z);
@@ -140,7 +141,7 @@ float4 frag_main(VertexOutput in_vert) : SV_Target {
 
     let n_dot_l = saturate(abs(dot(uniforms.sun.xyz, normal)));
     let v_dot_l = saturate(dot(uniforms.sun.xyz, view));
-    float shadow = 1.0 - clouds(uniforms.sun.xyz, in_vert.world_pos, sampled_images[CLOUDS_SAMPLER_IMAGE_IDX]).w;
+    float shadow = 1.0 - clouds(uniforms.sun.xyz, in_vert.world_pos).w;
 
     let combined = 1.0;
     let subsurface = pow(v_dot_l, 8) * 2.0 * subsurface_colour * 0.0;

@@ -34,6 +34,10 @@ const static uint SKYBOX_SAMPLER_IMAGE_IDX = 0;
 const static uint CLOUDS_SAMPLER_IMAGE_IDX = 1;
 const static uint ENTIRE_BLOOM_SAMPLED_IMAGE_IDX = 3;
 
+const static uint NEAREST_SAMPLER_IDX = 0;
+const static uint LINEAR_SAMPLER_IDX = 1;
+
+
 [[vk::binding(0, 0)]]
 RWTexture2D<float4> storage_images[];
 
@@ -47,10 +51,13 @@ RWByteAddressBuffer storage_buffers[];
 ByteAddressBuffer storage_buffers_readonly[];
 
 [[vk::binding(2, 0)]]
-Sampler2D<float4> sampled_images[];
+Texture2D<float4> sampled_images[];
 
 [[vk::binding(2, 0)]]
-SamplerCube<float4> sampled_images_cube[];
+TextureCube<float4> sampled_images_cube[];
+
+[[vk::binding(3, 0)]]
+SamplerState samplers[];
 
 UniformThing load_per_frame_uniforms() {
     return storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);

@@ -3,6 +3,7 @@
 
 #include "hash.slang"
 #include "noises.slang"
+#include "bindless.slang"
 
 // author: SkyTheDragon
 // (sky the goat)
@@ -278,22 +279,33 @@ float4 clouds_interesting(float3 ray_dir, float3 ray_pos, Sampler2D<float4> clou
     return clouds_colour_opacity;
 }
 
-float4 clouds(float3 ray_dir, float3 ray_pos, Sampler2D<float4> clouds_sampler) {
+float4 clouds(float3 ray_dir, float3 ray_pos) {
+    
+
     float4 clouds_colour_opacity = 0;
     if (let pos = ray_plane_intersect_for_clouds(ray_dir, ray_pos, 800)) {
         let uvs = pos.xy / 8000 + 0.5;
 
         if (all(uvs >= 0 & uvs <= 1)) {
-            clouds_colour_opacity = clouds_sampler.Sample(uvs);
+            clouds_colour_opacity = sampled_images[CLOUDS_SAMPLER_IMAGE_IDX].Sample(samplers[LINEAR_SAMPLER_IDX], uvs);
         }
     }
     return clouds_colour_opacity;
 }
 
+float3 get_environment_diffuse(float3 dir) {
+    let skybox_sampler = sampled_images_cube[SKYBOX_SAMPLER_IMAGE_IDX];
+    let sampler = samplers[NEAREST_SAMPLER_IDX];
 
-float3 sample_skybox_and_clouds(float3 ray_pos, float3 ray_dir, Sampler2D<float4> clouds_sampler, SamplerCube<float4> skybox_sampler) {
-    float4 clouds_colour_opacity = clouds(ray_dir, ray_pos, clouds_sampler);
-    float3 sky_colour = skybox_sampler.Sample(ray_dir).xyz;
+    float3 skyColor = skybox_sampler.Sample(sampler, float3(0, 0.8, 0)).xyz;
+	float3 groundColor = skybox_sampler.Sample(sampler, float3(0, 0.05, 0)).xyz;
+    return getEnvironmentDiffuse(dir, skyColor, groundColor);
+}
+
+
+float3 sample_skybox_and_clouds(float3 ray_pos, float3 ray_dir) {
+    float4 clouds_colour_opacity = clouds(ray_dir, ray_pos);
+    float3 sky_colour = sampled_images_cube[SKYBOX_SAMPLER_IMAGE_IDX].Sample(samplers[NEAREST_SAMPLER_IDX], ray_dir).xyz;
     return lerp(sky_colour, clouds_colour_opacity.xyz, clouds_colour_opacity.w);
 }
 

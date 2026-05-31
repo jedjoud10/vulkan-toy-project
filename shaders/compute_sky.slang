@@ -43,7 +43,7 @@ void write_clouds(uint3 id: SV_DispatchThreadID) {
     float sun_strength = smoothstep(0, 0.2, sun.y);
 
     // backlight from the sun that passes through the clouds
-    float3 scattered = saturate(pow(saturate(dot(ray_dir, sun)) + 0.3, 4)) * sun_strength;
+    float3 scattered = saturate(pow(saturate(dot(ray_dir, sun)) + 0.1, 16)) * sun_strength;
 
     // some specular "silver lining"
     float3 reflected = reflect(sun, bottom_normals);

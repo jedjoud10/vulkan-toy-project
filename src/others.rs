@@ -5,7 +5,8 @@ use smallvec::SmallVec;
 pub const STORAGE_IMAGE_COUNT: u32 = 160;
 pub const STORAGE_BUFFER_COUNT: u32 = 60;
 pub const UNIFORM_BUFFER_COUNT: u32 = 60;
-pub const COMBINED_IMAGE_SAMPLER_COUNT: u32 = 40;
+pub const SAMPLED_IMAGE_COUNT: u32 = 40;
+pub const SAMPLER_COUNT: u32 = 2;
 pub const MAX_DESCRIPTOR_SETS: u32 = crate::per_frame_data::FRAMES_IN_FLIGHT as u32;
 
 
@@ -19,10 +20,13 @@ pub unsafe fn create_descriptor_pool_and_bindless_descriptor_set(device: &ash::D
     let dynamic_buffers = vk::DescriptorPoolSize::default()
         .descriptor_count(UNIFORM_BUFFER_COUNT*MAX_DESCRIPTOR_SETS)
         .ty(vk::DescriptorType::UNIFORM_BUFFER);
-    let combined_image_samplers = vk::DescriptorPoolSize::default()
-        .descriptor_count(COMBINED_IMAGE_SAMPLER_COUNT*MAX_DESCRIPTOR_SETS)
-        .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER);
-    let descriptor_pool_sizes = [images, storage_buffers, dynamic_buffers, combined_image_samplers];
+    let sampled_images = vk::DescriptorPoolSize::default()
+        .descriptor_count(SAMPLED_IMAGE_COUNT*MAX_DESCRIPTOR_SETS)
+        .ty(vk::DescriptorType::SAMPLED_IMAGE);
+    let samplers = vk::DescriptorPoolSize::default()
+        .descriptor_count(SAMPLER_COUNT*MAX_DESCRIPTOR_SETS)
+        .ty(vk::DescriptorType::SAMPLER);
+    let descriptor_pool_sizes = [images, storage_buffers, dynamic_buffers, sampled_images, samplers];
 
     let descriptor_pool_create_info = vk::DescriptorPoolCreateInfo::default()
         .flags(vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND)
@@ -48,8 +52,13 @@ pub unsafe fn create_descriptor_pool_and_bindless_descriptor_set(device: &ash::D
             .stage_flags(vk::ShaderStageFlags::ALL),
         vk::DescriptorSetLayoutBinding::default()
             .binding(2)
-            .descriptor_count(COMBINED_IMAGE_SAMPLER_COUNT)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(SAMPLED_IMAGE_COUNT)
+            .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+            .stage_flags(vk::ShaderStageFlags::ALL),
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(3)
+            .descriptor_count(SAMPLER_COUNT)
+            .descriptor_type(vk::DescriptorType::SAMPLER)
             .stage_flags(vk::ShaderStageFlags::ALL),
     ];
 

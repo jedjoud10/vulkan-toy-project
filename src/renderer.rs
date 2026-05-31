@@ -40,7 +40,7 @@ use crate::device;
 use crate::debug;
 use crate::others;
 use crate::per_frame_data::PerFrameData;
-use crate::constant_data::ConstantData;
+use crate::render_targets_data::RenderTargetsData;
 
 const COMPUTE_POST_PROCESS_SPV: &'static str = "compute_post_process.spv";
 const BLOOM_UPSAMPLE_ENTRY_POINT: &'static str = "bloom_upsample";
@@ -49,12 +49,25 @@ const WRITE_SWAPCHAIN_IMAGE_ENTRY_POINT: &'static str = "write_swapchain_image";
 const COMPUTE_SKY_SPV: &str = "compute_sky.spv";
 const WRITE_CLOUDS_ENTRY_POINT: &str = "write_clouds";
 const WRITE_SKYBOX_ENTRY_POINT: &str = "write_skybox";
+const RASTERIZED: &str = "rasterized.spv";
 const RASTERIZED_MS_PASSTHROUGH_SPV: &str = "rasterized_ms_passthrough.spv";
 const RASTERIZED_MS_TESSELALTION_SPV: &str = "rasterized_ms_tesselation.spv";
 const RASTERIZED_MS_GENERATED_1_SPV: &str = "rasterized_ms_generated_1.spv";
 const RASTERIZED_MS_GENERATED_GRASS_SPV: &str = "rasterized_ms_generated_grass.spv";
 const RASTERIZED_BACKGROUND_SPV: &str = "rasterized_background.spv";
         
+
+const VERTEX_ATTRIBUTE_DESCRIPTIONS: &'static [vk::VertexInputAttributeDescription] = &[vk::VertexInputAttributeDescription {
+    binding: 0,
+    format: vk::Format::R32G32B32_SFLOAT,
+    location: 0,
+    offset: 0
+}];
+const VERTEX_BINDING_DESCRIPTIONS: &'static [vk::VertexInputBindingDescription] = &[vk::VertexInputBindingDescription {
+    binding: 0,
+    stride: (size_of::<f32>() * 3) as u32,
+    input_rate: vk::VertexInputRate::VERTEX,
+}];
 
 
 pub struct InternalApp {
@@ -101,7 +114,7 @@ pub struct InternalApp {
     frames_in_flight: SmallVec<[PerFrameData; per_frame_data::FRAMES_IN_FLIGHT]>,
     render_finished_semaphores: SmallVec<[vk::Semaphore; swapchain::SWAPCHAIN_IMAGES]>,
     descriptor_pool: vk::DescriptorPool,
-    const_descriptor_sets: ConstantData,
+    const_descriptor_sets: RenderTargetsData,
             
     // important too
     allocator: gpu_allocator::vulkan::Allocator,
@@ -147,7 +160,6 @@ static COMPILED_SHADERS: Dir = include_dir!("$CARGO_MANIFEST_DIR/compiled_shader
 impl InternalApp {
     pub unsafe fn new(event_loop: &ActiveEventLoop, args: crate::Args) -> Self {
         let mut assets = HashMap::<&str, Vec<u32>>::new();
-
         for file in COMPILED_SHADERS.files() {
             let len = file.contents().len();
             assert!(len.is_multiple_of(4));
@@ -184,8 +196,6 @@ impl InternalApp {
         let running_cfg_debug_assertions = false;
 
         let debug_stuff = args.enable_debug_stuff || running_cfg_debug_assertions;
-
-
         let instance = instance::create_instance(&entry, raw_display_handle, debug_stuff);
         log::info!("created instance");
         let debug_messenger = debug::create_debug_messenger(&entry, &instance, debug_stuff).inspect(|_x| {
@@ -328,6 +338,14 @@ impl InternalApp {
             wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::GraphicsMeshShader { face_culling: false, task_shader: true },
             spec_constants: None,
             spv_file_name: RASTERIZED_MS_GENERATED_GRASS_SPV,
+        }, pipeline::PipelineCreateSettings {
+            pipeline_debug_name: "rasterized render pipeline",
+            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Graphics {
+                face_culling: true,
+                vertex_input: vk::PipelineVertexInputStateCreateInfo::default().vertex_attribute_descriptions(VERTEX_ATTRIBUTE_DESCRIPTIONS).vertex_binding_descriptions(VERTEX_BINDING_DESCRIPTIONS),
+            },
+            spec_constants: None,
+            spv_file_name: RASTERIZED,
         }];
 
         // compile the pipelines in parallel
@@ -365,7 +383,7 @@ impl InternalApp {
         }).collect::<SmallVec<[PerFrameData; per_frame_data::FRAMES_IN_FLIGHT]>>();
         log::info!("created frames in flight structures");
 
-        const NUM_LIGHTS: usize = 500;
+        const NUM_LIGHTS: usize = 1;
 
         let lights_buffer = buffer::create_buffer(&device, &mut allocator, size_of::<vek::Vec4<f32>>() * NUM_LIGHTS, &debug_marker, "lights buffer", vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
         let mut lights = Vec::<vek::Vec4<f32>>::new();
@@ -382,9 +400,9 @@ impl InternalApp {
         buffer::write_to_buffer(&device, pool, queue, lights_buffer.buffer, &mut allocator, bytemuck::cast_slice(lights.as_slice()));
         log::info!("created lights buffer");
 
-        let mut const_descriptor_sets = ConstantData::create_constant_descriptor_sets();
+        let mut const_descriptor_sets = RenderTargetsData::create_constant_descriptor_sets();
         const_descriptor_sets.recreate_rt_images_and_image_views_and_update_descriptor_sets(&device, &mut allocator, queue_family_index, extent, &debug_marker, args.downscale_factor);
-        crate::constant_data::transfer_layout_for_images(&device, queue_family_index, &const_descriptor_sets, pool, queue);
+        crate::render_targets_data::transfer_layout_for_images(&device, queue_family_index, &const_descriptor_sets, pool, queue);
         log::info!("created constant descriptor sets");
 
         let query_pool = others::create_query_pool(&device);
@@ -528,7 +546,7 @@ impl InternalApp {
 
         self.const_descriptor_sets.destroy_rt_images_and_image_views(&self.device, &mut self.allocator);
         self.const_descriptor_sets.recreate_rt_images_and_image_views_and_update_descriptor_sets(&self.device, &mut self.allocator, self.queue_family_index, extent, &self.debug_marker, self.args.downscale_factor);
-        crate::constant_data::transfer_layout_for_images(&self.device, self.queue_family_index, &self.const_descriptor_sets, self.pool, self.queue);
+        crate::render_targets_data::transfer_layout_for_images(&self.device, self.queue_family_index, &self.const_descriptor_sets, self.pool, self.queue);
 
 
         for frame in self.frames_in_flight.iter_mut() {
@@ -604,7 +622,6 @@ impl InternalApp {
     }
 
     pub unsafe fn render(&mut self, delta: f32, elapsed: f32) {
-        //let frame_in_flight_index = 0;
         let frame_in_flight_index = self.frame_count % (self.frames_in_flight.len() as u64);
         let const_data = &self.const_descriptor_sets;
         let PerFrameData {
@@ -736,22 +753,18 @@ impl InternalApp {
             .dst_set(*main_descriptor_set)
             .buffer_info(&storage_buffer_infos);
 
-        // create bindless descriptor write for combined image samplers
+        // create bindless descriptor write for image samplers
         let skybox_sampled_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
             .image_view(self.skybox.skybox_image_view)
-            .sampler(self.samplers.skybox_sampler)
             .image_layout(vk::ImageLayout::GENERAL);
         let clouds_sampled_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
             .image_view(self.skybox.clouds_image_view)
-            .sampler(self.samplers.skybox_sampler)
             .image_layout(vk::ImageLayout::GENERAL);
         let rendered_sampled_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
             .image_view(const_data.rendered_image_view)
-            .sampler(self.samplers.bloom_sampler)
             .image_layout(vk::ImageLayout::GENERAL);
         let entire_bloom_sampled_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
             .image_view(const_data.entire_bloom_image_view)
-            .sampler(self.samplers.bloom_sampler)
             .image_layout(vk::ImageLayout::GENERAL);
         let mut sampled_image_infos = vec![skybox_sampled_image_view_descriptor_image_info, clouds_sampled_image_view_descriptor_image_info, rendered_sampled_image_view_descriptor_image_info, entire_bloom_sampled_image_view_descriptor_image_info];
 
@@ -759,20 +772,32 @@ impl InternalApp {
         for bloom_sampled_image_view in const_data.bloom_mip_image_views.iter() {
             sampled_image_infos.push(vk::DescriptorImageInfo::default()
                 .image_view(*bloom_sampled_image_view)
-                .sampler(self.samplers.bloom_sampler)
                 .image_layout(vk::ImageLayout::GENERAL)
             );
         }
 
         let sampled_image_write = vk::WriteDescriptorSet::default()
             .descriptor_count(sampled_image_infos.len() as u32)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
             .dst_binding(2)
             .dst_set(*main_descriptor_set)
             .image_info(&sampled_image_infos);
 
+        let samplers = [
+            vk::DescriptorImageInfo::default()
+                .sampler(self.samplers.nearest),
+            vk::DescriptorImageInfo::default()
+                .sampler(self.samplers.linear)
+        ];
+        let sampler_states_write = vk::WriteDescriptorSet::default()
+            .descriptor_count(samplers.len() as u32)
+            .descriptor_type(vk::DescriptorType::SAMPLER)
+            .dst_binding(3)
+            .dst_set(*main_descriptor_set)
+            .image_info(&samplers);
+
         // update the bindless descriptor set
-        self.device.update_descriptor_sets(&[storage_image_write, storage_buffer_write, sampled_image_write], &[]);
+        self.device.update_descriptor_sets(&[storage_image_write, storage_buffer_write, sampled_image_write, sampler_states_write], &[]);
 
         // TODO: ideally, these would:
         // 1. be dynamically allocated using some sort of per-frame arena with indexing
@@ -797,7 +822,7 @@ impl InternalApp {
             .level_count(1)
             .layer_count(1);
 
-        let mut text = format!("CPU delta: {:.2}\nGPU main frame: {:.2}\n", delta*1000f32, self.stats.get_average_in_ms());
+        let mut text = format!("CPU delta: {:.2}ms\nGPU main frame: {:.2}ms\n", delta*1000f32, self.stats.get_average_in_ms());
         text += &format!("pos: {:.2}\n", self.movement.position);
         text += &format!("debug type: {}\n", self.debug_type);
         text += &format!("toggles bitmask: {:#032b}\n", self.toggles_bitmask);
@@ -809,7 +834,7 @@ impl InternalApp {
         let allocated_bytes = ByteSize::b(report.total_reserved_bytes).display().iec();
         text += &format!("reserved bytes: {}\n", reserved_bytes);
         text += &format!("allocated bytes: {}\n", allocated_bytes);
-
+        
         let mut bytes = Vec::<u8>::new();
 
         #[derive(Clone, Copy, Pod, Zeroable)]
@@ -1069,10 +1094,17 @@ impl InternalApp {
         }
         */
         
+        /*
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_GENERATED_GRASS_SPV]);
         self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
         self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  16, 16, 1);
-        
+        */
+
+        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED]);
+        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
+        self.device.cmd_bind_vertex_buffers(cmd, 0, &[self.vertex_buffer.buffer], &[0]);
+        self.device.cmd_bind_index_buffer(cmd, self.index_buffer.buffer, 0, vk::IndexType::UINT32);
+        self.device.cmd_draw_indexed(cmd, self.index_count, 10, 0, 0, 0);
         
         self.device.cmd_end_rendering(cmd);
         self.device.cmd_end_query(cmd, self.pipeline_statistics_query_pool, 0);

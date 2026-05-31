@@ -64,13 +64,6 @@ public struct SunData {
 	public float3 direction;
 	public float3 color;
 };
-
-// Sky data struct
-public struct SkyData {
-	public SamplerCube skybox_image;
-	public Sampler2D clouds_image;
-};
-
 // Camera data struct
 public struct CameraData {
 	public float3 view;
@@ -91,7 +84,6 @@ public float3 lighting(
 	PbrSurfaceData surface,
 	CameraData camera,
 	SunData light,
-	SkyData sky,
 ) {
     float3 half_view = normalize(camera.view + light.direction);
     float3 f0 = lerp(0.04, surface.albedo, surface.metallic);
@@ -111,14 +103,8 @@ public float3 lighting(
 	float3 outgoing_radiance = (kd * surface.albedo / PI + specular) * light.color * n_dot_l * surface.shadows;
 
 	// Diffuse Irradiance IBL
-	//float3 skyColor = sky(light.direction, float3(0, 0.8, 0), surface.position, false) + 0.1;
-	//float3 groundColor = sky(light.direction, float3(0, 0.05, 0), surface.position, false) + 0.05f;
-	/*
-	float3 skyColor = sky.skybox_image.Sample(float3(0, 0.8, 0)).xyz + 0.1;
-	float3 groundColor = sky.skybox_image.Sample(float3(0, 0.05, 0)).xyz + 0.05f;
-	float3 irradiance = getEnvironmentDiffuse(surface.normal, skyColor, groundColor);
-	*/
-
+	float3 irradiance = get_environment_diffuse(surface.normal);
+	
 	//float3 irradiance = texture(samplerCube(ibl_diffuse_map, ibl_diffuse_map_sampler), surface.normal).xyz;
 	//float3 environment_specular = getEnvironmentSpecular(reflect(camera.view, surface.normal), surface.roughness, skyColor, groundColor);
 	
@@ -129,7 +115,7 @@ public float3 lighting(
 
 	//float environment_specular_fresnel_strength = pow(max(dot(reflect(camera.view, surface.normal), camera.view), 0), 4) * surface.sky_visibility;
 	//float3 ambient = (irradiance * surface.albedo * kd + environment_specular) * surface.visibility;
-	float3 ambient = 0.2 * surface.albedo * kd * surface.visibility;
+	float3 ambient = irradiance * surface.albedo * kd * surface.visibility;
 	
 	// + float3(clamp(dot(reflect(camera.view, surface.normal), camera.view), 0, 1)) * 0.04
 	//return getEnvironmentSpecular(surface.normal, 0, skyColor, groundColor);

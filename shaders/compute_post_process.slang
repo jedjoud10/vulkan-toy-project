@@ -121,7 +121,8 @@ void write_swapchain_image(uint3 id: SV_DispatchThreadID) {
     }
     */
     
-    float3 bloom = entire_bloom_image.SampleLevel(screen_uvs, 2.0).xyz;
+    SamplerState sampler = samplers[LINEAR_SAMPLER_IDX];
+    float3 bloom = entire_bloom_image.SampleLevel(sampler, screen_uvs, 2.0).xyz;
 
     float3 col = pow(aces(final_colour + bloom * 0.1), 1/2.2);
     
@@ -157,6 +158,7 @@ static const float MIN_BLOOM_THRESHOLD = 0.3;
 void bloom_downsample(uint3 id: SV_DispatchThreadID, uniform float2 previous_bloom_mip_resolution, uniform uint src_sampled_image_idx, uniform uint dst_storage_image_idx) {
     let previous_bloom_mip = sampled_images[src_sampled_image_idx];
     let next_bloom_mip = storage_images[dst_storage_image_idx];
+    SamplerState sampler = samplers[LINEAR_SAMPLER_IDX];
     
 
     float4 sum = 0;
@@ -164,7 +166,7 @@ void bloom_downsample(uint3 id: SV_DispatchThreadID, uniform float2 previous_blo
         for (int y = -1; y <= 1; y++) {
             float2 offset = float2(x,y);
             float2 uvs = ((float2)(id.xy * 2) + offset * 2.0 + 1) / previous_bloom_mip_resolution;
-            float4 loaded = previous_bloom_mip.Sample(uvs);
+            float4 loaded = previous_bloom_mip.Sample(sampler, uvs);
             
             if (length(loaded) > MIN_BLOOM_THRESHOLD) {
                 float kernel_strength = GAUSSIAN_KERNEL_3X3[(x+1) * 3 + (y+1)];
@@ -181,12 +183,13 @@ void bloom_downsample(uint3 id: SV_DispatchThreadID, uniform float2 previous_blo
 void bloom_upsample(uint3 id: SV_DispatchThreadID, uniform float2 previous_bloom_mip_resolution, uniform uint src_sampled_image_idx, uniform uint dst_storage_image_idx) {
     let previous_bloom_mip = sampled_images[src_sampled_image_idx];
     let next_bloom_mip = storage_images[dst_storage_image_idx];
+    SamplerState sampler = samplers[LINEAR_SAMPLER_IDX];
 
     float4 sum = 0;
     for (int x = 0; x < 2; x++) {
         for (int y = 0; y < 2; y++) {
             float2 uvs = ((float2)(id.xy + int2(x,y))) * 0.5 / previous_bloom_mip_resolution;
-            sum += previous_bloom_mip.Sample(uvs);
+            sum += previous_bloom_mip.Sample(sampler, uvs);
         }
     }
     
