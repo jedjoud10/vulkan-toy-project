@@ -2,7 +2,7 @@ use ash::vk;
 
 // for some reason using 2 gives the least amount of microstuttering???
 // idfk...
-pub const SWAPCHAIN_IMAGES: usize = 2;
+pub const SWAPCHAIN_IMAGES: usize = 3;
 
 pub unsafe fn create_swapchain(
     instance: &ash::Instance,

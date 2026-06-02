@@ -89,7 +89,7 @@ pub unsafe fn precompute_tesselation_buffer(
         raw_bytes.extend_from_slice(triangle_bytes);
     }
 
-    dbg!(&headers);
+    //dbg!(&headers);
 
 
     let buffer = crate::buffer::create_buffer(device, allocator, raw_bytes.len() + headers_size as usize, binder, "tesselation geometry buffer", vk::BufferUsageFlags::STORAGE_BUFFER);

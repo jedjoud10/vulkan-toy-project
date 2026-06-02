@@ -1,5 +1,185 @@
 use ash::vk;
+use bytemuck::bytes_of;
 use gpu_allocator::vulkan::{Allocation, Allocator};
+
+use crate::buffer;
+
+pub struct Chunk {
+    pub chunk_offset: vek::Vec3<i32>,
+    pub voxel_texture: VoxelTexture3D,
+    pub vertex_buffer: buffer::Buffer,
+    pub index_buffer: buffer::Buffer,
+    pub vertex_counter: buffer::Buffer,
+    pub index_counter: buffer::Buffer,
+    pub indirect_draw_buffer: buffer::Buffer,
+    pub built: bool,
+}
+
+impl Chunk {
+    pub unsafe fn create(
+        chunk_offset: vek::Vec3<i32>,
+        device: &ash::Device,
+        allocator: &mut Allocator,
+        debug_marker: &Option<ash::ext::debug_utils::Device>,
+        queue: vk::Queue,
+        pool: vk::CommandPool,
+        queue_family_index: u32
+    ) -> Self {
+        let vertex_buffer = buffer::create_buffer(&device, allocator, size_of::<vek::Vec3::<u16>>() * 300_000, &debug_marker, "vertex buffer", vk::BufferUsageFlags::VERTEX_BUFFER);
+        let index_buffer = buffer::create_buffer(&device, allocator, size_of::<u32>()  * 500_000, &debug_marker, "index buffer", vk::BufferUsageFlags::INDEX_BUFFER);
+        let indirect_draw_buffer = buffer::create_buffer(&device, allocator, size_of::<vk::DrawIndexedIndirectCommand>(), &debug_marker, "indirect buffer", vk::BufferUsageFlags::INDIRECT_BUFFER);
+
+        let indirect_draw_command_starting_parameters = [0u32, 1u32, 0u32, 0u32, 0u32];
+
+        buffer::write_to_buffer(device, pool, queue, indirect_draw_buffer.buffer, allocator, bytes_of(&indirect_draw_command_starting_parameters));
+
+        let vertex_counter = buffer::create_counter_buffer(&device, allocator, &debug_marker, "vertex counter");
+        let index_counter = buffer::create_counter_buffer(&device, allocator, &debug_marker, "index counter");
+        let voxel_texture = create_voxel_texture(device, allocator, &debug_marker, queue, pool, queue_family_index);
+
+        Self {
+            chunk_offset,
+            voxel_texture,
+            vertex_buffer,
+            index_buffer,
+            vertex_counter,
+            index_counter,
+            indirect_draw_buffer,
+            built: false,
+        }
+    }
+
+    pub unsafe fn do_sum_shi(&mut self, device: &ash::Device, cmd: vk::CommandBuffer, pipeline_layout: vk::PipelineLayout, density_pipeline: vk::Pipeline, surface_generation_pipeline: vk::Pipeline, queue_family_index: u32) {
+        if self.built { return; }
+
+        let groups = 16;
+
+        device.cmd_bind_pipeline(
+            cmd,
+            vk::PipelineBindPoint::COMPUTE,
+            density_pipeline,
+        );
+
+        let constants = bytemuck::bytes_of(&self.chunk_offset); 
+        device.cmd_push_constants(cmd, pipeline_layout, vk::ShaderStageFlags::ALL, 0, constants);
+
+        device.cmd_dispatch(cmd, groups+1, groups+1, groups+1);
+
+        let zero = 0u32;
+        device.cmd_update_buffer(cmd, self.vertex_counter.buffer, 0, bytemuck::bytes_of(&zero));
+        device.cmd_update_buffer(cmd, self.index_counter.buffer, 0, bytemuck::bytes_of(&zero));
+
+        let vertex_counter_barrier = vk::BufferMemoryBarrier2::default()
+            .buffer(self.vertex_counter.buffer)
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .dst_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .size(vk::WHOLE_SIZE)
+            .offset(0)
+            .src_queue_family_index(queue_family_index)
+            .dst_queue_family_index(queue_family_index);
+        let index_counter_barrier = vk::BufferMemoryBarrier2::default()
+            .buffer(self.index_counter.buffer)
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .dst_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .size(vk::WHOLE_SIZE)
+            .offset(0)
+            .src_queue_family_index(queue_family_index)
+            .dst_queue_family_index(queue_family_index);
+        let voxelize_image_barrier = vk::ImageMemoryBarrier2::default()
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .dst_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .src_queue_family_index(queue_family_index)
+            .dst_queue_family_index(queue_family_index)
+            .image(self.voxel_texture.image)
+            .subresource_range(vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR).base_array_layer(0).base_mip_level(0).layer_count(1).level_count(1));
+        let buffer_memory_barriers = [vertex_counter_barrier, index_counter_barrier];
+        let image_memory_barriers = [voxelize_image_barrier];
+        let dep = vk::DependencyInfo::default()
+            .buffer_memory_barriers(&buffer_memory_barriers)
+            .image_memory_barriers(&image_memory_barriers);
+        device.cmd_pipeline_barrier2(cmd, &dep);        
+        
+        device.cmd_bind_pipeline(
+            cmd,
+            vk::PipelineBindPoint::COMPUTE,
+            surface_generation_pipeline,
+        );
+
+        device.cmd_dispatch(cmd, groups, groups, groups);
+
+        let index_counter_barrier = vk::BufferMemoryBarrier2::default()
+            .buffer(self.index_counter.buffer)
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .dst_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .size(vk::WHOLE_SIZE)
+            .offset(0)
+            .src_queue_family_index(queue_family_index)
+            .dst_queue_family_index(queue_family_index);
+        let vertex_buffer_barrier = vk::BufferMemoryBarrier2::default()
+            .buffer(self.vertex_buffer.buffer)
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .dst_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .size(vk::WHOLE_SIZE)
+            .offset(0)
+            .src_queue_family_index(queue_family_index)
+            .dst_queue_family_index(queue_family_index);
+        let index_buffer_barrier = vk::BufferMemoryBarrier2::default()
+            .buffer(self.index_buffer.buffer)
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .dst_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .size(vk::WHOLE_SIZE)
+            .offset(0)
+            .src_queue_family_index(queue_family_index)
+            .dst_queue_family_index(queue_family_index);
+        let buffer_memory_barriers = [index_counter_barrier, vertex_buffer_barrier, index_buffer_barrier];
+        let dep = vk::DependencyInfo::default()
+            .buffer_memory_barriers(&buffer_memory_barriers);
+        device.cmd_pipeline_barrier2(cmd, &dep);
+
+        let regions = [vk::BufferCopy::default().size(4).dst_offset(0).src_offset(0)];
+        device.cmd_copy_buffer(cmd, self.index_counter.buffer, self.indirect_draw_buffer.buffer, &regions);
+
+        let indirect_buffer_barrier = vk::BufferMemoryBarrier2::default()
+            .buffer(self.indirect_draw_buffer.buffer)
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .dst_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .size(vk::WHOLE_SIZE)
+            .offset(0)
+            .src_queue_family_index(queue_family_index)
+            .dst_queue_family_index(queue_family_index);
+        let buffer_memory_barriers = [indirect_buffer_barrier];
+        let dep = vk::DependencyInfo::default()
+            .buffer_memory_barriers(&buffer_memory_barriers);
+        device.cmd_pipeline_barrier2(cmd, &dep);
+        self.built = true;
+    }
+
+    pub unsafe fn destroy(self, device: &ash::Device, allocator: &mut Allocator) {
+        self.vertex_buffer.destroy(device, allocator);
+        self.index_buffer.destroy(device, allocator);
+        self.vertex_counter.destroy(device, allocator);
+        self.index_counter.destroy(device, allocator);
+        self.voxel_texture.destroy(device, allocator);
+        self.indirect_draw_buffer.destroy(device, allocator);
+    } 
+}
+
 pub struct VoxelTexture3D {
     pub image: vk::Image,
     pub image_view: vk::ImageView,

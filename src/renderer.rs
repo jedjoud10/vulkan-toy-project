@@ -25,6 +25,8 @@ use crate::voxel::VoxelTexture3D;
 use winit::event::MouseButton;
 use std::collections::HashMap;
 use std::ops::ControlFlow;
+use std::time::Duration;
+use std::time::Instant;
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::KeyCode;
 use winit::raw_window_handle::HasDisplayHandle;
@@ -54,7 +56,8 @@ const WRITE_SKYBOX_ENTRY_POINT: &str = "write_skybox";
 const VOXELIZE_SURFACE_ENTRY_POINT: &str = "voxelize_surface";
 const CALCULATE_DENSITY_ENTRY_POINT: &str = "calculate_density";
 
-const RASTERIZED: &str = "rasterized.spv";
+const RASTERIZED_SPV: &str = "rasterized.spv";
+const RASTERIZED_CHUNK_SPV: &str = "rasterized_chunk.spv";
 const COMPUTE_SURFACE_SPV: &str = "compute_surface.spv";
 const RASTERIZED_MS_PASSTHROUGH_SPV: &str = "rasterized_ms_passthrough.spv";
 const RASTERIZED_MS_TESSELALTION_SPV: &str = "rasterized_ms_tesselation.spv";
@@ -65,13 +68,13 @@ const RASTERIZED_BACKGROUND_SPV: &str = "rasterized_background.spv";
 
 const VERTEX_ATTRIBUTE_DESCRIPTIONS: &'static [vk::VertexInputAttributeDescription] = &[vk::VertexInputAttributeDescription {
     binding: 0,
-    format: vk::Format::R32G32B32_SFLOAT,
+    format: vk::Format::R16G16B16_SFLOAT,
     location: 0,
     offset: 0
 }];
 const VERTEX_BINDING_DESCRIPTIONS: &'static [vk::VertexInputBindingDescription] = &[vk::VertexInputBindingDescription {
     binding: 0,
-    stride: (size_of::<f32>() * 3) as u32,
+    stride: (2 * 3) as u32,
     input_rate: vk::VertexInputRate::VERTEX,
 }];
 
@@ -113,6 +116,7 @@ pub struct InternalApp {
     // extra devices
     mesh_shader_device: ash::ext::mesh_shader::Device,
     extended_dynamic_state3_device: ash::ext::extended_dynamic_state3::Device,
+    // TODO: when using ash rewrite; use KHR_copy_memory_indirect since it was promoted from NV_copy_memory_indirect
 
     // descriptors & frames in flight
     main_descriptor_set_layout: vk::DescriptorSetLayout,
@@ -124,17 +128,9 @@ pub struct InternalApp {
             
     // important too
     allocator: gpu_allocator::vulkan::Allocator,
-
-    // vertex and index buffer shi
-    vertex_buffer: buffer::Buffer,
-    index_buffer: buffer::Buffer,
-    vertex_counter: buffer::Buffer,
-    index_counter: buffer::Buffer,
-    
-    index_count: u32,
     
     // other GPU stuff
-    voxel: voxel::VoxelTexture3D,
+    chunks: Vec<voxel::Chunk>,
     query_pool: vk::QueryPool,
     pipeline_statistics_query_pool: vk::QueryPool,
     
@@ -157,6 +153,7 @@ pub struct InternalApp {
     pub was_resized: bool,
     pub window: Window,
     pub input: Input,    
+    last_frame_cpu_cmd_record_duration: Duration,
     movement: Movement,
     frame_count: u64,
     ticker: ticker::Ticker,
@@ -355,7 +352,15 @@ impl InternalApp {
                 vertex_input: vk::PipelineVertexInputStateCreateInfo::default().vertex_attribute_descriptions(VERTEX_ATTRIBUTE_DESCRIPTIONS).vertex_binding_descriptions(VERTEX_BINDING_DESCRIPTIONS),
             },
             spec_constants: None,
-            spv_file_name: RASTERIZED,
+            spv_file_name: RASTERIZED_SPV,
+        }, pipeline::PipelineCreateSettings {
+            pipeline_debug_name: "rasterized chunk render pipeline",
+            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Graphics {
+                face_culling: true,
+                vertex_input: vk::PipelineVertexInputStateCreateInfo::default().vertex_attribute_descriptions(VERTEX_ATTRIBUTE_DESCRIPTIONS).vertex_binding_descriptions(VERTEX_BINDING_DESCRIPTIONS),
+            },
+            spec_constants: None,
+            spv_file_name: RASTERIZED_CHUNK_SPV,
         }, pipeline::PipelineCreateSettings {
             pipeline_debug_name: "compute surface shader",
             wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &[CALCULATE_DENSITY_ENTRY_POINT, VOXELIZE_SURFACE_ENTRY_POINT] },
@@ -441,12 +446,19 @@ impl InternalApp {
         buffer::write_to_buffer(&device, pool, queue, index_buffer.buffer, &mut allocator, bytemuck::cast_slice(indices.as_slice()));
         */
 
-        let vertex_buffer = buffer::create_buffer(&device, &mut allocator, size_of::<vek::Vec3::<f32>>() * 1_000_000, &debug_marker, "vertex buffer", vk::BufferUsageFlags::VERTEX_BUFFER);
-        let index_buffer = buffer::create_buffer(&device, &mut allocator, size_of::<u32>()  * 1_000_000, &debug_marker, "index buffer", vk::BufferUsageFlags::INDEX_BUFFER);
-        let vertex_counter = buffer::create_counter_buffer(&device, &mut allocator, &debug_marker, "vertex counter");
-        let index_counter = buffer::create_counter_buffer(&device, &mut allocator, &debug_marker, "index counter");
-        let index_count = 0;
+        let mut chunks = Vec::<voxel::Chunk>::new();
 
+        let chunk_render_distance = 8;
+
+        for x in -chunk_render_distance..chunk_render_distance {
+            for y in -1..=1 {
+                for z in -chunk_render_distance..chunk_render_distance {
+                    let chunk_offset = vek::Vec3::new(x, y, z);
+                    chunks.push(voxel::Chunk::create(chunk_offset, &device, &mut allocator, &debug_marker, queue, pool, queue_family_index));
+                }
+            }
+        }
+        
         let mesh_shader_device = ash::ext::mesh_shader::Device::new(&instance, &device);
         let extended_dynamic_state3_device = ash::ext::extended_dynamic_state3::Device::new(&instance, &device);
 
@@ -466,10 +478,8 @@ impl InternalApp {
             vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST
         );
 
-        let voxel = crate::voxel::create_voxel_texture(&device, &mut allocator, &debug_marker, queue, pool, queue_family_index);
-
         Self {
-            voxel,
+            last_frame_cpu_cmd_record_duration: Default::default(),
             frame_count: 0,
             input: Default::default(),
             movement: Movement::new(),
@@ -508,9 +518,6 @@ impl InternalApp {
             swapchain_image_views,
             main_descriptor_set_layout,
             main_pipeline_layout,
-            vertex_buffer,
-            index_buffer,
-            index_count,
             mesh_shader_device,
             extended_dynamic_state3_device,
             tesselation_buffer,
@@ -523,8 +530,7 @@ impl InternalApp {
             pipeline_statistics_query_pool,
             render_finished_semaphores,
             uniform_buffer,
-            vertex_counter,
-            index_counter,
+            chunks,
         }
     }
 
@@ -664,12 +670,14 @@ impl InternalApp {
         let present_complete_semaphores = [*present_complete_semaphore];
         let end_fence = *end_fence;
 
+        let pre_wait_for_fence = Instant::now();
         if let Err(err) = self.device.wait_for_fences(&[end_fence], true, u64::MAX) {
             log::error!("wait on fence err: {:?}", err);
             // return;
         } else {
             // wait for a few frames so that the queries get populated
             if self.frame_count > per_frame_data::FRAMES_IN_FLIGHT as u64 {
+                /*
                 // try to fetch timestamp queries
                 let mut timestamps = [0u64; 2];
                 let okay = self.device.get_query_pool_results(self.query_pool, 0, &mut timestamps, vk::QueryResultFlags::TYPE_64 | vk::QueryResultFlags::WAIT).is_ok();
@@ -677,6 +685,7 @@ impl InternalApp {
                     let delta_in_ms = ((timestamps[1].saturating_sub(timestamps[0])) as f64 * self.timestamp_period as f64) / 1000000.0f64;
                     self.stats.push_query_timings(delta_in_ms);
                 }
+                */
             }
 
 
@@ -689,7 +698,9 @@ impl InternalApp {
             }
             */
         }
+        let post_wait_for_fence = Instant::now();
 
+        let pre_acquire_swapchain = Instant::now();
         let (acquired_swapchain_image_index, suboptimal) = self
             .swapchain_loader
             .acquire_next_image(
@@ -699,6 +710,7 @@ impl InternalApp {
                 vk::Fence::null(),
             )
             .unwrap();
+        let post_acquire_swapchain = Instant::now();
 
         let swapchain_image = self.swapchain_images[acquired_swapchain_image_index as usize]; // then compose onto this...
         let swapchain_image_view = self.swapchain_image_views[acquired_swapchain_image_index as usize];
@@ -716,6 +728,17 @@ impl InternalApp {
         self.device.reset_fences(&[end_fence]).unwrap();
         let render_finished_semaphore = [self.render_finished_semaphores[acquired_swapchain_image_index as usize]];
 
+        let num_chunks = self.chunks.len() as u64;
+        let chunk = &mut self.chunks[(self.frame_count % (num_chunks)) as usize];
+        let voxel::Chunk {
+            voxel_texture,
+            vertex_buffer,
+            index_buffer,
+            vertex_counter,
+            index_counter,
+            ..
+        } = chunk;
+
         // create bindless descriptor write for storage images        
         let swapchain_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
             .image_view(swapchain_image_view)
@@ -730,7 +753,7 @@ impl InternalApp {
             .image_view(self.skybox.clouds_image_view)
             .image_layout(vk::ImageLayout::GENERAL);
         let voxel_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
-            .image_view(self.voxel.image_view)
+            .image_view(voxel_texture.image_view)
             .image_layout(vk::ImageLayout::GENERAL);
         let mut storage_image_infos = vec![swapchain_image_view_descriptor_image_info, rendered_image_view_descriptor_image_info, skybox_image_view_descriptor_image_info, clouds_image_view_descriptor_image_info, voxel_image_view_descriptor_image_info];
         
@@ -757,11 +780,11 @@ impl InternalApp {
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
             vk::DescriptorBufferInfo::default()
-                .buffer(self.vertex_buffer.buffer)
+                .buffer(vertex_buffer.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
             vk::DescriptorBufferInfo::default()
-                .buffer(self.index_buffer.buffer)
+                .buffer(index_buffer.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
             vk::DescriptorBufferInfo::default()
@@ -777,11 +800,11 @@ impl InternalApp {
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
             vk::DescriptorBufferInfo::default()
-                .buffer(self.vertex_counter.buffer)
+                .buffer(vertex_counter.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
             vk::DescriptorBufferInfo::default()
-                .buffer(self.index_counter.buffer)
+                .buffer(index_counter.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
         ];
@@ -852,6 +875,7 @@ impl InternalApp {
         self.device
             .begin_command_buffer(cmd, &cmd_buffer_begin_info)
             .unwrap();
+        let cpu_cmd_record_start = Instant::now();
         self.device.cmd_reset_query_pool(cmd, self.query_pool, 0, 2);
         self.device.cmd_reset_query_pool(cmd, self.pipeline_statistics_query_pool, 0, 1);
         self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, self.query_pool, 0);
@@ -861,7 +885,12 @@ impl InternalApp {
             .level_count(1)
             .layer_count(1);
 
-        let mut text = format!("CPU delta: {:.2}ms\nGPU main frame: {:.2}ms\n", delta*1000f32, self.stats.get_average_in_ms());
+        let mut text = String::new();
+        text += &format!("CPU delta: {:.2}ms\n", delta*1000f32);
+        text += &format!("CPU command buffer record duration: {:.2}ms\n", self.last_frame_cpu_cmd_record_duration.as_micros() as f32 / 1000.0f32);
+        text += &format!("CPU fence wait duration: {:.2}ms\n", (post_wait_for_fence - pre_wait_for_fence).as_micros() as f32 / 1000.0f32);
+        text += &format!("CPU fence acquire swapchain duration: {:.2}ms\n", (post_acquire_swapchain - pre_acquire_swapchain).as_micros() as f32 / 1000.0f32);
+        text += &format!("GPU main frame: {:.2}ms\n", self.stats.get_average_in_ms());
         text += &format!("pos: {:.2}\n", self.movement.position);
         text += &format!("debug type: {}\n", self.debug_type);
         text += &format!("toggles bitmask: {:#032b}\n", self.toggles_bitmask);
@@ -1002,73 +1031,7 @@ impl InternalApp {
 
         self.device.cmd_dispatch(cmd, skybox::SKYBOX_RESOLUTION.div_ceil(8), skybox::SKYBOX_RESOLUTION.div_ceil(8), 6);
 
-        self.device.cmd_bind_pipeline(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.compute_pipelines[COMPUTE_SURFACE_SPV][CALCULATE_DENSITY_ENTRY_POINT],
-        );
-
-        let groups = 16;
-
-        self.device.cmd_dispatch(cmd, groups+1, groups+1, groups+1);
-
-        let zero = 0u32;
-        self.device.cmd_update_buffer(cmd, self.vertex_counter.buffer, 0, bytemuck::bytes_of(&zero));
-        self.device.cmd_update_buffer(cmd, self.index_counter.buffer, 0, bytemuck::bytes_of(&zero));
-        
-        
-        self.device.cmd_bind_pipeline(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.compute_pipelines[COMPUTE_SURFACE_SPV][VOXELIZE_SURFACE_ENTRY_POINT],
-        );
-
-        self.device.cmd_dispatch(cmd, groups, groups, groups);
-
-        let vertex_buffer_barrier = vk::BufferMemoryBarrier2::default()
-            .buffer(self.vertex_buffer.buffer)
-            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .src_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
-            .dst_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
-            .size(vk::WHOLE_SIZE)
-            .offset(0)
-            .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(self.queue_family_index);
-        let index_buffer_barrier = vk::BufferMemoryBarrier2::default()
-            .buffer(self.index_buffer.buffer)
-            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .src_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
-            .dst_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
-            .size(vk::WHOLE_SIZE)
-            .offset(0)
-            .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(self.queue_family_index);
-        let vertex_counter_barrier = vk::BufferMemoryBarrier2::default()
-            .buffer(self.vertex_counter.buffer)
-            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .src_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
-            .dst_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
-            .size(vk::WHOLE_SIZE)
-            .offset(0)
-            .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(self.queue_family_index);
-        let index_counter_barrier = vk::BufferMemoryBarrier2::default()
-            .buffer(self.index_counter.buffer)
-            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .src_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
-            .dst_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
-            .size(vk::WHOLE_SIZE)
-            .offset(0)
-            .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(self.queue_family_index);
-        let buffer_memory_barriers = [vertex_buffer_barrier, index_buffer_barrier, vertex_counter_barrier, index_counter_barrier];
-        let dep = vk::DependencyInfo::default()
-            .buffer_memory_barriers(&buffer_memory_barriers);
-        self.device.cmd_pipeline_barrier2(cmd, &dep);
+        chunk.do_sum_shi(&self.device, cmd, self.main_pipeline_layout, self.compute_pipelines[COMPUTE_SURFACE_SPV][CALCULATE_DENSITY_ENTRY_POINT], self.compute_pipelines[COMPUTE_SURFACE_SPV][VOXELIZE_SURFACE_ENTRY_POINT], self.queue_family_index);
         
         let skybox_subresource_range = vk::ImageSubresourceRange::default()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -1208,12 +1171,17 @@ impl InternalApp {
         self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  16, 16, 1);
         */
 
-        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED]);
+        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_CHUNK_SPV]);
         self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
-        self.device.cmd_bind_vertex_buffers(cmd, 0, &[self.vertex_buffer.buffer], &[0]);
-        self.device.cmd_bind_index_buffer(cmd, self.index_buffer.buffer, 0, vk::IndexType::UINT32);
-        self.device.cmd_draw_indexed(cmd, 1000000, 1, 0, 0, 0);
-        
+
+        for chunk in self.chunks.iter() {
+            let constants = bytemuck::bytes_of(&chunk.chunk_offset); 
+            self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, constants);
+            self.device.cmd_bind_vertex_buffers(cmd, 0, &[chunk.vertex_buffer.buffer], &[0]);
+            self.device.cmd_bind_index_buffer(cmd, chunk.index_buffer.buffer, 0, vk::IndexType::UINT32);
+            self.device.cmd_draw_indexed_indirect(cmd, chunk.indirect_draw_buffer.buffer, 0, 1, 0);
+        }
+
         self.device.cmd_end_rendering(cmd);
         self.device.cmd_end_query(cmd, self.pipeline_statistics_query_pool, 0);
 
@@ -1427,6 +1395,8 @@ impl InternalApp {
 
         self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::BOTTOM_OF_PIPE, self.query_pool, 1);
         self.device.end_command_buffer(cmd).unwrap();
+        let now = Instant::now();
+        self.last_frame_cpu_cmd_record_duration = now - cpu_cmd_record_start;
 
         let cmds = [cmd];
         let wait_masks = [vk::PipelineStageFlags::ALL_COMMANDS | vk::PipelineStageFlags::ALL_GRAPHICS | vk::PipelineStageFlags::COMPUTE_SHADER];
@@ -1471,14 +1441,12 @@ impl InternalApp {
     pub unsafe fn destroy(mut self) {
         self.device.device_wait_idle().unwrap();
 
-        self.index_buffer.destroy(&self.device, &mut self.allocator);
-        self.vertex_buffer.destroy(&self.device, &mut self.allocator);
-        self.index_counter.destroy(&self.device, &mut self.allocator);
-        self.vertex_counter.destroy(&self.device, &mut self.allocator);
+        for chunk in self.chunks {
+            chunk.destroy(&self.device, &mut self.allocator);
+        }
+        
         self.tesselation_buffer.destroy(&self.device, &mut self.allocator);
         
-        self.voxel.destroy(&self.device, &mut self.allocator);
-
         for (_, graphic_pipeline) in self.graphics_pipelines {
             graphic_pipeline.destroy(&self.device);
         }

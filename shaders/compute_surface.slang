@@ -6,7 +6,6 @@
 
 
 const static uint MESHLET_SIZE = 4;
-const static uint CHUNK_SIZE = MESHLET_SIZE * 4;
 
 // 1 element padding
 const static int MESHLET_SIZE_PLUS_ONE = MESHLET_SIZE+1;
@@ -85,12 +84,44 @@ float unlerp(float x, float a, float b) {
 
 [shader("compute")]
 [numthreads(4, 4, 4)]
-void calculate_density(uint3 id: SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID) {
+void calculate_density(uint3 id: SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID, uniform int3 chunk_offset) {
     let voxel_image = storage_images_3d_float[VOXEL_STORAGE_IMAGE_IDX];
     let uniforms = load_per_frame_uniforms();
     
-    float3 p = id;
-    float value = p.y - cellular(p * 0.05).x * 20 - 5.0;
+    float3 p = id + (float3)chunk_offset * 64;
+    p *= 0.1;
+
+    float value = 0;
+
+    float scale = 0.02;
+    float amplitude = 20.0;
+    float3 offset = 0.0;
+
+    for (int i = 0; i < 7; i++) {
+        value += abs(snoise(scale * p + offset)) * amplitude;
+
+        scale *= 1.7;
+        amplitude *= 0.4;
+        offset += snoise((float)i * 0.5 + p * 0.02) * 0.6;
+    }
+
+    if (length(p) < 20) {
+        value = 20 + snoise(-p * 0.2 + 4.12312);
+
+        if (length(p) > 18 + snoise(p * 0.2)) {
+            value = -20;
+        }
+    }
+
+    /*
+    if (snoise(p.xz * 0.005) > 0) {
+        value += snoise(p * 0.05 + snoise(p * 0.01) * 0.2) * 30; 
+    } else {
+        value += -cellular(p * 0.05).x * 20; 
+    }
+    */
+
+    value += p.y - 10.0;
     voxel_image.Store(id, value);
 }
 
@@ -99,7 +130,7 @@ groupshared Atomic<uint32_t> negative;
 
 [shader("compute")]
 [numthreads(6, 6, 6)]
-void voxelize_surface(uint3 id: SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID) {
+void voxelize_surface(uint3 id: SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID, uniform int3 chunk_offset) {
     let index_counter = storage_buffers[STORAGE_BUFFER_INDEX_COUNTER_IDX];
     let vertex_counter = storage_buffers[STORAGE_BUFFER_VERTEX_COUNTER_IDX];
     let vertex_buffer = storage_buffers[STORAGE_BUFFER_VERTEX_BUFFER_IDX];
@@ -167,9 +198,9 @@ void voxelize_surface(uint3 id: SV_DispatchThreadID, uint3 gtid : SV_GroupThread
         lookup[offset_to_index(cell, MESHLET_SIZE_PLUS_ONE)] = vertex_index;
 
         float3 cell_offset = cell + (inside_cell_offset_avg / count);
-        float3 loaded_vertex = cell_offset + gid * MESHLET_SIZE + (int3)CHUNK_SIZE * 0;
+        float3 loaded_vertex = cell_offset + gid * MESHLET_SIZE;
 
-        vertex_buffer.Store<float3>(vertex_index * 4 * 3, loaded_vertex);
+        vertex_buffer.Store<half3>(vertex_index * 2 * 3, (half3)loaded_vertex);
     }
 
     GroupMemoryBarrierWithGroupSync();
@@ -207,8 +238,9 @@ void voxelize_surface(uint3 id: SV_DispatchThreadID, uint3 gtid : SV_GroupThread
                 // TODO: since we know which vertices are which at this point, we can change the triangle ordering to preserve topoly better
                 // this should remedy the "spike" problem that happens when we get a quad where two opposing corner vertices are significantly higher/lower than the other two
                 // I am unsure of what heuristic to use to detect that though
-                uint triangle_index;
-                index_counter.InterlockedAdd(0, 2, triangle_index);
+                uint index_index;
+                index_counter.InterlockedAdd(0, 6, index_index);
+                uint triangle_index = index_index / 3;
                 if (dir) {
                     index_buffer.Store3(3 * 4 * triangle_index, uint3(quad_vertex_indices.x, quad_vertex_indices.y, quad_vertex_indices.z));
                     index_buffer.Store3(3 * 4 * (triangle_index + 1), uint3(quad_vertex_indices.z, quad_vertex_indices.y, quad_vertex_indices.w));

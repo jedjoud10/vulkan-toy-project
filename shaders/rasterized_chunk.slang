@@ -1,12 +1,11 @@
 #language slang 2026
 #include "utils/pbr.slang"
-
 #include "utils/bindless.slang"
 
 
 struct VertexInput {
     float3 world;
-    uint count : SV_InstanceID;
+    uint draw_chunk_index : SV_DrawIndex;
 };
 
 struct VertexOutput {
@@ -15,15 +14,12 @@ struct VertexOutput {
 };
 
 [shader("vertex")]
-VertexOutput vert_main(VertexInput input) {
+VertexOutput vert_main(VertexInput input, uniform int3 chunk_offset) {
     VertexOutput output;
 
     let uniforms = load_per_frame_uniforms();
 
-    float4 world_position = float4(input.world, 1.0) + uint4(input.count % 100, 0, input.count / 100, 0);
-
-    world_position.y += sin(input.count * 0.5 + uniforms.time * 0) * 2;
-
+    float4 world_position = float4(input.world + (float3)chunk_offset * 64, 1.0);
 
     float4 t = mul(world_position, uniforms.view_projection_matrix);
     t.y = -t.y;
