@@ -27,7 +27,7 @@ void mesh_main(out vertices VertexOutput vertices[96], out indices uint3 triangl
 
     let uniforms = storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
     let vertex_buffer = storage_buffers_readonly[STORAGE_BUFFER_VERTEX_BUFFER_IDX];
-    let index_buffer = storage_buffers_readonly[STORAGE_BUFFER_INDEX_BUFFER];
+    let index_buffer = storage_buffers_readonly[STORAGE_BUFFER_INDEX_BUFFER_IDX];
 
     // load triangle from index buffer
     // this triangle indexes into the global vertex buffer

@@ -40,7 +40,7 @@ float4 frag_main(VertexOutput in_vert) : SV_Target {
     
     float3 world = in_vert.world_pos;
     float3 normal = -normalize(cross(ddy(in_vert.world_pos), ddx(in_vert.world_pos)));
-    float3 view = normalize(in_vert.world_pos - uniforms.position.xyz);
+    float3 view = -normalize(in_vert.world_pos - uniforms.position.xyz);
     
     float3 diffuse = 0.5;
     float roughness = 0.8;

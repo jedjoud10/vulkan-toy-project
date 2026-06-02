@@ -26,7 +26,6 @@ impl PerFrameData {
         let end_fence = device.create_fence(&vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED), None).unwrap();
         log::info!("created semaphore and fence");
 
-        
         let layouts = [descriptor_set_layout];
         let allocate_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(descriptor_pool)

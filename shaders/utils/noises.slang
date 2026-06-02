@@ -9,6 +9,7 @@ typedef float4 vec4;
 #include "noises/noise3D.slang"
 #include "noises/noise2D.slang"
 #include "noises/psrdnoise2D.slang"
+#include "noises/cellular3D.slang"
 
 
 #endif

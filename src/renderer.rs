@@ -20,6 +20,8 @@ use crate::input::Input;
 use crate::movement::Movement;
 use crate::per_frame_data;
 use crate::samplers;
+use crate::voxel;
+use crate::voxel::VoxelTexture3D;
 use winit::event::MouseButton;
 use std::collections::HashMap;
 use std::ops::ControlFlow;
@@ -49,7 +51,11 @@ const WRITE_SWAPCHAIN_IMAGE_ENTRY_POINT: &'static str = "write_swapchain_image";
 const COMPUTE_SKY_SPV: &str = "compute_sky.spv";
 const WRITE_CLOUDS_ENTRY_POINT: &str = "write_clouds";
 const WRITE_SKYBOX_ENTRY_POINT: &str = "write_skybox";
+const VOXELIZE_SURFACE_ENTRY_POINT: &str = "voxelize_surface";
+const CALCULATE_DENSITY_ENTRY_POINT: &str = "calculate_density";
+
 const RASTERIZED: &str = "rasterized.spv";
+const COMPUTE_SURFACE_SPV: &str = "compute_surface.spv";
 const RASTERIZED_MS_PASSTHROUGH_SPV: &str = "rasterized_ms_passthrough.spv";
 const RASTERIZED_MS_TESSELALTION_SPV: &str = "rasterized_ms_tesselation.spv";
 const RASTERIZED_MS_GENERATED_1_SPV: &str = "rasterized_ms_generated_1.spv";
@@ -122,9 +128,13 @@ pub struct InternalApp {
     // vertex and index buffer shi
     vertex_buffer: buffer::Buffer,
     index_buffer: buffer::Buffer,
+    vertex_counter: buffer::Buffer,
+    index_counter: buffer::Buffer,
+    
     index_count: u32,
     
     // other GPU stuff
+    voxel: voxel::VoxelTexture3D,
     query_pool: vk::QueryPool,
     pipeline_statistics_query_pool: vk::QueryPool,
     
@@ -346,6 +356,11 @@ impl InternalApp {
             },
             spec_constants: None,
             spv_file_name: RASTERIZED,
+        }, pipeline::PipelineCreateSettings {
+            pipeline_debug_name: "compute surface shader",
+            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &[CALCULATE_DENSITY_ENTRY_POINT, VOXELIZE_SURFACE_ENTRY_POINT] },
+            spec_constants: None,
+            spv_file_name: COMPUTE_SURFACE_SPV,
         }];
 
         // compile the pipelines in parallel
@@ -409,6 +424,7 @@ impl InternalApp {
         let pipeline_statistics_query_pool = others::create_pipeline_stats_pool(&device);
         let timestamp_period = physical_device_properties.properties.limits.timestamp_period;
 
+        /*
         let thingy = include_bytes!("../models/bunny_subdivided.obj");
         let obj = obj::load_obj::<obj::Position, &[u8], u32>(thingy).unwrap();
 
@@ -423,6 +439,13 @@ impl InternalApp {
         let index_buffer = buffer::create_buffer(&device, &mut allocator, size_of::<u32>()  * indices.len(), &debug_marker, "index buffer", vk::BufferUsageFlags::INDEX_BUFFER);
         let index_count = indices.len() as u32;
         buffer::write_to_buffer(&device, pool, queue, index_buffer.buffer, &mut allocator, bytemuck::cast_slice(indices.as_slice()));
+        */
+
+        let vertex_buffer = buffer::create_buffer(&device, &mut allocator, size_of::<vek::Vec3::<f32>>() * 1_000_000, &debug_marker, "vertex buffer", vk::BufferUsageFlags::VERTEX_BUFFER);
+        let index_buffer = buffer::create_buffer(&device, &mut allocator, size_of::<u32>()  * 1_000_000, &debug_marker, "index buffer", vk::BufferUsageFlags::INDEX_BUFFER);
+        let vertex_counter = buffer::create_counter_buffer(&device, &mut allocator, &debug_marker, "vertex counter");
+        let index_counter = buffer::create_counter_buffer(&device, &mut allocator, &debug_marker, "index counter");
+        let index_count = 0;
 
         let mesh_shader_device = ash::ext::mesh_shader::Device::new(&instance, &device);
         let extended_dynamic_state3_device = ash::ext::extended_dynamic_state3::Device::new(&instance, &device);
@@ -443,7 +466,10 @@ impl InternalApp {
             vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST
         );
 
+        let voxel = crate::voxel::create_voxel_texture(&device, &mut allocator, &debug_marker, queue, pool, queue_family_index);
+
         Self {
+            voxel,
             frame_count: 0,
             input: Default::default(),
             movement: Movement::new(),
@@ -497,6 +523,8 @@ impl InternalApp {
             pipeline_statistics_query_pool,
             render_finished_semaphores,
             uniform_buffer,
+            vertex_counter,
+            index_counter,
         }
     }
 
@@ -701,7 +729,10 @@ impl InternalApp {
         let clouds_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
             .image_view(self.skybox.clouds_image_view)
             .image_layout(vk::ImageLayout::GENERAL);
-        let mut storage_image_infos = vec![swapchain_image_view_descriptor_image_info, rendered_image_view_descriptor_image_info, skybox_image_view_descriptor_image_info, clouds_image_view_descriptor_image_info];
+        let voxel_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
+            .image_view(self.voxel.image_view)
+            .image_layout(vk::ImageLayout::GENERAL);
+        let mut storage_image_infos = vec![swapchain_image_view_descriptor_image_info, rendered_image_view_descriptor_image_info, skybox_image_view_descriptor_image_info, clouds_image_view_descriptor_image_info, voxel_image_view_descriptor_image_info];
         
         // add bloom storage image views
         for bloom_storage_image_view in const_data.bloom_mip_image_views.iter() {
@@ -744,7 +775,15 @@ impl InternalApp {
             vk::DescriptorBufferInfo::default()
                 .buffer(self.debug_text_buffer.buffer)
                 .offset(0)
-                .range(vk::WHOLE_SIZE)
+                .range(vk::WHOLE_SIZE),
+            vk::DescriptorBufferInfo::default()
+                .buffer(self.vertex_counter.buffer)
+                .offset(0)
+                .range(vk::WHOLE_SIZE),
+            vk::DescriptorBufferInfo::default()
+                .buffer(self.index_counter.buffer)
+                .offset(0)
+                .range(vk::WHOLE_SIZE),
         ];
         let storage_buffer_write = vk::WriteDescriptorSet::default()
             .descriptor_count(storage_buffer_infos.len() as u32)
@@ -802,7 +841,7 @@ impl InternalApp {
         // TODO: ideally, these would:
         // 1. be dynamically allocated using some sort of per-frame arena with indexing
         // 2. be passed to the shader either using a uniform buffer (since these are constant anyways)
-        const BLOOM_MIPS_STORAGE_IMAGE_START_IDX: u32 = 4; // bloom needs to be last since it is dynamically allocated (can have a dynamic number of bloom mips, depending on screen res)
+        const BLOOM_MIPS_STORAGE_IMAGE_START_IDX: u32 = 5; // bloom needs to be last since it is dynamically allocated (can have a dynamic number of bloom mips, depending on screen res)
         const RENDERED_SAMPLER_IMAGE_IDX: u32 = 2;
         const BLOOM_MIPS_SAMPLED_IMAGE_START_IDX: u32 = 4; // bloom needs to be last since it is dynamically allocated (can have a dynamic number of bloom mips, depending on screen res)
 
@@ -962,6 +1001,74 @@ impl InternalApp {
         );
 
         self.device.cmd_dispatch(cmd, skybox::SKYBOX_RESOLUTION.div_ceil(8), skybox::SKYBOX_RESOLUTION.div_ceil(8), 6);
+
+        self.device.cmd_bind_pipeline(
+            cmd,
+            vk::PipelineBindPoint::COMPUTE,
+            self.compute_pipelines[COMPUTE_SURFACE_SPV][CALCULATE_DENSITY_ENTRY_POINT],
+        );
+
+        let groups = 16;
+
+        self.device.cmd_dispatch(cmd, groups+1, groups+1, groups+1);
+
+        let zero = 0u32;
+        self.device.cmd_update_buffer(cmd, self.vertex_counter.buffer, 0, bytemuck::bytes_of(&zero));
+        self.device.cmd_update_buffer(cmd, self.index_counter.buffer, 0, bytemuck::bytes_of(&zero));
+        
+        
+        self.device.cmd_bind_pipeline(
+            cmd,
+            vk::PipelineBindPoint::COMPUTE,
+            self.compute_pipelines[COMPUTE_SURFACE_SPV][VOXELIZE_SURFACE_ENTRY_POINT],
+        );
+
+        self.device.cmd_dispatch(cmd, groups, groups, groups);
+
+        let vertex_buffer_barrier = vk::BufferMemoryBarrier2::default()
+            .buffer(self.vertex_buffer.buffer)
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .dst_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .size(vk::WHOLE_SIZE)
+            .offset(0)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index);
+        let index_buffer_barrier = vk::BufferMemoryBarrier2::default()
+            .buffer(self.index_buffer.buffer)
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .dst_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .size(vk::WHOLE_SIZE)
+            .offset(0)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index);
+        let vertex_counter_barrier = vk::BufferMemoryBarrier2::default()
+            .buffer(self.vertex_counter.buffer)
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .dst_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .size(vk::WHOLE_SIZE)
+            .offset(0)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index);
+        let index_counter_barrier = vk::BufferMemoryBarrier2::default()
+            .buffer(self.index_counter.buffer)
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .dst_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .size(vk::WHOLE_SIZE)
+            .offset(0)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index);
+        let buffer_memory_barriers = [vertex_buffer_barrier, index_buffer_barrier, vertex_counter_barrier, index_counter_barrier];
+        let dep = vk::DependencyInfo::default()
+            .buffer_memory_barriers(&buffer_memory_barriers);
+        self.device.cmd_pipeline_barrier2(cmd, &dep);
         
         let skybox_subresource_range = vk::ImageSubresourceRange::default()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -1042,6 +1149,7 @@ impl InternalApp {
 
         // render background skybox and clouds
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_BACKGROUND_SPV]);
+        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, vk::PolygonMode::FILL);
         self.device.cmd_draw(cmd, 6, 1, 0, 0);
 
         /*
@@ -1104,7 +1212,7 @@ impl InternalApp {
         self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
         self.device.cmd_bind_vertex_buffers(cmd, 0, &[self.vertex_buffer.buffer], &[0]);
         self.device.cmd_bind_index_buffer(cmd, self.index_buffer.buffer, 0, vk::IndexType::UINT32);
-        self.device.cmd_draw_indexed(cmd, self.index_count, 10, 0, 0, 0);
+        self.device.cmd_draw_indexed(cmd, 1000000, 1, 0, 0, 0);
         
         self.device.cmd_end_rendering(cmd);
         self.device.cmd_end_query(cmd, self.pipeline_statistics_query_pool, 0);
@@ -1365,7 +1473,11 @@ impl InternalApp {
 
         self.index_buffer.destroy(&self.device, &mut self.allocator);
         self.vertex_buffer.destroy(&self.device, &mut self.allocator);
+        self.index_counter.destroy(&self.device, &mut self.allocator);
+        self.vertex_counter.destroy(&self.device, &mut self.allocator);
         self.tesselation_buffer.destroy(&self.device, &mut self.allocator);
+        
+        self.voxel.destroy(&self.device, &mut self.allocator);
 
         for (_, graphic_pipeline) in self.graphics_pipelines {
             graphic_pipeline.destroy(&self.device);

@@ -21,6 +21,7 @@ mod render_targets_data;
 mod per_frame_data;
 mod samplers;
 mod tesselation;
+mod voxel;
 
 use clap::Parser;
 use std::ops::ControlFlow;

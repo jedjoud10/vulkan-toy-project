@@ -173,6 +173,7 @@ unsafe fn create_shader_module(raw: &[u32], device: &ash::Device, binder: &Optio
     shader_module
 }
 
+const DYNAMIC_STATES: &[vk::DynamicState] = &[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR, vk::DynamicState::POLYGON_MODE_EXT];
 
 pub unsafe fn create_graphics_pipeline_mesh_shader(
     device: &ash::Device,
@@ -207,9 +208,8 @@ pub unsafe fn create_graphics_pipeline_mesh_shader(
         stages.push(task_shader_stage_create_info);
     }
 
-    let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR, vk::DynamicState::POLYGON_MODE_EXT];
     let dynamic_state = vk::PipelineDynamicStateCreateInfo::default()
-        .dynamic_states(&dynamic_states);
+        .dynamic_states(&DYNAMIC_STATES);
 
     let color_attachment_formats = [vk::Format::R16G16B16A16_SFLOAT];
     let mut next = vk::PipelineRenderingCreateInfo::default()
@@ -280,7 +280,7 @@ pub unsafe fn create_graphics_pipeline(
     
     vertex_input: vk::PipelineVertexInputStateCreateInfo<'_>,
     name: &str,
-    face_culling: bool
+    face_culling: bool,
 ) -> vk::Pipeline {
     let (data, entries) = convert_spec_constants(spec_constants_vert);
     let vertex_shader_stage_specialization_info = vk::SpecializationInfo::default()
@@ -305,9 +305,8 @@ pub unsafe fn create_graphics_pipeline(
         .specialization_info(&fragment_shader_stage_specialization_info);
     let stages = [vertex_shader_stage_create_info, fragment_shader_stage_create_info];
 
-    let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
     let dynamic_state = vk::PipelineDynamicStateCreateInfo::default()
-        .dynamic_states(&dynamic_states);
+        .dynamic_states(&DYNAMIC_STATES);
 
     let color_attachment_formats = [vk::Format::R16G16B16A16_SFLOAT];
     let mut next = vk::PipelineRenderingCreateInfo::default()

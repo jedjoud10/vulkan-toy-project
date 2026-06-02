@@ -294,12 +294,15 @@ float4 clouds(float3 ray_dir, float3 ray_pos) {
 }
 
 float3 get_environment_diffuse(float3 dir) {
+    return 0.0;
+    /*
     let skybox_sampler = sampled_images_cube[SKYBOX_SAMPLER_IMAGE_IDX];
     let sampler = samplers[NEAREST_SAMPLER_IDX];
 
     float3 skyColor = skybox_sampler.Sample(sampler, float3(0, 0.8, 0)).xyz;
 	float3 groundColor = skybox_sampler.Sample(sampler, float3(0, 0.05, 0)).xyz;
     return getEnvironmentDiffuse(dir, skyColor, groundColor);
+    */
 }
 
 

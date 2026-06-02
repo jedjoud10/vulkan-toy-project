@@ -22,13 +22,17 @@ const static uint SWAPCHAIN_STORAGE_IMAGE_IDX = 0;
 const static uint RENDERED_STORAGE_IMAGE_IDX = 1;
 const static uint SKYBOX_STORAGE_IMAGE_IDX = 2;
 const static uint CLOUDS_STORAGE_IMAGE_IDX = 3;
+const static uint VOXEL_STORAGE_IMAGE_IDX = 4;
 
 const static uint UNIFORM_BUFFER_THINGY_IDX = 0;
 const static uint STORAGE_BUFFER_VERTEX_BUFFER_IDX = 1;
-const static uint STORAGE_BUFFER_INDEX_BUFFER = 2;
+const static uint STORAGE_BUFFER_INDEX_BUFFER_IDX = 2;
 const static uint STORAGE_BUFFER_TESS_BUFFER = 3;
 const static uint STORAGE_BUFFER_LIGHTS_BUFFER = 4;
 const static uint STORAGE_BUFFER_DEBUG_TEXT_LINES = 5;
+const static uint STORAGE_BUFFER_VERTEX_COUNTER_IDX = 6;
+const static uint STORAGE_BUFFER_INDEX_COUNTER_IDX = 7;
+
 
 const static uint SKYBOX_SAMPLER_IMAGE_IDX = 0;
 const static uint CLOUDS_SAMPLER_IMAGE_IDX = 1;
@@ -40,6 +44,15 @@ const static uint LINEAR_SAMPLER_IDX = 1;
 
 [[vk::binding(0, 0)]]
 RWTexture2D<float4> storage_images[];
+
+[[vk::binding(0, 0)]]
+RWTexture3D<float4> storage_images_3d[];
+
+[[vk::binding(0, 0)]]
+RWTexture3D<float> storage_images_3d_float[];
+
+[[vk::binding(0, 0)]]
+readonly RWTexture3D<float> readonly_storage_images_3d_float[];
 
 [[vk::binding(0, 0)]]
 RWTexture2DArray<float4> storage_images_array[];
