@@ -130,9 +130,8 @@ pub struct InternalApp {
     allocator: gpu_allocator::vulkan::Allocator,
     
     // other GPU stuff
+    multiple_chunks: voxel::MultipleChunks,
     chunks: Vec<voxel::Chunk>,
-    query_pool: vk::QueryPool,
-    pipeline_statistics_query_pool: vk::QueryPool,
     
     timestamp_period: f32,
     skybox: skybox::Skybox,
@@ -425,8 +424,6 @@ impl InternalApp {
         crate::render_targets_data::transfer_layout_for_images(&device, queue_family_index, &const_descriptor_sets, pool, queue);
         log::info!("created constant descriptor sets");
 
-        let query_pool = others::create_query_pool(&device);
-        let pipeline_statistics_query_pool = others::create_pipeline_stats_pool(&device);
         let timestamp_period = physical_device_properties.properties.limits.timestamp_period;
 
         /*
@@ -447,18 +444,27 @@ impl InternalApp {
         */
 
         let mut chunks = Vec::<voxel::Chunk>::new();
+        let chunk_render_distance = 4;
+        let mut index = 0;
 
-        let chunk_render_distance = 8;
-
-        for x in -chunk_render_distance..chunk_render_distance {
-            for y in -1..=1 {
-                for z in -chunk_render_distance..chunk_render_distance {
+        for x in -chunk_render_distance..=chunk_render_distance {
+            for y in -1..1 {
+                for z in -chunk_render_distance..=chunk_render_distance {
                     let chunk_offset = vek::Vec3::new(x, y, z);
-                    chunks.push(voxel::Chunk::create(chunk_offset, &device, &mut allocator, &debug_marker, queue, pool, queue_family_index));
+                    chunks.push(voxel::Chunk {
+                        chunk_index: index,
+                        chunk_offset,
+                        built: false,
+                        vertex_buffer_start_offset: (voxel::VERTICES_PER_CHUNK * index),
+                        index_buffer_start_offset: (voxel::INDICES_PER_CHUNK * index),
+                    });
+                    index += 1;
                 }
             }
         }
-        
+
+        let multiple_chunks = voxel::MultipleChunks::create(&device, &mut allocator, &debug_marker, queue, pool, queue_family_index, index);
+
         let mesh_shader_device = ash::ext::mesh_shader::Device::new(&instance, &device);
         let extended_dynamic_state3_device = ash::ext::extended_dynamic_state3::Device::new(&instance, &device);
 
@@ -479,6 +485,7 @@ impl InternalApp {
         );
 
         Self {
+            multiple_chunks,
             last_frame_cpu_cmd_record_duration: Default::default(),
             frame_count: 0,
             input: Default::default(),
@@ -501,7 +508,6 @@ impl InternalApp {
             pool,
             const_descriptor_sets,
             descriptor_pool,
-            query_pool,
             timestamp_period,
             allocator,
             skybox,
@@ -527,7 +533,6 @@ impl InternalApp {
             wireframe: false,
             toggles_bitmask: 0,
             debug_text_buffer,
-            pipeline_statistics_query_pool,
             render_finished_semaphores,
             uniform_buffer,
             chunks,
@@ -663,12 +668,12 @@ impl InternalApp {
             end_fence,
             cmd,
             main_descriptor_set,
+            query_pool,
+            pipeline_statistics_query_pool,
             ..
-        } = &self.frames_in_flight[frame_in_flight_index as usize];
+        } = self.frames_in_flight[frame_in_flight_index as usize];
 
-        let cmd = *cmd;
-        let present_complete_semaphores = [*present_complete_semaphore];
-        let end_fence = *end_fence;
+        let present_complete_semaphores = [present_complete_semaphore];
 
         let pre_wait_for_fence = Instant::now();
         if let Err(err) = self.device.wait_for_fences(&[end_fence], true, u64::MAX) {
@@ -677,15 +682,13 @@ impl InternalApp {
         } else {
             // wait for a few frames so that the queries get populated
             if self.frame_count > per_frame_data::FRAMES_IN_FLIGHT as u64 {
-                /*
                 // try to fetch timestamp queries
                 let mut timestamps = [0u64; 2];
-                let okay = self.device.get_query_pool_results(self.query_pool, 0, &mut timestamps, vk::QueryResultFlags::TYPE_64 | vk::QueryResultFlags::WAIT).is_ok();
+                let okay = self.device.get_query_pool_results(query_pool, 0, &mut timestamps, vk::QueryResultFlags::TYPE_64 | vk::QueryResultFlags::WAIT).is_ok();
                 if okay {
                     let delta_in_ms = ((timestamps[1].saturating_sub(timestamps[0])) as f64 * self.timestamp_period as f64) / 1000000.0f64;
                     self.stats.push_query_timings(delta_in_ms);
                 }
-                */
             }
 
 
@@ -706,7 +709,7 @@ impl InternalApp {
             .acquire_next_image(
                 self.swapchain,
                 u64::MAX,
-                *present_complete_semaphore,
+                present_complete_semaphore,
                 vk::Fence::null(),
             )
             .unwrap();
@@ -731,13 +734,20 @@ impl InternalApp {
         let num_chunks = self.chunks.len() as u64;
         let chunk = &mut self.chunks[(self.frame_count % (num_chunks)) as usize];
         let voxel::Chunk {
+            chunk_index,
+            chunk_offset,
+            built,
+            vertex_buffer_start_offset,
+            index_buffer_start_offset,
+        } = chunk;
+        let voxel::MultipleChunks {
             voxel_texture,
             vertex_buffer,
             index_buffer,
             vertex_counter,
             index_counter,
-            ..
-        } = chunk;
+            indirect_draw_buffer,
+        } = &mut self.multiple_chunks;
 
         // create bindless descriptor write for storage images        
         let swapchain_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
@@ -770,8 +780,8 @@ impl InternalApp {
             .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
             .dst_binding(0)
             .dst_array_element(0)
-            .dst_set(*main_descriptor_set)
-            .image_info(&storage_image_infos);       
+            .dst_set(main_descriptor_set)
+            .image_info(&storage_image_infos);      
 
         // create bindless descriptor write for storage buffers
         let storage_buffer_infos = [
@@ -781,12 +791,12 @@ impl InternalApp {
                 .range(vk::WHOLE_SIZE),
             vk::DescriptorBufferInfo::default()
                 .buffer(vertex_buffer.buffer)
-                .offset(0)
-                .range(vk::WHOLE_SIZE),
+                .offset((*vertex_buffer_start_offset * voxel::VERTEX_STRIDE) as u64)
+                .range((voxel::VERTICES_PER_CHUNK * voxel::VERTEX_STRIDE) as u64),
             vk::DescriptorBufferInfo::default()
                 .buffer(index_buffer.buffer)
-                .offset(0)
-                .range(vk::WHOLE_SIZE),
+                .offset((*index_buffer_start_offset * voxel::INDEX_STRIDE) as u64)
+                .range((voxel::INDICES_PER_CHUNK * voxel::INDEX_STRIDE) as u64),
             vk::DescriptorBufferInfo::default()
                 .buffer(self.tesselation_buffer.buffer)
                 .offset(0)
@@ -812,7 +822,7 @@ impl InternalApp {
             .descriptor_count(storage_buffer_infos.len() as u32)
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
             .dst_binding(1)
-            .dst_set(*main_descriptor_set)
+            .dst_set(main_descriptor_set)
             .buffer_info(&storage_buffer_infos);
 
         // create bindless descriptor write for image samplers
@@ -842,7 +852,7 @@ impl InternalApp {
             .descriptor_count(sampled_image_infos.len() as u32)
             .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
             .dst_binding(2)
-            .dst_set(*main_descriptor_set)
+            .dst_set(main_descriptor_set)
             .image_info(&sampled_image_infos);
 
         let samplers = [
@@ -855,7 +865,7 @@ impl InternalApp {
             .descriptor_count(samplers.len() as u32)
             .descriptor_type(vk::DescriptorType::SAMPLER)
             .dst_binding(3)
-            .dst_set(*main_descriptor_set)
+            .dst_set(main_descriptor_set)
             .image_info(&samplers);
 
         // update the bindless descriptor set
@@ -876,9 +886,9 @@ impl InternalApp {
             .begin_command_buffer(cmd, &cmd_buffer_begin_info)
             .unwrap();
         let cpu_cmd_record_start = Instant::now();
-        self.device.cmd_reset_query_pool(cmd, self.query_pool, 0, 2);
-        self.device.cmd_reset_query_pool(cmd, self.pipeline_statistics_query_pool, 0, 1);
-        self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, self.query_pool, 0);
+        self.device.cmd_reset_query_pool(cmd, query_pool, 0, 2);
+        self.device.cmd_reset_query_pool(cmd, pipeline_statistics_query_pool, 0, 1);
+        self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, query_pool, 0);
 
         let subresource_range = vk::ImageSubresourceRange::default()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -948,7 +958,7 @@ impl InternalApp {
             vk::PipelineBindPoint::COMPUTE,
             self.main_pipeline_layout,
             0,
-            &[*main_descriptor_set],
+            &[main_descriptor_set],
             &[],
         );
         self.device.cmd_bind_descriptor_sets(
@@ -956,7 +966,7 @@ impl InternalApp {
             vk::PipelineBindPoint::GRAPHICS,
             self.main_pipeline_layout,
             0,
-            &[*main_descriptor_set],
+            &[main_descriptor_set],
             &[],
         );
 
@@ -1031,7 +1041,11 @@ impl InternalApp {
 
         self.device.cmd_dispatch(cmd, skybox::SKYBOX_RESOLUTION.div_ceil(8), skybox::SKYBOX_RESOLUTION.div_ceil(8), 6);
 
-        chunk.do_sum_shi(&self.device, cmd, self.main_pipeline_layout, self.compute_pipelines[COMPUTE_SURFACE_SPV][CALCULATE_DENSITY_ENTRY_POINT], self.compute_pipelines[COMPUTE_SURFACE_SPV][VOXELIZE_SURFACE_ENTRY_POINT], self.queue_family_index);
+        if !*built {
+            self.multiple_chunks.do_sum_shi(*chunk_index, *chunk_offset, &self.device, cmd, self.main_pipeline_layout, self.compute_pipelines[COMPUTE_SURFACE_SPV][CALCULATE_DENSITY_ENTRY_POINT], self.compute_pipelines[COMPUTE_SURFACE_SPV][VOXELIZE_SURFACE_ENTRY_POINT], self.queue_family_index);
+            *built = true;
+        }
+        //chunk.do_sum_shi(&self.device, cmd, self.main_pipeline_layout, self.compute_pipelines[COMPUTE_SURFACE_SPV][CALCULATE_DENSITY_ENTRY_POINT], self.compute_pipelines[COMPUTE_SURFACE_SPV][VOXELIZE_SURFACE_ENTRY_POINT], self.queue_family_index);
         
         let skybox_subresource_range = vk::ImageSubresourceRange::default()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -1102,7 +1116,7 @@ impl InternalApp {
             .view_mask(0);
 
         
-        self.device.cmd_begin_query(cmd, self.pipeline_statistics_query_pool, 0, vk::QueryControlFlags::empty());
+        self.device.cmd_begin_query(cmd, pipeline_statistics_query_pool, 0, vk::QueryControlFlags::empty());
 
         let viewport = vk::Viewport::default().height(size.y as f32).width(size.x as f32).x(0f32).y(0f32).min_depth(0f32).max_depth(1f32);
         self.device.cmd_set_viewport(cmd, 0, &[viewport]);
@@ -1174,16 +1188,13 @@ impl InternalApp {
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_CHUNK_SPV]);
         self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
 
-        for chunk in self.chunks.iter() {
-            let constants = bytemuck::bytes_of(&chunk.chunk_offset); 
-            self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, constants);
-            self.device.cmd_bind_vertex_buffers(cmd, 0, &[chunk.vertex_buffer.buffer], &[0]);
-            self.device.cmd_bind_index_buffer(cmd, chunk.index_buffer.buffer, 0, vk::IndexType::UINT32);
-            self.device.cmd_draw_indexed_indirect(cmd, chunk.indirect_draw_buffer.buffer, 0, 1, 0);
-        }
+        self.device.cmd_bind_vertex_buffers(cmd, 0, &[self.multiple_chunks.vertex_buffer.buffer], &[0]);
+        self.device.cmd_bind_index_buffer(cmd, self.multiple_chunks.index_buffer.buffer, 0, vk::IndexType::UINT32);
+        self.device.cmd_draw_indexed_indirect(cmd, self.multiple_chunks.indirect_draw_buffer.buffer, 0, self.chunks.len() as u32, size_of::<voxel::DrawIndexedIndirectCommand>() as u32);
+        
 
         self.device.cmd_end_rendering(cmd);
-        self.device.cmd_end_query(cmd, self.pipeline_statistics_query_pool, 0);
+        self.device.cmd_end_query(cmd, pipeline_statistics_query_pool, 0);
 
 
         // transition rendered image from color attachment to sampled shader read (for bloom passes)
@@ -1393,7 +1404,7 @@ impl InternalApp {
         let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
-        self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::BOTTOM_OF_PIPE, self.query_pool, 1);
+        self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::BOTTOM_OF_PIPE, query_pool, 1);
         self.device.end_command_buffer(cmd).unwrap();
         let now = Instant::now();
         self.last_frame_cpu_cmd_record_duration = now - cpu_cmd_record_start;
@@ -1441,9 +1452,7 @@ impl InternalApp {
     pub unsafe fn destroy(mut self) {
         self.device.device_wait_idle().unwrap();
 
-        for chunk in self.chunks {
-            chunk.destroy(&self.device, &mut self.allocator);
-        }
+        self.multiple_chunks.destroy(&self.device, &mut self.allocator);
         
         self.tesselation_buffer.destroy(&self.device, &mut self.allocator);
         
@@ -1466,10 +1475,6 @@ impl InternalApp {
         
         self.debug_text_buffer.destroy(&self.device, &mut self.allocator);
         log::info!("destroyed debug text buffer");
-
-        self.device.destroy_query_pool(self.query_pool, None);
-        self.device.destroy_query_pool(self.pipeline_statistics_query_pool, None);
-        log::info!("destroyed query pools");
 
         log::info!("waiting for all frame in flight fences...");
         let fences = self.frames_in_flight.iter().map(|x| x.end_fence).collect::<Vec<_>>();

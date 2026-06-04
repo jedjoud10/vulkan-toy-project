@@ -89,7 +89,6 @@ void calculate_density(uint3 id: SV_DispatchThreadID, uint3 gtid : SV_GroupThrea
     let uniforms = load_per_frame_uniforms();
     
     float3 p = id + (float3)chunk_offset * 64;
-    p *= 0.1;
 
     float value = 0;
 
@@ -97,6 +96,7 @@ void calculate_density(uint3 id: SV_DispatchThreadID, uint3 gtid : SV_GroupThrea
     float amplitude = 20.0;
     float3 offset = 0.0;
 
+    /*
     for (int i = 0; i < 7; i++) {
         value += abs(snoise(scale * p + offset)) * amplitude;
 
@@ -104,6 +104,7 @@ void calculate_density(uint3 id: SV_DispatchThreadID, uint3 gtid : SV_GroupThrea
         amplitude *= 0.4;
         offset += snoise((float)i * 0.5 + p * 0.02) * 0.6;
     }
+    */
 
     if (length(p) < 20) {
         value = 20 + snoise(-p * 0.2 + 4.12312);
@@ -113,15 +114,16 @@ void calculate_density(uint3 id: SV_DispatchThreadID, uint3 gtid : SV_GroupThrea
         }
     }
 
-    /*
+    
     if (snoise(p.xz * 0.005) > 0) {
         value += snoise(p * 0.05 + snoise(p * 0.01) * 0.2) * 30; 
     } else {
         value += -cellular(p * 0.05).x * 20; 
     }
-    */
+    
 
     value += p.y - 10.0;
+    //float value = snoise(p * 0.5);
     voxel_image.Store(id, value);
 }
 
@@ -198,7 +200,7 @@ void voxelize_surface(uint3 id: SV_DispatchThreadID, uint3 gtid : SV_GroupThread
         lookup[offset_to_index(cell, MESHLET_SIZE_PLUS_ONE)] = vertex_index;
 
         float3 cell_offset = cell + (inside_cell_offset_avg / count);
-        float3 loaded_vertex = cell_offset + gid * MESHLET_SIZE;
+        float3 loaded_vertex = cell_offset + gid * MESHLET_SIZE + chunk_offset * 64;
 
         vertex_buffer.Store<half3>(vertex_index * 2 * 3, (half3)loaded_vertex);
     }

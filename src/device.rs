@@ -37,6 +37,7 @@ pub unsafe fn create_device_and_queue(
     let mut extended_state3 = vk::PhysicalDeviceExtendedDynamicState3FeaturesEXT::default()
         .extended_dynamic_state3_polygon_mode(true);
     let device_features_base = vk::PhysicalDeviceFeatures::default()
+        .multi_draw_indirect(true)
         .shader_int16(true)
         .shader_int64(true)
         .sparse_binding(true)

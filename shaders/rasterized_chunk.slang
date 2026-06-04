@@ -5,11 +5,11 @@
 
 struct VertexInput {
     float3 world;
-    uint draw_chunk_index : SV_DrawIndex;
 };
 
 struct VertexOutput {
     float3 world_pos;
+    float3 colour;
     float4 sv_position : SV_Position;
 };
 
@@ -27,6 +27,7 @@ VertexOutput vert_main(VertexInput input, uniform int3 chunk_offset) {
 
     output.sv_position = t;
     output.world_pos = world_position.xyz;
+    output.colour = (snoise(world_position.xyz * 0.1) * 0.5 + 0.5);
     return output;
 }
 
@@ -37,12 +38,11 @@ float4 frag_main(VertexOutput in_vert) : SV_Target {
     float3 world = in_vert.world_pos;
     float3 normal = -normalize(cross(ddy(in_vert.world_pos), ddx(in_vert.world_pos)));
     float3 view = -normalize(in_vert.world_pos - uniforms.position.xyz);
-    
-    float3 diffuse = 0.5;
+    float3 diffuse = 1.0 * in_vert.colour;
     float roughness = 0.8;
     float metallic = 0.2;
     float ao = 1.0;
-    float shadow = 1.0; 
+    float shadow = 1.0-clouds(uniforms.sun.xyz, world).a; 
 
     float3 ray_pos = uniforms.position.xyz;
 

@@ -1,14 +1,17 @@
 use ash::vk;
 use gpu_allocator::vulkan::{Allocation, Allocator};
-use crate::pipeline::{self, PerFrameUniformData};
+use crate::{others, pipeline::{self, PerFrameUniformData}};
 
 pub const FRAMES_IN_FLIGHT: usize = 3;
 
+#[derive(Clone, Copy)]
 pub struct PerFrameData {
     pub main_descriptor_set: vk::DescriptorSet,
     pub present_complete_semaphore: vk::Semaphore,
     pub end_fence: vk::Fence,
     pub cmd: vk::CommandBuffer,    
+    pub query_pool: vk::QueryPool,
+    pub pipeline_statistics_query_pool: vk::QueryPool,
 }
 
 impl PerFrameData {
@@ -44,11 +47,17 @@ impl PerFrameData {
             .unwrap()[0];
 
         
+        let query_pool = others::create_query_pool(&device);
+        let pipeline_statistics_query_pool = others::create_pipeline_stats_pool(&device);
+
+        
         Self {
             present_complete_semaphore,
             end_fence,
             cmd,
             main_descriptor_set,
+            query_pool,
+            pipeline_statistics_query_pool,
         }
     }
     
@@ -59,5 +68,9 @@ impl PerFrameData {
 
         device.free_command_buffers(cmd_pool, &[self.cmd]);
         log::info!("destroyed cmd buffer frame data");          
+
+        device.destroy_query_pool(self.query_pool, None);
+        device.destroy_query_pool(self.pipeline_statistics_query_pool, None);
+        log::info!("destroyed query pools frame data");
     }
 }

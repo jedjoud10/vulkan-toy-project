@@ -232,3 +232,27 @@ pub unsafe fn create_counter_buffer(
 ) -> Buffer {
     create_buffer(device, allocator, size_of::<u32>(), binder, name, vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST)
 }
+
+/*
+// TODO: finish impl when needed. not needed rn since there's no bottleneck lol
+pub struct BufferWriter<'a> {
+    pub buffer: vk::Buffer,
+    pub temp: Vec<u8>,
+    pub writes: Vec<(usize, usize)>,
+    pub device: &'a ash::Device,
+    pub allocator: &'a mut Allocator,
+}
+
+impl<'a> BufferWriter<'a> {
+    pub fn new(device: &'a ash::Device, allocator: &'a mut Allocator, buffer: vk::Buffer) -> Self {
+        BufferWriter { buffer, temp: Vec::new(), writes: Vec::new(), device, allocator }
+    }
+
+    pub fn write(&mut self, data: &[u8], dst_offset: u64) {
+        let offset = self.temp.len();
+        let length = data.len();
+        self.writes.push((offset, length));
+        self.temp.extend_from_slice(data);
+    }
+}
+*/

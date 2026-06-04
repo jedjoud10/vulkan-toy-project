@@ -1,57 +1,77 @@
 use ash::vk;
-use bytemuck::bytes_of;
+use bytemuck::{Pod, Zeroable, bytes_of};
 use gpu_allocator::vulkan::{Allocation, Allocator};
 
 use crate::buffer;
 
-pub struct Chunk {
-    pub chunk_offset: vek::Vec3<i32>,
+pub const VERTICES_PER_CHUNK: usize = 1 << 20;
+pub const INDICES_PER_CHUNK: usize = 1 << 18;
+pub const VERTEX_STRIDE: usize = size_of::<vek::Vec3::<u16>>();
+pub const INDEX_STRIDE: usize = size_of::<u32>();
+        
+
+pub struct MultipleChunks {
     pub voxel_texture: VoxelTexture3D,
     pub vertex_buffer: buffer::Buffer,
     pub index_buffer: buffer::Buffer,
     pub vertex_counter: buffer::Buffer,
     pub index_counter: buffer::Buffer,
     pub indirect_draw_buffer: buffer::Buffer,
-    pub built: bool,
 }
 
-impl Chunk {
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub struct DrawIndexedIndirectCommand {
+    pub index_count: u32,
+    pub instance_count: u32,
+    pub first_index: u32,
+    pub vertex_offset: i32,
+    pub first_instance: u32,
+}
+
+impl MultipleChunks {
     pub unsafe fn create(
-        chunk_offset: vek::Vec3<i32>,
         device: &ash::Device,
         allocator: &mut Allocator,
         debug_marker: &Option<ash::ext::debug_utils::Device>,
         queue: vk::Queue,
         pool: vk::CommandPool,
-        queue_family_index: u32
+        queue_family_index: u32,
+        total_num_chunks: usize,
     ) -> Self {
-        let vertex_buffer = buffer::create_buffer(&device, allocator, size_of::<vek::Vec3::<u16>>() * 300_000, &debug_marker, "vertex buffer", vk::BufferUsageFlags::VERTEX_BUFFER);
-        let index_buffer = buffer::create_buffer(&device, allocator, size_of::<u32>()  * 500_000, &debug_marker, "index buffer", vk::BufferUsageFlags::INDEX_BUFFER);
-        let indirect_draw_buffer = buffer::create_buffer(&device, allocator, size_of::<vk::DrawIndexedIndirectCommand>(), &debug_marker, "indirect buffer", vk::BufferUsageFlags::INDIRECT_BUFFER);
+        
+        let vertex_buffer = buffer::create_buffer(&device, allocator, VERTEX_STRIDE * VERTICES_PER_CHUNK * total_num_chunks, &debug_marker, "vertex buffer", vk::BufferUsageFlags::VERTEX_BUFFER);
+        let index_buffer = buffer::create_buffer(&device, allocator, INDEX_STRIDE * INDICES_PER_CHUNK * total_num_chunks, &debug_marker, "index buffer", vk::BufferUsageFlags::INDEX_BUFFER);
+        let indirect_draw_buffer = buffer::create_buffer(&device, allocator, size_of::<DrawIndexedIndirectCommand>() * total_num_chunks, &debug_marker, "indirect buffer", vk::BufferUsageFlags::INDIRECT_BUFFER);
 
-        let indirect_draw_command_starting_parameters = [0u32, 1u32, 0u32, 0u32, 0u32];
-
-        buffer::write_to_buffer(device, pool, queue, indirect_draw_buffer.buffer, allocator, bytes_of(&indirect_draw_command_starting_parameters));
+        
+        for i in 0..total_num_chunks {
+            let indirect_draw_command_starting_parameters = DrawIndexedIndirectCommand {
+                index_count: 0,
+                instance_count: 1,
+                first_index: (INDICES_PER_CHUNK * i) as u32,
+                vertex_offset: (VERTICES_PER_CHUNK * i) as i32,
+                first_instance: 0,
+            };
+            buffer::write_to_buffer_with_offset(device, pool, queue, indirect_draw_buffer.buffer, allocator, bytes_of(&indirect_draw_command_starting_parameters), (size_of::<DrawIndexedIndirectCommand>() * i) as u64);
+        }
 
         let vertex_counter = buffer::create_counter_buffer(&device, allocator, &debug_marker, "vertex counter");
         let index_counter = buffer::create_counter_buffer(&device, allocator, &debug_marker, "index counter");
         let voxel_texture = create_voxel_texture(device, allocator, &debug_marker, queue, pool, queue_family_index);
 
         Self {
-            chunk_offset,
             voxel_texture,
             vertex_buffer,
             index_buffer,
             vertex_counter,
             index_counter,
             indirect_draw_buffer,
-            built: false,
         }
     }
 
-    pub unsafe fn do_sum_shi(&mut self, device: &ash::Device, cmd: vk::CommandBuffer, pipeline_layout: vk::PipelineLayout, density_pipeline: vk::Pipeline, surface_generation_pipeline: vk::Pipeline, queue_family_index: u32) {
-        if self.built { return; }
-
+    
+    pub unsafe fn do_sum_shi(&mut self, chunk_index: usize, chunk_offset: vek::Vec3<i32>, device: &ash::Device, cmd: vk::CommandBuffer, pipeline_layout: vk::PipelineLayout, density_pipeline: vk::Pipeline, surface_generation_pipeline: vk::Pipeline, queue_family_index: u32) {
         let groups = 16;
 
         device.cmd_bind_pipeline(
@@ -60,7 +80,7 @@ impl Chunk {
             density_pipeline,
         );
 
-        let constants = bytemuck::bytes_of(&self.chunk_offset); 
+        let constants = bytemuck::bytes_of(&chunk_offset); 
         device.cmd_push_constants(cmd, pipeline_layout, vk::ShaderStageFlags::ALL, 0, constants);
 
         device.cmd_dispatch(cmd, groups+1, groups+1, groups+1);
@@ -100,7 +120,27 @@ impl Chunk {
             .dst_queue_family_index(queue_family_index)
             .image(self.voxel_texture.image)
             .subresource_range(vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR).base_array_layer(0).base_mip_level(0).layer_count(1).level_count(1));
-        let buffer_memory_barriers = [vertex_counter_barrier, index_counter_barrier];
+        let index_buffer_barrier = vk::BufferMemoryBarrier2::default()
+            .buffer(self.index_buffer.buffer)
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .dst_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .size(vk::WHOLE_SIZE)
+            .offset(0)
+            .src_queue_family_index(queue_family_index)
+            .dst_queue_family_index(queue_family_index);
+        let vertex_buffer_barrier = vk::BufferMemoryBarrier2::default()
+            .buffer(self.vertex_buffer.buffer)
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .dst_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .size(vk::WHOLE_SIZE)
+            .offset(0)
+            .src_queue_family_index(queue_family_index)
+            .dst_queue_family_index(queue_family_index);
+        let buffer_memory_barriers = [vertex_counter_barrier, index_counter_barrier, index_buffer_barrier, vertex_buffer_barrier];
         let image_memory_barriers = [voxelize_image_barrier];
         let dep = vk::DependencyInfo::default()
             .buffer_memory_barriers(&buffer_memory_barriers)
@@ -150,7 +190,7 @@ impl Chunk {
             .buffer_memory_barriers(&buffer_memory_barriers);
         device.cmd_pipeline_barrier2(cmd, &dep);
 
-        let regions = [vk::BufferCopy::default().size(4).dst_offset(0).src_offset(0)];
+        let regions = [vk::BufferCopy::default().size(size_of::<u32>() as u64).dst_offset((size_of::<DrawIndexedIndirectCommand>() * chunk_index) as u64).src_offset(0)];
         device.cmd_copy_buffer(cmd, self.index_counter.buffer, self.indirect_draw_buffer.buffer, &regions);
 
         let indirect_buffer_barrier = vk::BufferMemoryBarrier2::default()
@@ -167,7 +207,6 @@ impl Chunk {
         let dep = vk::DependencyInfo::default()
             .buffer_memory_barriers(&buffer_memory_barriers);
         device.cmd_pipeline_barrier2(cmd, &dep);
-        self.built = true;
     }
 
     pub unsafe fn destroy(self, device: &ash::Device, allocator: &mut Allocator) {
@@ -179,6 +218,15 @@ impl Chunk {
         self.indirect_draw_buffer.destroy(device, allocator);
     } 
 }
+
+pub struct Chunk {
+    pub chunk_index: usize,
+    pub chunk_offset: vek::Vec3<i32>,
+    pub built: bool,
+    pub vertex_buffer_start_offset: usize,
+    pub index_buffer_start_offset: usize,
+}
+
 
 pub struct VoxelTexture3D {
     pub image: vk::Image,
