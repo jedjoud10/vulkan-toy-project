@@ -1,13 +1,17 @@
 use ash::vk;
-use bytemuck::{Pod, Zeroable, bytes_of};
+use bytemuck::{Pod, Zeroable, bytes_of, cast_slice};
 use gpu_allocator::vulkan::{Allocation, Allocator};
 
 use crate::buffer;
 
-pub const VERTICES_PER_CHUNK: usize = 1 << 20;
+pub const VERTICES_PER_CHUNK: usize = 1 << 18;
 pub const INDICES_PER_CHUNK: usize = 1 << 18;
-pub const VERTEX_STRIDE: usize = size_of::<vek::Vec3::<u16>>();
+pub const VERTEX_STRIDE: usize = size_of::<vek::Vec3::<u16>>() * 2;
 pub const INDEX_STRIDE: usize = size_of::<u32>();
+
+const PADDING: u32 = 2;
+const SIZE: u32 = 64;
+const IMAGE_FORMAT: vk::Format = vk::Format::R32_SFLOAT;
         
 
 pub struct MultipleChunks {
@@ -45,16 +49,14 @@ impl MultipleChunks {
         let indirect_draw_buffer = buffer::create_buffer(&device, allocator, size_of::<DrawIndexedIndirectCommand>() * total_num_chunks, &debug_marker, "indirect buffer", vk::BufferUsageFlags::INDIRECT_BUFFER);
 
         
-        for i in 0..total_num_chunks {
-            let indirect_draw_command_starting_parameters = DrawIndexedIndirectCommand {
-                index_count: 0,
-                instance_count: 1,
-                first_index: (INDICES_PER_CHUNK * i) as u32,
-                vertex_offset: (VERTICES_PER_CHUNK * i) as i32,
-                first_instance: 0,
-            };
-            buffer::write_to_buffer_with_offset(device, pool, queue, indirect_draw_buffer.buffer, allocator, bytes_of(&indirect_draw_command_starting_parameters), (size_of::<DrawIndexedIndirectCommand>() * i) as u64);
-        }
+        let arr = (0..total_num_chunks).into_iter().map(|i| DrawIndexedIndirectCommand {
+            index_count: 0,
+            instance_count: 1,
+            first_index: (INDICES_PER_CHUNK * i) as u32,
+            vertex_offset: (VERTICES_PER_CHUNK * i) as i32,
+            first_instance: 0,
+        }).collect::<Vec<_>>();
+        buffer::write_to_buffer_with_offset(device, pool, queue, indirect_draw_buffer.buffer, allocator, cast_slice(&arr), 0);
 
         let vertex_counter = buffer::create_counter_buffer(&device, allocator, &debug_marker, "vertex counter");
         let index_counter = buffer::create_counter_buffer(&device, allocator, &debug_marker, "index counter");
@@ -242,9 +244,6 @@ impl VoxelTexture3D {
     }
 }
 
-const SIZE: u32 = 66;
-const IMAGE_FORMAT: vk::Format = vk::Format::R32_SFLOAT;
-
 pub unsafe fn create_voxel_texture(
     device: &ash::Device,
     allocator: &mut Allocator,
@@ -256,9 +255,9 @@ pub unsafe fn create_voxel_texture(
     let queue_family_indices = [queue_family_index];
     let image_create_info = vk::ImageCreateInfo::default()
         .extent(vk::Extent3D {
-            width: SIZE,
-            height: SIZE,
-            depth: SIZE,
+            width: SIZE+PADDING,
+            height: SIZE+PADDING,
+            depth: SIZE+PADDING,
         })
         .format(IMAGE_FORMAT)
         .image_type(vk::ImageType::TYPE_3D)

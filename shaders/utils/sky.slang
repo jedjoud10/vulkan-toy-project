@@ -313,7 +313,7 @@ float3 get_environment_diffuse(float3 dir) {
 
 
 float3 sample_skybox_and_clouds(float3 ray_pos, float3 ray_dir) {
-    float4 clouds_colour_opacity = clouds_interesting(ray_dir, ray_pos);
+    float4 clouds_colour_opacity = clouds(ray_dir, ray_pos);
     float3 sky_colour = sampled_images_cube[SKYBOX_SAMPLER_IMAGE_IDX].Sample(samplers[NEAREST_SAMPLER_IDX], ray_dir).xyz;
     return lerp(sky_colour, clouds_colour_opacity.xyz, clouds_colour_opacity.w);
 }

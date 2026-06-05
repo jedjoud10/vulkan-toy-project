@@ -4,7 +4,6 @@
 #include "utils/sky.slang"
 #include "utils/bindless.slang"
 
-
 const static uint MESHLET_SIZE = 4;
 
 // 1 element padding
@@ -81,15 +80,7 @@ float unlerp(float x, float a, float b) {
 }
 
 
-
-[shader("compute")]
-[numthreads(4, 4, 4)]
-void calculate_density(uint3 id: SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID, uniform int3 chunk_offset) {
-    let voxel_image = storage_images_3d_float[VOXEL_STORAGE_IMAGE_IDX];
-    let uniforms = load_per_frame_uniforms();
-    
-    float3 p = id + (float3)chunk_offset * 64;
-
+float density(float3 p) {
     float value = 0;
 
     float scale = 0.02;
@@ -106,25 +97,60 @@ void calculate_density(uint3 id: SV_DispatchThreadID, uint3 gtid : SV_GroupThrea
     }
     */
 
-    if (length(p) < 20) {
+    /*
+    if (length(p) < 30) {
         value = 20 + snoise(-p * 0.2 + 4.12312);
 
         if (length(p) > 18 + snoise(p * 0.2)) {
             value = -20;
         }
     }
+    */
 
+    //value += snoise(p * 0.01 * float3(1, 0.2, 1) + snoise(p * 0.03) * 0.2) * 50; 
     
+    /*
     if (snoise(p.xz * 0.005) > 0) {
         value += snoise(p * 0.05 + snoise(p * 0.01) * 0.2) * 30; 
     } else {
-        value += -cellular(p * 0.05).x * 20; 
+        value += -cellular(p * 0.01).y * 200; 
     }
+    */
     
+    value += snoise(p * 0.1);
+
+    if (hash12(floor(p.xz * 0.05)) > 0.8) {
+        value *= 3;
+    }
 
     value += p.y - 10.0;
+    return value;
+}
+
+float3 normal_from_density(float3 p) {
+    float base = density(p);
+
+    float eps = 0.001;
+    float x = density(p + float3(eps, 0, 0));
+    float y = density(p + float3(0, eps, 0));
+    float z = density(p + float3(0, 0, eps));
+    
+    return -normalize(float3(x,y,z) - base);
+}
+
+
+[shader("compute")]
+[numthreads(4, 4, 4)]
+void calculate_density(uint3 id: SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID, uniform int3 chunk_offset) {
+    let voxel_image = storage_images_3d_float[VOXEL_STORAGE_IMAGE_IDX];
+    let uniforms = load_per_frame_uniforms();
+    
+    float3 p = id + (float3)chunk_offset * 64;
+
+    float density = density(p);
+
     //float value = snoise(p * 0.5);
-    voxel_image.Store(id, value);
+    voxel_image.Store(id, density);
 }
 
 groupshared Atomic<uint32_t> positive;
@@ -200,9 +226,15 @@ void voxelize_surface(uint3 id: SV_DispatchThreadID, uint3 gtid : SV_GroupThread
         lookup[offset_to_index(cell, MESHLET_SIZE_PLUS_ONE)] = vertex_index;
 
         float3 cell_offset = cell + (inside_cell_offset_avg / count);
-        float3 loaded_vertex = cell_offset + gid * MESHLET_SIZE + chunk_offset * 64;
+        float3 vertex_position = (cell_offset + gid * MESHLET_SIZE + chunk_offset * 64);
 
-        vertex_buffer.Store<half3>(vertex_index * 2 * 3, (half3)loaded_vertex);
+        uint half3_stride = 2 * 3;
+
+        float3 normal = normalize(normal_from_density(vertex_position));
+
+        vertex_buffer.Store<half3>(2 * vertex_index * half3_stride, (half3)vertex_position);
+        vertex_buffer.Store<half3>(2 * vertex_index * half3_stride + half3_stride, (half3)normal);
+        
     }
 
     GroupMemoryBarrierWithGroupSync();

@@ -79,6 +79,25 @@ const VERTEX_BINDING_DESCRIPTIONS: &'static [vk::VertexInputBindingDescription] 
 }];
 
 
+
+const VERTEX_ATTRIBUTE_DESCRIPTIONS_CHUNK: &'static [vk::VertexInputAttributeDescription] = &[vk::VertexInputAttributeDescription {
+    binding: 0,
+    format: vk::Format::R16G16B16_SFLOAT,
+    location: 0,
+    offset: 0
+}, vk::VertexInputAttributeDescription {
+    binding: 0,
+    format: vk::Format::R16G16B16_SFLOAT,
+    location: 1,
+    offset: (2 * 3) as u32
+}];
+const VERTEX_BINDING_DESCRIPTIONS_CHUNK: &'static [vk::VertexInputBindingDescription] = &[vk::VertexInputBindingDescription {
+    binding: 0,
+    stride: (2 * 2 * 3) as u32,
+    input_rate: vk::VertexInputRate::VERTEX,
+}];
+
+
 pub struct InternalApp {
     // entry, physical device, logical device
     entry: ash::Entry,
@@ -356,7 +375,7 @@ impl InternalApp {
             pipeline_debug_name: "rasterized chunk render pipeline",
             wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Graphics {
                 face_culling: true,
-                vertex_input: vk::PipelineVertexInputStateCreateInfo::default().vertex_attribute_descriptions(VERTEX_ATTRIBUTE_DESCRIPTIONS).vertex_binding_descriptions(VERTEX_BINDING_DESCRIPTIONS),
+                vertex_input: vk::PipelineVertexInputStateCreateInfo::default().vertex_attribute_descriptions(VERTEX_ATTRIBUTE_DESCRIPTIONS_CHUNK).vertex_binding_descriptions(VERTEX_BINDING_DESCRIPTIONS_CHUNK),
             },
             spec_constants: None,
             spv_file_name: RASTERIZED_CHUNK_SPV,
@@ -1178,13 +1197,11 @@ impl InternalApp {
             }
         }
         */
-        
         /*
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_GENERATED_GRASS_SPV]);
         self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
         self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  16, 16, 1);
         */
-
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_CHUNK_SPV]);
         self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
 

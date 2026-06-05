@@ -5,10 +5,12 @@
 
 struct VertexInput {
     float3 world;
+    float3 normal;
 };
 
 struct VertexOutput {
     float3 world_pos;
+    float3 normal;
     float3 colour;
     float4 sv_position : SV_Position;
 };
@@ -28,6 +30,7 @@ VertexOutput vert_main(VertexInput input, uniform int3 chunk_offset) {
     output.sv_position = t;
     output.world_pos = world_position.xyz;
     output.colour = (snoise(world_position.xyz * 0.1) * 0.5 + 0.5);
+    output.normal = input.normal;
     return output;
 }
 
@@ -37,10 +40,11 @@ float4 frag_main(VertexOutput in_vert) : SV_Target {
     
     float3 world = in_vert.world_pos;
     float3 normal = -normalize(cross(ddy(in_vert.world_pos), ddx(in_vert.world_pos)));
+    //float3 normal = -normalize(in_vert.normal);
     float3 view = -normalize(in_vert.world_pos - uniforms.position.xyz);
     float3 diffuse = 1.0 * in_vert.colour;
     float roughness = 0.8;
-    float metallic = 0.2;
+    float metallic = 0.0;
     float ao = 1.0;
     float shadow = 1.0-clouds(uniforms.sun.xyz, world).a; 
 
@@ -56,6 +60,10 @@ float4 frag_main(VertexOutput in_vert) : SV_Target {
 
     if (uniforms.debug_type == 0) {
         return float4(lighting(pbr_surface_data, camera_data, sun_data), 1);
+    } else if (uniforms.debug_type == 1) {
+        return float4(normal, 1);
+    } else if (uniforms.debug_type == 2) {
+        return float4(view, 1);
     }
 
     return float4(1);

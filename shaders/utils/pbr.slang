@@ -54,9 +54,9 @@ float3 fresnelRoughness(float3 f0, float3 v, float3 x, float roughness) {
 float3 specular(float3 f0, float roughness, float3 v, float3 l, float3 n, float3 h) {
 	float3 num = ndf(roughness, n, h) * gsf(roughness, n, v, l) * fresnel(f0, h, v);
 	float denom = 4 * max(dot(v, n), 0.0) * max(dot(l, n), 0.0);
-
-	float3 tmp = num / max(denom, 0.0001);
-	return select(isinf(tmp), 1000, clamp(tmp, 0, 1000));
+	return num / denom;
+	//float3 tmp = num / max(denom, 0.0001);
+	//return select(isinf(tmp), 1000, clamp(tmp, 0, 1000));
 }
 
 // Sun data struct
@@ -96,7 +96,7 @@ public float3 lighting(
 	float3 specular = specular(f0, surface.roughness, camera.view, light.direction, surface.normal, half_view);
 
 	// HACK: this (shadow mult) should be here right? no clue why it wasn't there in the original version
-	float3 specular_and_fresnel = (specular + fresnel(f0, half_view, camera.view)) * surface.shadows;
+	//float3 specular_and_fresnel = (specular + fresnel(f0, half_view, camera.view)) * surface.shadows;
 
 	float n_dot_l = max(dot(light.direction, surface.normal), 0.0);
 	
