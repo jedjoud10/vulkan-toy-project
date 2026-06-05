@@ -72,6 +72,9 @@ TextureCube<float4> sampled_images_cube[];
 [[vk::binding(3, 0)]]
 SamplerState samplers[];
 
+[[vk::binding(4, 0)]]
+RaytracingAccelerationStructure acceleration_structures[];
+
 UniformThing load_per_frame_uniforms() {
     return storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
 }

@@ -122,16 +122,18 @@ void write_swapchain_image(uint3 id: SV_DispatchThreadID) {
     */
     
     SamplerState sampler = samplers[LINEAR_SAMPLER_IDX];
-    float3 bloom = entire_bloom_image.SampleLevel(sampler, screen_uvs, 2.0).xyz;
 
-    float3 col = pow(aces(final_colour + bloom * 0.1), 1/2.2);
+    float bloom_strength = 0.0;
+    float3 bloom = entire_bloom_image.SampleLevel(sampler, screen_uvs, 2.0).xyz * bloom_strength;
+
+    float3 col = pow(aces(final_colour + bloom), 1/2.2);
     
     //float vignette = saturate(length(abs(screen_uvs_negative_one_to_one)) * 0.8 - 0.8);
     //col = lerp(col, 0.0, vignette);
 
     uint2 text_pixel_id = id.xy;
     // start at the bottom left instead...
-    text_pixel_id.y = (uint)uniforms.screen_resolution.y - text_pixel_id.y;
+    text_pixel_id.y = (uint)uniforms.screen_resolution.y * DOWNSCALE_FACTOR - text_pixel_id.y;
     render_debug_font(text_pixel_id, col);
 
 

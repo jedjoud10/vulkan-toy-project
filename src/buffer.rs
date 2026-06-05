@@ -6,6 +6,8 @@ use gpu_allocator::vulkan::{Allocation, Allocator};
 pub struct Buffer {
     pub buffer: vk::Buffer,
     pub allocation: Allocation,
+    pub address: u64,
+    pub size: usize,
 }
 
 impl Buffer {
@@ -33,7 +35,10 @@ pub unsafe fn create_buffer(
         .size(size as u64);
     let buffer = device.create_buffer(&buffer_create_info, None).unwrap();
 
-    let requirements = device.get_buffer_memory_requirements(buffer);
+    let mut requirements = device.get_buffer_memory_requirements(buffer);
+
+    // acceleration structure scratch buffer min alignment
+    requirements.alignment = requirements.alignment.max(256); 
 
     let allocation = allocator
         .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
@@ -52,8 +57,13 @@ pub unsafe fn create_buffer(
     
     log::debug!("created buffer '{}' of size {}", name, bytes_formatted.display().si());
 
+    
+    let info = vk::BufferDeviceAddressInfo::default()
+        .buffer(buffer);
+    let address = device.get_buffer_device_address(&info);
+
     Buffer {
-        buffer, allocation
+        buffer, allocation, address, size
     }
 }
 

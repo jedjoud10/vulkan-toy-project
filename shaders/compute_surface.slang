@@ -117,10 +117,10 @@ float density(float3 p) {
     }
     */
     
-    value += snoise(p * 0.1);
+    //value += snoise(p * 0.1);
 
     if (hash12(floor(p.xz * 0.05)) > 0.8) {
-        value *= 3;
+        value = snoise(p * 0.1) * 15;
     }
 
     value += p.y - 10.0;
@@ -228,12 +228,13 @@ void voxelize_surface(uint3 id: SV_DispatchThreadID, uint3 gtid : SV_GroupThread
         float3 cell_offset = cell + (inside_cell_offset_avg / count);
         float3 vertex_position = (cell_offset + gid * MESHLET_SIZE + chunk_offset * 64);
 
-        uint half3_stride = 2 * 3;
-
+        
         float3 normal = normalize(normal_from_density(vertex_position));
-
-        vertex_buffer.Store<half3>(2 * vertex_index * half3_stride, (half3)vertex_position);
-        vertex_buffer.Store<half3>(2 * vertex_index * half3_stride + half3_stride, (half3)normal);
+        
+        vertex_buffer.Store<float3>( vertex_index * 4 * 3, vertex_position);
+        //uint half3_stride = 2 * 3;
+        //vertex_buffer.Store<half3>(2 * vertex_index * half3_stride, (half3)vertex_position);
+        //vertex_buffer.Store<half3>(2 * vertex_index * half3_stride + half3_stride, (half3)normal);
         
     }
 

@@ -36,6 +36,9 @@ pub unsafe fn create_device_and_queue(
         .task_shader(true);
     let mut extended_state3 = vk::PhysicalDeviceExtendedDynamicState3FeaturesEXT::default()
         .extended_dynamic_state3_polygon_mode(true);
+    let mut acceleration_structure = vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default()
+        .acceleration_structure(true)
+        .acceleration_structure_indirect_build(true);
     let device_features_base = vk::PhysicalDeviceFeatures::default()
         .multi_draw_indirect(true)
         .shader_int16(true)
@@ -84,7 +87,10 @@ pub unsafe fn create_device_and_queue(
         ash::khr::timeline_semaphore::NAME,
         ash::khr::buffer_device_address::NAME,
         ash::ext::mesh_shader::NAME,
+        ash::khr::deferred_host_operations::NAME,
         ash::ext::extended_dynamic_state3::NAME,
+        ash::khr::acceleration_structure::NAME,
+        ash::khr::ray_query::NAME,
         
         
         
@@ -108,7 +114,8 @@ pub unsafe fn create_device_and_queue(
         .push_next(&mut shader_clock)
         .push_next(&mut compute_derivatives)
         .push_next(&mut mesh_shader)
-        .push_next(&mut extended_state3);
+        .push_next(&mut extended_state3)
+        .push_next(&mut acceleration_structure);
 
     let device = instance
         .create_device(physical_device, &device_create_info, None)

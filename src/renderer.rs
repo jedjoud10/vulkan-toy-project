@@ -82,18 +82,13 @@ const VERTEX_BINDING_DESCRIPTIONS: &'static [vk::VertexInputBindingDescription] 
 
 const VERTEX_ATTRIBUTE_DESCRIPTIONS_CHUNK: &'static [vk::VertexInputAttributeDescription] = &[vk::VertexInputAttributeDescription {
     binding: 0,
-    format: vk::Format::R16G16B16_SFLOAT,
+    format: vk::Format::R32G32B32_SFLOAT,
     location: 0,
     offset: 0
-}, vk::VertexInputAttributeDescription {
-    binding: 0,
-    format: vk::Format::R16G16B16_SFLOAT,
-    location: 1,
-    offset: (2 * 3) as u32
 }];
 const VERTEX_BINDING_DESCRIPTIONS_CHUNK: &'static [vk::VertexInputBindingDescription] = &[vk::VertexInputBindingDescription {
     binding: 0,
-    stride: (2 * 2 * 3) as u32,
+    stride: 4 * 3 as u32,
     input_rate: vk::VertexInputRate::VERTEX,
 }];
 
@@ -135,6 +130,7 @@ pub struct InternalApp {
     // extra devices
     mesh_shader_device: ash::ext::mesh_shader::Device,
     extended_dynamic_state3_device: ash::ext::extended_dynamic_state3::Device,
+    acceleration_structure_device: ash::khr::acceleration_structure::Device,
     // TODO: when using ash rewrite; use KHR_copy_memory_indirect since it was promoted from NV_copy_memory_indirect
 
     // descriptors & frames in flight
@@ -463,11 +459,11 @@ impl InternalApp {
         */
 
         let mut chunks = Vec::<voxel::Chunk>::new();
-        let chunk_render_distance = 4;
+        let chunk_render_distance = 2;
         let mut index = 0;
 
         for x in -chunk_render_distance..=chunk_render_distance {
-            for y in -1..1 {
+            for y in -1..3 {
                 for z in -chunk_render_distance..=chunk_render_distance {
                     let chunk_offset = vek::Vec3::new(x, y, z);
                     chunks.push(voxel::Chunk {
@@ -475,7 +471,8 @@ impl InternalApp {
                         chunk_offset,
                         built: false,
                         vertex_buffer_start_offset: (voxel::VERTICES_PER_CHUNK * index),
-                        index_buffer_start_offset: (voxel::INDICES_PER_CHUNK * index),
+                        index_buffer_start_offset: (3 * voxel::TRIANGLES_PER_CHUNK * index),
+                        accel_structure: None,
                     });
                     index += 1;
                 }
@@ -484,8 +481,13 @@ impl InternalApp {
 
         let multiple_chunks = voxel::MultipleChunks::create(&device, &mut allocator, &debug_marker, queue, pool, queue_family_index, index);
 
+
+        // extension devices
         let mesh_shader_device = ash::ext::mesh_shader::Device::new(&instance, &device);
         let extended_dynamic_state3_device = ash::ext::extended_dynamic_state3::Device::new(&instance, &device);
+        let acceleration_structure = ash::khr::acceleration_structure::Device::new(&instance, &device);
+
+
 
         let tesselation_buffer = crate::tesselation::precompute_tesselation_buffer(&device, &mut allocator, &debug_marker, pool, queue);
         let debug_text_buffer = buffer::create_buffer(&device, &mut allocator, 1024, &debug_marker, "debug text", vk::BufferUsageFlags::STORAGE_BUFFER);
@@ -555,6 +557,7 @@ impl InternalApp {
             render_finished_semaphores,
             uniform_buffer,
             chunks,
+            acceleration_structure_device: acceleration_structure,
         }
     }
 
@@ -682,15 +685,16 @@ impl InternalApp {
     pub unsafe fn render(&mut self, delta: f32, elapsed: f32) {
         let frame_in_flight_index = self.frame_count % (self.frames_in_flight.len() as u64);
         let const_data = &self.const_descriptor_sets;
-        let PerFrameData {
+        let &mut PerFrameData {
             present_complete_semaphore,
             end_fence,
             cmd,
             main_descriptor_set,
             query_pool,
             pipeline_statistics_query_pool,
+            ref mut scratch_buffer,
             ..
-        } = self.frames_in_flight[frame_in_flight_index as usize];
+        } = &mut self.frames_in_flight[frame_in_flight_index as usize];
 
         let present_complete_semaphores = [present_complete_semaphore];
 
@@ -758,6 +762,7 @@ impl InternalApp {
             built,
             vertex_buffer_start_offset,
             index_buffer_start_offset,
+            accel_structure,
         } = chunk;
         let voxel::MultipleChunks {
             voxel_texture,
@@ -766,6 +771,9 @@ impl InternalApp {
             vertex_counter,
             index_counter,
             indirect_draw_buffer,
+            tlas,
+            blases,
+            total_num_chunks,
         } = &mut self.multiple_chunks;
 
         // create bindless descriptor write for storage images        
@@ -815,7 +823,7 @@ impl InternalApp {
             vk::DescriptorBufferInfo::default()
                 .buffer(index_buffer.buffer)
                 .offset((*index_buffer_start_offset * voxel::INDEX_STRIDE) as u64)
-                .range((voxel::INDICES_PER_CHUNK * voxel::INDEX_STRIDE) as u64),
+                .range((3 * voxel::TRIANGLES_PER_CHUNK * voxel::INDEX_STRIDE) as u64),
             vk::DescriptorBufferInfo::default()
                 .buffer(self.tesselation_buffer.buffer)
                 .offset(0)
@@ -887,8 +895,23 @@ impl InternalApp {
             .dst_set(main_descriptor_set)
             .image_info(&samplers);
 
-        // update the bindless descriptor set
-        self.device.update_descriptor_sets(&[storage_image_write, storage_buffer_write, sampled_image_write, sampler_states_write], &[]);
+        if let Some(tlas) = self.multiple_chunks.tlas.as_ref() {
+            let wuh = [tlas.acceleration_structure];
+
+            let mut acceleration_structure_write_tmp = vk::WriteDescriptorSetAccelerationStructureKHR::default()
+                .acceleration_structures(&wuh);
+
+            let acceleration_structure_write = vk::WriteDescriptorSet::default()
+                .descriptor_count(1)
+                .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+                .dst_set(main_descriptor_set)
+                .dst_binding(4)
+                .push_next(&mut acceleration_structure_write_tmp);
+
+            self.device.update_descriptor_sets(&[storage_image_write, storage_buffer_write, sampled_image_write, sampler_states_write, acceleration_structure_write], &[]);
+        } else {
+            self.device.update_descriptor_sets(&[storage_image_write, storage_buffer_write, sampled_image_write, sampler_states_write], &[]);
+        }
 
         // TODO: ideally, these would:
         // 1. be dynamically allocated using some sort of per-frame arena with indexing
@@ -897,7 +920,7 @@ impl InternalApp {
         const RENDERED_SAMPLER_IMAGE_IDX: u32 = 2;
         const BLOOM_MIPS_SAMPLED_IMAGE_START_IDX: u32 = 4; // bloom needs to be last since it is dynamically allocated (can have a dynamic number of bloom mips, depending on screen res)
 
-
+        scratch_buffer.bytes_written = 0;
         let cmd_buffer_begin_info = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
         self.device.reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty()).unwrap();
@@ -1061,11 +1084,24 @@ impl InternalApp {
         self.device.cmd_dispatch(cmd, skybox::SKYBOX_RESOLUTION.div_ceil(8), skybox::SKYBOX_RESOLUTION.div_ceil(8), 6);
 
         if !*built {
-            self.multiple_chunks.do_sum_shi(*chunk_index, *chunk_offset, &self.device, cmd, self.main_pipeline_layout, self.compute_pipelines[COMPUTE_SURFACE_SPV][CALCULATE_DENSITY_ENTRY_POINT], self.compute_pipelines[COMPUTE_SURFACE_SPV][VOXELIZE_SURFACE_ENTRY_POINT], self.queue_family_index);
+            self.multiple_chunks.do_sum_shi(
+                *chunk_index,
+                *chunk_offset,
+                &self.device,
+                cmd, self.main_pipeline_layout,
+                self.compute_pipelines[COMPUTE_SURFACE_SPV][CALCULATE_DENSITY_ENTRY_POINT],
+                self.compute_pipelines[COMPUTE_SURFACE_SPV][VOXELIZE_SURFACE_ENTRY_POINT],
+                self.queue_family_index
+            );
+            let data = self.multiple_chunks.create_blas(*chunk_index, &self.device, cmd, &self.acceleration_structure_device, &mut self.allocator, &self.debug_marker);
+            accel_structure.replace(data);
             *built = true;
         }
-        //chunk.do_sum_shi(&self.device, cmd, self.main_pipeline_layout, self.compute_pipelines[COMPUTE_SURFACE_SPV][CALCULATE_DENSITY_ENTRY_POINT], self.compute_pipelines[COMPUTE_SURFACE_SPV][VOXELIZE_SURFACE_ENTRY_POINT], self.queue_family_index);
-        
+
+        if self.multiple_chunks.blases.len() == self.multiple_chunks.total_num_chunks {
+            self.multiple_chunks.create_tlas(cmd, &self.acceleration_structure_device, &self.device, &mut self.allocator, &self.debug_marker, self.queue_family_index, scratch_buffer);
+        }
+
         let skybox_subresource_range = vk::ImageSubresourceRange::default()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
             .level_count(1)
@@ -1469,7 +1505,10 @@ impl InternalApp {
     pub unsafe fn destroy(mut self) {
         self.device.device_wait_idle().unwrap();
 
-        self.multiple_chunks.destroy(&self.device, &mut self.allocator);
+        self.multiple_chunks.destroy(&self.acceleration_structure_device, &self.device, &mut self.allocator);
+        for chunk in self.chunks {
+            chunk.destroy(&self.acceleration_structure_device, &self.device, &mut self.allocator);
+        }
         
         self.tesselation_buffer.destroy(&self.device, &mut self.allocator);
         

@@ -7,6 +7,7 @@ pub const STORAGE_BUFFER_COUNT: u32 = 60;
 pub const UNIFORM_BUFFER_COUNT: u32 = 60;
 pub const SAMPLED_IMAGE_COUNT: u32 = 40;
 pub const SAMPLER_COUNT: u32 = 2;
+pub const ACCELERATION_STRUCTURES_COUNT: u32 = 1;
 pub const MAX_DESCRIPTOR_SETS: u32 = crate::per_frame_data::FRAMES_IN_FLIGHT as u32;
 
 
@@ -26,7 +27,10 @@ pub unsafe fn create_descriptor_pool_and_bindless_descriptor_set(device: &ash::D
     let samplers = vk::DescriptorPoolSize::default()
         .descriptor_count(SAMPLER_COUNT*MAX_DESCRIPTOR_SETS)
         .ty(vk::DescriptorType::SAMPLER);
-    let descriptor_pool_sizes = [images, storage_buffers, dynamic_buffers, sampled_images, samplers];
+    let acceleration_structures = vk::DescriptorPoolSize::default()
+        .descriptor_count(ACCELERATION_STRUCTURES_COUNT*MAX_DESCRIPTOR_SETS)
+        .ty(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR);
+    let descriptor_pool_sizes = [images, storage_buffers, dynamic_buffers, sampled_images, samplers, acceleration_structures];
 
     let descriptor_pool_create_info = vk::DescriptorPoolCreateInfo::default()
         .flags(vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND)
@@ -59,6 +63,11 @@ pub unsafe fn create_descriptor_pool_and_bindless_descriptor_set(device: &ash::D
             .binding(3)
             .descriptor_count(SAMPLER_COUNT)
             .descriptor_type(vk::DescriptorType::SAMPLER)
+            .stage_flags(vk::ShaderStageFlags::ALL),
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(4)
+            .descriptor_count(ACCELERATION_STRUCTURES_COUNT)
+            .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
             .stage_flags(vk::ShaderStageFlags::ALL),
     ];
 
