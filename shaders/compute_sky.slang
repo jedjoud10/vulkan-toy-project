@@ -7,6 +7,7 @@
 
 [SpecializationConstant] const uint SKYBOX_RESOLUTION = 32;
 [SpecializationConstant] const uint CLOUDS_RESOLUTION = 32;
+[SpecializationConstant] const uint AMBIENT_SKYBOX_RESOLUTION = 32;
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
@@ -105,15 +106,85 @@ void write_skybox(uint3 id: SV_DispatchThreadID, uint3 gid: SV_GroupID) {
 
     
     float3 ray_dir = uv_coords_to_ray_dir(uv, gid.z);
-    float3 sky_colour = sky(sun, ray_dir, 0.0, true, true);
+    float3 sky_colour = sky(sun, ray_dir, 0.0, false, true);
     (storage_images_array[SKYBOX_STORAGE_IMAGE_IDX]).Store(id, float4(sky_colour, 0));
 }
 
+groupshared Atomic<float> color_r;
+groupshared Atomic<float> color_g;
+groupshared Atomic<float> color_b;
 
 [shader("compute")]
-[numthreads(8, 8, 1)]
-void convolute_skybox(uint3 id: SV_DispatchThreadID) {
-    float2 uv = ((id.xy / (float)SKYBOX_RESOLUTION) * 2.0 - 1.0);
+[numthreads(32, 16, 1)]
+void blur_skybox_ambient(uint3 id: SV_DispatchThreadID, uint3 gid: SV_GroupID, uint3 gtid: SV_GroupThreadID) {
+    if (all(gtid == 0)) {
+        color_r = 0;
+        color_g = 0;
+        color_b = 0;
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    float2 uv = ((gid.xy / (float)AMBIENT_SKYBOX_RESOLUTION) * 2.0 - 1.0);
+
+    let uniform_thing = storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
+    float3 sun = uniform_thing.sun.xyz;
+    float time = uniform_thing.time;
+
+    float3 ray_dir = uv_coords_to_ray_dir(uv, gid.z);
+
+    float3 irradiance = float3(0.0);
+    float3 up = float3(0.0, 1.0, 0.0);
+    float3 right = normalize(cross(up, ray_dir));
+    up = normalize(cross(ray_dir, right));
+
+    // Fix that one pixel on the Y+ cubemap plane and Y- cubemap plane
+    if (abs(ray_dir.y) == 1) {
+        up = vec3(0, 0, 1);
+        right = vec3(1, 0, 0);
+    }
+
+    const float PI = 3.14159265359;
+    float sample_delta = 0.125;
+    float samples = 0.0;
+
+    const float ANGLE_PHI_STEPS = 32.0;
+    const float ANGLE_THETA_STEPS = 32.0;
     
-    //float3 ray_dir = uv_coords_to_ray_dir(uv, id.z);
+
+    // https://learnopengl.com/PBR/IBL/Diffuse-irradiance
+    float phi = (gtid.x / ANGLE_PHI_STEPS) * 2.0 * PI;
+    float theta = (gtid.y / ANGLE_THETA_STEPS) * 0.5 * PI;
+    float3 sampled_tangent = float3(sin(theta) * cos(phi),  sin(theta) * sin(phi), cos(theta));
+    float3 sampled_dir = sampled_tangent.x * right + sampled_tangent.y * up + sampled_tangent.z * ray_dir; 
+
+    float3 sampled = sample_skybox_and_clouds(0, normalize(sampled_dir));
+    color_r.add(sampled.x, MemoryOrder.Relaxed);
+    color_g.add(sampled.y, MemoryOrder.Relaxed);
+    color_b.add(sampled.z, MemoryOrder.Relaxed);
+
+    GroupMemoryBarrierWithGroupSync();
+
+    // Return the irradiance diffuse lighting
+    float3 color = PI * (float3(color_r.load(MemoryOrder.Relaxed), color_g.load(MemoryOrder.Relaxed), color_b.load(MemoryOrder.Relaxed))) / (ANGLE_PHI_STEPS*ANGLE_THETA_STEPS);
+    (storage_images_array[AMBIENT_SKYBOX_STORAGE_IMAGE_IDX]).Store(gid.xyz, float4(color, 0));
+
+    /*
+    // https://learnopengl.com/PBR/IBL/Diffuse-irradiance
+    [loop]
+    for(float phi = 0.0; phi < 2.0 * PI; phi += sample_delta) {
+        [loop]
+        for(float theta = 0.0; theta < 0.5 * PI; theta += sample_delta) {
+            float3 sampled_tangent = float3(sin(theta) * cos(phi),  sin(theta) * sin(phi), cos(theta));
+            float3 sampled_dir = sampled_tangent.x * right + sampled_tangent.y * up + sampled_tangent.z * ray_dir; 
+
+            irradiance += sample_skybox_and_clouds(0, normalize(sampled_dir));
+            samples += 1.0;
+        }
+    }
+
+    // Return the irradiance diffuse lighting
+    float3 color = PI * irradiance * (1.0 / samples);
+    (storage_images_array[AMBIENT_SKYBOX_STORAGE_IMAGE_IDX]).Store(id, float4(color, 0));
+    */
 }

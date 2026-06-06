@@ -53,6 +53,8 @@ const WRITE_SWAPCHAIN_IMAGE_ENTRY_POINT: &'static str = "write_swapchain_image";
 const COMPUTE_SKY_SPV: &str = "compute_sky.spv";
 const WRITE_CLOUDS_ENTRY_POINT: &str = "write_clouds";
 const WRITE_SKYBOX_ENTRY_POINT: &str = "write_skybox";
+const BLUR_AMBIENT_SKYBOX_ENTRY_POINT: &str = "blur_skybox_ambient";
+
 const VOXELIZE_SURFACE_ENTRY_POINT: &str = "voxelize_surface";
 const CALCULATE_DENSITY_ENTRY_POINT: &str = "calculate_density";
 
@@ -331,8 +333,8 @@ impl InternalApp {
             spv_file_name: COMPUTE_POST_PROCESS_SPV,
         }, pipeline::PipelineCreateSettings {
             pipeline_debug_name: "sky compute pipeline",
-            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &[WRITE_SKYBOX_ENTRY_POINT, WRITE_CLOUDS_ENTRY_POINT] },
-            spec_constants: Some(&[skybox::SKYBOX_RESOLUTION, skybox::CLOUDS_RESOLUTION]),
+            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &[WRITE_SKYBOX_ENTRY_POINT, WRITE_CLOUDS_ENTRY_POINT, BLUR_AMBIENT_SKYBOX_ENTRY_POINT] },
+            spec_constants: Some(&[skybox::SKYBOX_RESOLUTION, skybox::CLOUDS_RESOLUTION, skybox::AMBIENT_SKYBOX_RESOLUTION]),
             spv_file_name: COMPUTE_SKY_SPV,
         }, pipeline::PipelineCreateSettings {
             pipeline_debug_name: "main render pipeline",
@@ -459,11 +461,11 @@ impl InternalApp {
         */
 
         let mut chunks = Vec::<voxel::Chunk>::new();
-        let chunk_render_distance = 2;
+        let chunk_render_distance = 1;
         let mut index = 0;
 
         for x in -chunk_render_distance..=chunk_render_distance {
-            for y in -1..3 {
+            for y in -1..1 {
                 for z in -chunk_render_distance..=chunk_render_distance {
                     let chunk_offset = vek::Vec3::new(x, y, z);
                     chunks.push(voxel::Chunk {
@@ -786,13 +788,16 @@ impl InternalApp {
         let skybox_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
             .image_view(self.skybox.skybox_array_image_view)
             .image_layout(vk::ImageLayout::GENERAL);
+        let ambient_skybox_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
+            .image_view(self.skybox.ambient_skybox_array_image_view)
+            .image_layout(vk::ImageLayout::GENERAL);
         let clouds_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
             .image_view(self.skybox.clouds_image_view)
             .image_layout(vk::ImageLayout::GENERAL);
         let voxel_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
             .image_view(voxel_texture.image_view)
             .image_layout(vk::ImageLayout::GENERAL);
-        let mut storage_image_infos = vec![swapchain_image_view_descriptor_image_info, rendered_image_view_descriptor_image_info, skybox_image_view_descriptor_image_info, clouds_image_view_descriptor_image_info, voxel_image_view_descriptor_image_info];
+        let mut storage_image_infos = vec![swapchain_image_view_descriptor_image_info, rendered_image_view_descriptor_image_info, skybox_image_view_descriptor_image_info, ambient_skybox_image_view_descriptor_image_info, clouds_image_view_descriptor_image_info, voxel_image_view_descriptor_image_info];
         
         // add bloom storage image views
         for bloom_storage_image_view in const_data.bloom_mip_image_views.iter() {
@@ -856,6 +861,9 @@ impl InternalApp {
         let skybox_sampled_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
             .image_view(self.skybox.skybox_image_view)
             .image_layout(vk::ImageLayout::GENERAL);
+        let ambient_skybox_sampled_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
+            .image_view(self.skybox.ambient_skybox_image_view)
+            .image_layout(vk::ImageLayout::GENERAL);
         let clouds_sampled_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
             .image_view(self.skybox.clouds_image_view)
             .image_layout(vk::ImageLayout::GENERAL);
@@ -865,7 +873,7 @@ impl InternalApp {
         let entire_bloom_sampled_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
             .image_view(const_data.entire_bloom_image_view)
             .image_layout(vk::ImageLayout::GENERAL);
-        let mut sampled_image_infos = vec![skybox_sampled_image_view_descriptor_image_info, clouds_sampled_image_view_descriptor_image_info, rendered_sampled_image_view_descriptor_image_info, entire_bloom_sampled_image_view_descriptor_image_info];
+        let mut sampled_image_infos = vec![skybox_sampled_image_view_descriptor_image_info, ambient_skybox_sampled_image_view_descriptor_image_info, clouds_sampled_image_view_descriptor_image_info, rendered_sampled_image_view_descriptor_image_info, entire_bloom_sampled_image_view_descriptor_image_info];
 
         // add bloom sampled image views
         for bloom_sampled_image_view in const_data.bloom_mip_image_views.iter() {
@@ -916,9 +924,9 @@ impl InternalApp {
         // TODO: ideally, these would:
         // 1. be dynamically allocated using some sort of per-frame arena with indexing
         // 2. be passed to the shader either using a uniform buffer (since these are constant anyways)
-        const BLOOM_MIPS_STORAGE_IMAGE_START_IDX: u32 = 5; // bloom needs to be last since it is dynamically allocated (can have a dynamic number of bloom mips, depending on screen res)
-        const RENDERED_SAMPLER_IMAGE_IDX: u32 = 2;
-        const BLOOM_MIPS_SAMPLED_IMAGE_START_IDX: u32 = 4; // bloom needs to be last since it is dynamically allocated (can have a dynamic number of bloom mips, depending on screen res)
+        const BLOOM_MIPS_STORAGE_IMAGE_START_IDX: u32 = 6; // bloom needs to be last since it is dynamically allocated (can have a dynamic number of bloom mips, depending on screen res)
+        const RENDERED_SAMPLER_IMAGE_IDX: u32 = 3;
+        const BLOOM_MIPS_SAMPLED_IMAGE_START_IDX: u32 = 5; // bloom needs to be last since it is dynamically allocated (can have a dynamic number of bloom mips, depending on screen res)
 
         scratch_buffer.bytes_written = 0;
         let cmd_buffer_begin_info = vk::CommandBufferBeginInfo::default()
@@ -1083,6 +1091,48 @@ impl InternalApp {
 
         self.device.cmd_dispatch(cmd, skybox::SKYBOX_RESOLUTION.div_ceil(8), skybox::SKYBOX_RESOLUTION.div_ceil(8), 6);
 
+        let skybox_subresource_range = vk::ImageSubresourceRange::default()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .level_count(1)
+            .layer_count(6);
+        let clouds_subresource_range = vk::ImageSubresourceRange::default()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .level_count(1)
+            .layer_count(1);
+        let skybox_image_barrier = vk::ImageMemoryBarrier2::default()
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .image(self.skybox.skybox_image)
+            .subresource_range(skybox_subresource_range);
+        let clouds_image_barrier = vk::ImageMemoryBarrier2::default()
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .image(self.skybox.clouds_image)
+            .subresource_range(clouds_subresource_range);
+        let image_memory_barriers = [skybox_image_barrier, clouds_image_barrier];
+        let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
+        self.device.cmd_pipeline_barrier2(cmd, &dep);
+
+        self.device.cmd_bind_pipeline(
+            cmd,
+            vk::PipelineBindPoint::COMPUTE,
+            self.compute_pipelines[COMPUTE_SKY_SPV][BLUR_AMBIENT_SKYBOX_ENTRY_POINT]
+        );
+
+        self.device.cmd_dispatch(cmd, skybox::AMBIENT_SKYBOX_RESOLUTION, skybox::AMBIENT_SKYBOX_RESOLUTION, 6);
+
         if !*built {
             self.multiple_chunks.do_sum_shi(
                 *chunk_index,
@@ -1132,6 +1182,17 @@ impl InternalApp {
             .dst_queue_family_index(self.queue_family_index)
             .image(self.skybox.clouds_image)
             .subresource_range(clouds_subresource_range);
+        let ambient_clouds_image_barrier = vk::ImageMemoryBarrier2::default()
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .image(self.skybox.ambient_skybox_image)
+            .subresource_range(clouds_subresource_range);
         let rendered_image_barrier = vk::ImageMemoryBarrier2::default()
             .old_layout(vk::ImageLayout::UNDEFINED)
             .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
@@ -1143,7 +1204,7 @@ impl InternalApp {
             .dst_queue_family_index(self.queue_family_index)
             .image(const_data.rendered_image)
             .subresource_range(subresource_range);
-        let image_memory_barriers = [skybox_image_barrier, clouds_image_barrier, rendered_image_barrier];
+        let image_memory_barriers = [skybox_image_barrier, clouds_image_barrier, rendered_image_barrier, ambient_clouds_image_barrier];
         let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 

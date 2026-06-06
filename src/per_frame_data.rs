@@ -3,7 +3,7 @@ use gpu_allocator::vulkan::{Allocation, Allocator};
 use crate::{buffer, others, pipeline::{self, PerFrameUniformData}};
 
 pub const FRAMES_IN_FLIGHT: usize = 3;
-pub const SCRATCH_BUFFER_SIZE: usize = 4096;
+pub const SCRATCH_BUFFER_SIZE: usize = 1 << 13;
 
 
 pub struct ScratchBuffer {

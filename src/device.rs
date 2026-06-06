@@ -38,7 +38,10 @@ pub unsafe fn create_device_and_queue(
         .extended_dynamic_state3_polygon_mode(true);
     let mut acceleration_structure = vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default()
         .acceleration_structure(true)
-        .acceleration_structure_indirect_build(true);
+        .acceleration_structure_indirect_build(true)
+        .descriptor_binding_acceleration_structure_update_after_bind(true);
+    let mut ray_query_features = vk::PhysicalDeviceRayQueryFeaturesKHR::default()
+        .ray_query(true);
     let device_features_base = vk::PhysicalDeviceFeatures::default()
         .multi_draw_indirect(true)
         .shader_int16(true)
@@ -48,7 +51,8 @@ pub unsafe fn create_device_and_queue(
         .fill_mode_non_solid(true)
         .pipeline_statistics_query(true);
     let mut device_features_11 = vk::PhysicalDeviceVulkan11Features::default()
-        .uniform_and_storage_buffer16_bit_access(true);
+        .uniform_and_storage_buffer16_bit_access(true)
+        .shader_draw_parameters(true);
     let mut device_features_12 = vk::PhysicalDeviceVulkan12Features::default()
         .storage_buffer8_bit_access(true)
         .uniform_and_storage_buffer8_bit_access(true)
@@ -61,6 +65,7 @@ pub unsafe fn create_device_and_queue(
         .shader_storage_buffer_array_non_uniform_indexing(true)
         .shader_storage_texel_buffer_array_non_uniform_indexing(true)
         .buffer_device_address(true)
+        .buffer_device_address_capture_replay(true)
         .descriptor_indexing(true)
         .descriptor_binding_partially_bound(true)
         .descriptor_binding_sampled_image_update_after_bind(true)
@@ -115,7 +120,8 @@ pub unsafe fn create_device_and_queue(
         .push_next(&mut compute_derivatives)
         .push_next(&mut mesh_shader)
         .push_next(&mut extended_state3)
-        .push_next(&mut acceleration_structure);
+        .push_next(&mut acceleration_structure)
+        .push_next(&mut ray_query_features);
 
     let device = instance
         .create_device(physical_device, &device_create_info, None)

@@ -29,7 +29,7 @@ pub unsafe fn create_buffer(
     let bytes_formatted = bytesize::ByteSize::b(size as u64);
     log::debug!("creating buffer '{}' ({})", name, bytes_formatted.display().si());
     let buffer_create_info = vk::BufferCreateInfo::default()
-        .flags(vk::BufferCreateFlags::empty())
+        .flags(vk::BufferCreateFlags::DEVICE_ADDRESS_CAPTURE_REPLAY)
         .usage(flags | vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::STORAGE_BUFFER)
         .sharing_mode(vk::SharingMode::EXCLUSIVE)
         .size(size as u64);
