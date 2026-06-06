@@ -123,7 +123,7 @@ void write_swapchain_image(uint3 id: SV_DispatchThreadID) {
     
     SamplerState sampler = samplers[LINEAR_SAMPLER_IDX];
 
-    float bloom_strength = 0.0;
+    float bloom_strength = 0.05;
     float3 bloom = entire_bloom_image.SampleLevel(sampler, screen_uvs, 2.0).xyz * bloom_strength;
 
     float3 col = pow(aces(final_colour + bloom), 1/2.2);

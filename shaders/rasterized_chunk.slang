@@ -41,34 +41,21 @@ float4 frag_main(VertexOutput in_vert) : SV_Target {
     float3 world = in_vert.world_pos;
 
 
-    bool hit = false;
+    float hwrt_shadow = 1.0;
 
     float3 normal = -normalize(cross(ddy(in_vert.world_pos), ddx(in_vert.world_pos)));
 
     if (dot(normal, uniforms.sun.xyz) > 0) {
-        RayDesc desc;
-        desc.Origin = world;
-        desc.Direction = uniforms.sun.xyz;
-        desc.TMax = 100;
-        desc.TMin = 0.001;
-
-        RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_FORCE_OPAQUE> sq;
-        let flags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_FORCE_OPAQUE;
-
-        sq.TraceRayInline(acceleration_structures[0], flags, 0xFF, desc);
-
-        sq.Proceed();
-
-        hit = sq.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
+        hwrt_shadow = hw_trace_shadow(world);
     }
 
     //float3 normal = -normalize(in_vert.normal);
     float3 view = -normalize(in_vert.world_pos - uniforms.position.xyz);
-    float3 diffuse = 1.0 * in_vert.colour;
+    float3 diffuse = 1.0;
     float roughness = 0.8;
     float metallic = 0.0;
-    float ao = 1.0;
-    float shadow = (1.0-clouds(uniforms.sun.xyz, world).a) * (1 - hit); 
+    float ao = hw_ao(world, normal);
+    float shadow = (1.0-clouds(uniforms.sun.xyz, world).a) * hwrt_shadow; 
 
 
 

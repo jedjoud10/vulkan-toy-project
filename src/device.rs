@@ -29,7 +29,10 @@ pub unsafe fn create_device_and_queue(
     let mut shader_clock = vk::PhysicalDeviceShaderClockFeaturesKHR::default()
         .shader_device_clock(true)
         .shader_subgroup_clock(true); 
-    let mut atomics = vk::PhysicalDeviceShaderImageAtomicInt64FeaturesEXT::default()
+    let mut float_atomics = vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT::default()
+        .shader_shared_float32_atomics(true)
+        .shader_shared_float32_atomic_add(true); 
+    let mut image_atomics = vk::PhysicalDeviceShaderImageAtomicInt64FeaturesEXT::default()
         .shader_image_int64_atomics(true); 
     let mut mesh_shader = vk::PhysicalDeviceMeshShaderFeaturesEXT::default()
         .mesh_shader(true)
@@ -85,6 +88,8 @@ pub unsafe fn create_device_and_queue(
         ash::khr::shader_atomic_int64::NAME,
         ash::khr::shader_clock::NAME,
         ash::ext::shader_image_atomic_int64::NAME,
+        ash::ext::shader_atomic_float::NAME,
+        
         ash::khr::shader_draw_parameters::NAME,
         ash::khr::dynamic_rendering::NAME,
         ash::ext::host_image_copy::NAME,
@@ -115,7 +120,8 @@ pub unsafe fn create_device_and_queue(
         .push_next(&mut device_features_13)
         .push_next(&mut device_features_12)
         .push_next(&mut device_features_11)
-        .push_next(&mut atomics)
+        .push_next(&mut image_atomics)
+        .push_next(&mut float_atomics)
         .push_next(&mut shader_clock)
         .push_next(&mut compute_derivatives)
         .push_next(&mut mesh_shader)

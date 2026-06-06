@@ -22,6 +22,8 @@ mod per_frame_data;
 mod samplers;
 mod tesselation;
 mod voxel;
+mod model;
+mod ray_tracing;
 
 use clap::Parser;
 use std::ops::ControlFlow;

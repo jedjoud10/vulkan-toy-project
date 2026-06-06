@@ -115,7 +115,7 @@ groupshared Atomic<float> color_g;
 groupshared Atomic<float> color_b;
 
 [shader("compute")]
-[numthreads(32, 16, 1)]
+[numthreads(32, 32, 1)]
 void blur_skybox_ambient(uint3 id: SV_DispatchThreadID, uint3 gid: SV_GroupID, uint3 gtid: SV_GroupThreadID) {
     if (all(gtid == 0)) {
         color_r = 0;

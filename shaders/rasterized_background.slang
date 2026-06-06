@@ -32,4 +32,5 @@ float4 frag_main(float4 sv_position : SV_Position) : SV_Target {
 
     float3 ray_pos = uniform_data.position.xyz;
     return float4(sample_skybox_and_clouds(ray_pos, ray_dir), 1.0);
+    //return float4(get_environment_diffuse(ray_dir), 1.0);
 }

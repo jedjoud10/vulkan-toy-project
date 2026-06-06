@@ -5,8 +5,7 @@
 
 
 struct VertexInput {
-    float3 world;
-    uint count : SV_InstanceID;
+    float3 object;
 };
 
 struct VertexOutput {
@@ -15,14 +14,12 @@ struct VertexOutput {
 };
 
 [shader("vertex")]
-VertexOutput vert_main(VertexInput input) {
+VertexOutput vert_main(VertexInput input, uniform float4x4 object_to_world) {
     VertexOutput output;
 
     let uniforms = load_per_frame_uniforms();
 
-    float4 world_position = float4(input.world, 1.0) + uint4(input.count % 100, 0, input.count / 100, 0);
-
-    world_position.y += sin(input.count * 0.5 + uniforms.time * 0) * 2;
+    float4 world_position = mul(float4(input.object, 1), object_to_world);
 
 
     float4 t = mul(world_position, uniforms.view_projection_matrix);
@@ -45,8 +42,8 @@ float4 frag_main(VertexOutput in_vert) : SV_Target {
     float3 diffuse = 0.5;
     float roughness = 0.8;
     float metallic = 0.2;
-    float ao = 1.0;
-    float shadow = 1.0; 
+    float ao = hw_ao(world, normal);
+    float shadow = hw_trace_shadow(world); 
 
     float3 ray_pos = uniforms.position.xyz;
 

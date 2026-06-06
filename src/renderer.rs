@@ -17,8 +17,10 @@ use vek::Clamp;
 use vek::num_integer::Integer;
 use crate::input::Button;
 use crate::input::Input;
+use crate::model;
 use crate::movement::Movement;
 use crate::per_frame_data;
+use crate::ray_tracing;
 use crate::samplers;
 use crate::voxel;
 use crate::voxel::VoxelTexture3D;
@@ -70,13 +72,13 @@ const RASTERIZED_BACKGROUND_SPV: &str = "rasterized_background.spv";
 
 const VERTEX_ATTRIBUTE_DESCRIPTIONS: &'static [vk::VertexInputAttributeDescription] = &[vk::VertexInputAttributeDescription {
     binding: 0,
-    format: vk::Format::R16G16B16_SFLOAT,
+    format: vk::Format::R32G32B32_SFLOAT,
     location: 0,
     offset: 0
 }];
 const VERTEX_BINDING_DESCRIPTIONS: &'static [vk::VertexInputBindingDescription] = &[vk::VertexInputBindingDescription {
     binding: 0,
-    stride: (2 * 3) as u32,
+    stride: size_of::<vek::Vec3<f32>>() as u32,
     input_rate: vk::VertexInputRate::VERTEX,
 }];
 
@@ -149,6 +151,10 @@ pub struct InternalApp {
     // other GPU stuff
     multiple_chunks: voxel::MultipleChunks,
     chunks: Vec<voxel::Chunk>,
+    models: Vec<model::Model>,
+    tlas: ray_tracing::TopLevelAccelerationStructure,
+    static_instances: Vec<vk::AccelerationStructureInstanceKHR>,
+    dynamic_instances: Vec<vk::AccelerationStructureInstanceKHR>,
     
     timestamp_period: f32,
     skybox: skybox::Skybox,
@@ -443,23 +449,6 @@ impl InternalApp {
 
         let timestamp_period = physical_device_properties.properties.limits.timestamp_period;
 
-        /*
-        let thingy = include_bytes!("../models/bunny_subdivided.obj");
-        let obj = obj::load_obj::<obj::Position, &[u8], u32>(thingy).unwrap();
-
-        // TODO: replace with vec reinterpret...
-        let vertices: Vec<vek::Vec3<f32>> = obj.vertices.into_iter().map(|x| vek::Vec3::<f32>::from(x.position)).collect::<Vec<_>>();
-        let mut indices: Vec<u32> = obj.indices;
-        meshopt::optimize_vertex_cache_in_place(&mut indices, vertices.len());
-
-        let vertex_buffer = buffer::create_buffer(&device, &mut allocator, size_of::<vek::Vec3::<f32>>() * vertices.len(), &debug_marker, "vertex buffer", vk::BufferUsageFlags::VERTEX_BUFFER);
-        buffer::write_to_buffer(&device, pool, queue, vertex_buffer.buffer, &mut allocator, bytemuck::cast_slice(vertices.as_slice()));
-
-        let index_buffer = buffer::create_buffer(&device, &mut allocator, size_of::<u32>()  * indices.len(), &debug_marker, "index buffer", vk::BufferUsageFlags::INDEX_BUFFER);
-        let index_count = indices.len() as u32;
-        buffer::write_to_buffer(&device, pool, queue, index_buffer.buffer, &mut allocator, bytemuck::cast_slice(indices.as_slice()));
-        */
-
         let mut chunks = Vec::<voxel::Chunk>::new();
         let chunk_render_distance = 1;
         let mut index = 0;
@@ -487,9 +476,14 @@ impl InternalApp {
         // extension devices
         let mesh_shader_device = ash::ext::mesh_shader::Device::new(&instance, &device);
         let extended_dynamic_state3_device = ash::ext::extended_dynamic_state3::Device::new(&instance, &device);
-        let acceleration_structure = ash::khr::acceleration_structure::Device::new(&instance, &device);
+        let acceleration_structure_device = ash::khr::acceleration_structure::Device::new(&instance, &device);
+        
+        let models = vec![
+            model::Model::new(include_bytes!("../models/modular_industrial_pipes_01_1k.obj"), &device, &acceleration_structure_device, &mut allocator, &debug_marker, pool, queue),
+            //model::Model::new(include_bytes!("../models/bunny_subdivided.obj"), &device, &acceleration_structure_device, &mut allocator, &debug_marker, pool, queue)
+        ];
 
-
+        let tlas = ray_tracing::pre_create_tlas(&acceleration_structure_device, &device, &mut allocator, &debug_marker);
 
         let tesselation_buffer = crate::tesselation::precompute_tesselation_buffer(&device, &mut allocator, &debug_marker, pool, queue);
         let debug_text_buffer = buffer::create_buffer(&device, &mut allocator, 1024, &debug_marker, "debug text", vk::BufferUsageFlags::STORAGE_BUFFER);
@@ -559,7 +553,11 @@ impl InternalApp {
             render_finished_semaphores,
             uniform_buffer,
             chunks,
-            acceleration_structure_device: acceleration_structure,
+            acceleration_structure_device,
+            models,
+            static_instances: Vec::new(),
+            dynamic_instances: Vec::new(),
+            tlas,
         }
     }
 
@@ -697,6 +695,7 @@ impl InternalApp {
             ref mut scratch_buffer,
             ..
         } = &mut self.frames_in_flight[frame_in_flight_index as usize];
+        
 
         let present_complete_semaphores = [present_complete_semaphore];
 
@@ -773,8 +772,6 @@ impl InternalApp {
             vertex_counter,
             index_counter,
             indirect_draw_buffer,
-            tlas,
-            blases,
             total_num_chunks,
         } = &mut self.multiple_chunks;
 
@@ -903,7 +900,7 @@ impl InternalApp {
             .dst_set(main_descriptor_set)
             .image_info(&samplers);
 
-        if let Some(tlas) = self.multiple_chunks.tlas.as_ref() {
+        if let Some(tlas) = self.tlas.data.as_ref() {
             let wuh = [tlas.acceleration_structure];
 
             let mut acceleration_structure_write_tmp = vk::WriteDescriptorSetAccelerationStructureKHR::default()
@@ -920,6 +917,8 @@ impl InternalApp {
         } else {
             self.device.update_descriptor_sets(&[storage_image_write, storage_buffer_write, sampled_image_write, sampler_states_write], &[]);
         }
+
+        //self.device.update_descriptor_sets(&[storage_image_write, storage_buffer_write, sampled_image_write, sampler_states_write], &[]);
 
         // TODO: ideally, these would:
         // 1. be dynamically allocated using some sort of per-frame arena with indexing
@@ -963,18 +962,17 @@ impl InternalApp {
         text += &format!("reserved bytes: {}\n", reserved_bytes);
         text += &format!("allocated bytes: {}\n", allocated_bytes);
         
-        let mut bytes = Vec::<u8>::new();
-
+        
         #[derive(Clone, Copy, Pod, Zeroable)]
         #[repr(C)]
         struct DebugTextLineHeader {
             start_byte_offset: u32,
             char_count: u32,
         }
-
+        
         // write total number of lines
         let total_num_lines = text.lines().count() as u32;
-        bytes.extend_from_slice(bytemuck::bytes_of(&total_num_lines));
+        let mut bytes = bytemuck::bytes_of(&total_num_lines).to_vec();
 
         // write headers for each line
         let mut prefix_sum_chars_only = 0u32;
@@ -1143,15 +1141,34 @@ impl InternalApp {
                 self.compute_pipelines[COMPUTE_SURFACE_SPV][VOXELIZE_SURFACE_ENTRY_POINT],
                 self.queue_family_index
             );
-            let data = self.multiple_chunks.create_blas(*chunk_index, &self.device, cmd, &self.acceleration_structure_device, &mut self.allocator, &self.debug_marker);
+            let (data, instance) = self.multiple_chunks.create_blas(*chunk_index, &self.device, cmd, &self.acceleration_structure_device, &mut self.allocator, &self.debug_marker);
             accel_structure.replace(data);
             *built = true;
+            self.static_instances.push(instance);
         }
 
-        if self.multiple_chunks.blases.len() == self.multiple_chunks.total_num_chunks {
-            self.multiple_chunks.create_tlas(cmd, &self.acceleration_structure_device, &self.device, &mut self.allocator, &self.debug_marker, self.queue_family_index, scratch_buffer);
+        // update dynamic instances for TLAS
+        self.dynamic_instances.clear();
+        for model in self.models.iter_mut() {
+            model.update(elapsed, &self.movement);
+            self.dynamic_instances.push(model.instance);
         }
 
+        // rebuild TLAS
+        ray_tracing::rebuild_tlas(
+            &self.static_instances,
+            &self.dynamic_instances,
+            &self.tlas,
+            cmd,
+            &self.acceleration_structure_device,
+            &self.device,
+            &mut self.allocator,
+            &self.debug_marker,
+            self.queue_family_index,
+            scratch_buffer
+        );
+        
+        
         let skybox_subresource_range = vk::ImageSubresourceRange::default()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
             .level_count(1)
@@ -1302,9 +1319,18 @@ impl InternalApp {
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_CHUNK_SPV]);
         self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
 
+        // render chunks
         self.device.cmd_bind_vertex_buffers(cmd, 0, &[self.multiple_chunks.vertex_buffer.buffer], &[0]);
         self.device.cmd_bind_index_buffer(cmd, self.multiple_chunks.index_buffer.buffer, 0, vk::IndexType::UINT32);
         self.device.cmd_draw_indexed_indirect(cmd, self.multiple_chunks.indirect_draw_buffer.buffer, 0, self.chunks.len() as u32, size_of::<voxel::DrawIndexedIndirectCommand>() as u32);
+
+        // render models
+        for model in self.models.iter() {
+            self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_SPV]);
+            self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
+            model.render(cmd, &self.device, self.main_pipeline_layout);
+        }
+
         
 
         self.device.cmd_end_rendering(cmd);
@@ -1542,22 +1568,13 @@ impl InternalApp {
             .image_indices(&indices)
             .wait_semaphores(&render_finished_semaphore);
 
-        let _start = std::time::Instant::now();
         let suboptimal = self.swapchain_loader
             .queue_present(self.queue, &present_info)
             .unwrap();
-        let _end = std::time::Instant::now();
 
 
         self.stats.end_of_frame(self.frame_count);
         self.frame_count += 1;
-
-        // FIXME: THERES STILL SOMETHING WRONG WITH FRAMES IN FLIGHT
-        // FIXME: FUCK
-        //self.device.wait_for_fences(&[end_fence], true, u64::MAX).unwrap();
-
-        //log::debug!("CPU thread took: {}us", (_end-_start).as_micros());
-
         if suboptimal {
             self.recreate_swapchain();
         }
@@ -1566,20 +1583,31 @@ impl InternalApp {
     pub unsafe fn destroy(mut self) {
         self.device.device_wait_idle().unwrap();
 
+        self.tlas.destroy(&self.acceleration_structure_device, &self.device, &mut self.allocator);
+
+        for model in self.models {
+            model.destroy(&self.acceleration_structure_device, &self.device, &mut self.allocator);
+        }
+        log::info!("destroyed models");
+
         self.multiple_chunks.destroy(&self.acceleration_structure_device, &self.device, &mut self.allocator);
         for chunk in self.chunks {
             chunk.destroy(&self.acceleration_structure_device, &self.device, &mut self.allocator);
         }
+        log::info!("destroyed chunks");
         
         self.tesselation_buffer.destroy(&self.device, &mut self.allocator);
+        log::info!("destroyed tesselation buffer");
         
         for (_, graphic_pipeline) in self.graphics_pipelines {
             graphic_pipeline.destroy(&self.device);
         }
+        log::info!("destroyed graphic pipelines");
 
         for (_, compute_pipeline) in self.compute_pipelines {
             compute_pipeline.destroy(&self.device);
         }
+        log::info!("destroyed compute pipelines");
                 
         self.skybox.destroy(&self.device, &mut self.allocator);
         log::info!("destroyed skybox");

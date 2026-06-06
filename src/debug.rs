@@ -45,6 +45,8 @@ pub unsafe fn create_debug_messenger(
     })
 }
 
+pub type DebugMarker = Option<ash::ext::debug_utils::Device>;
+
 pub unsafe fn create_debug_marker(
     instance: &ash::Instance,
     device: &ash::Device,

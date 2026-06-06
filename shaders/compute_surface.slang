@@ -87,6 +87,7 @@ float density(float3 p) {
     float amplitude = 20.0;
     float3 offset = 0.0;
 
+    /*
     for (int i = 0; i < 7; i++) {
         value += abs(snoise(scale * p + offset)) * amplitude;
 
@@ -94,6 +95,7 @@ float density(float3 p) {
         amplitude *= 0.4;
         offset += snoise((float)i * 0.5 + p * 0.02) * 0.6;
     }
+    */
 
     /*
     if (length(p) < 30) {
@@ -116,11 +118,11 @@ float density(float3 p) {
     */
     
     //value += snoise(p * 0.1);
-    /*
+    
     if (hash12(floor(p.xz * 0.05)) > 0.8) {
         value = snoise(p * 0.1) * 15;
     }
-    */
+    
     value += p.y - 10.0;
     return value;
 }

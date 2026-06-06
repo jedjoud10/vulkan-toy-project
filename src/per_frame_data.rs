@@ -1,6 +1,6 @@
 use ash::vk;
 use gpu_allocator::vulkan::{Allocation, Allocator};
-use crate::{buffer, others, pipeline::{self, PerFrameUniformData}};
+use crate::{buffer, others, pipeline::{self, PerFrameUniformData}, ray_tracing};
 
 pub const FRAMES_IN_FLIGHT: usize = 3;
 pub const SCRATCH_BUFFER_SIZE: usize = 1 << 13;
@@ -30,7 +30,9 @@ impl ScratchBuffer {
             .buffer_memory_barriers(&buffer_memory_barriers);
         device.cmd_pipeline_barrier2(cmd, &dep);
 
-        self.buffer.address + self.bytes_written
+        let prev = self.buffer.address + self.bytes_written;
+        self.bytes_written += bytes.len() as u64;
+        prev
     }
 }
 
@@ -90,7 +92,7 @@ impl PerFrameData {
             main_descriptor_set,
             query_pool,
             pipeline_statistics_query_pool,
-            scratch_buffer: ScratchBuffer { buffer: scratch_buffer_buffer, bytes_written: 0 }
+            scratch_buffer: ScratchBuffer { buffer: scratch_buffer_buffer, bytes_written: 0 },
         }
     }
     
