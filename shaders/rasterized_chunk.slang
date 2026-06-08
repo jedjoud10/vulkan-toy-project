@@ -1,7 +1,7 @@
 #language slang 2026
 #include "utils/pbr.slang"
 #include "utils/bindless.slang"
-
+#include "utils/triplanar.slang"
 
 struct VertexInput {
     float3 world;

@@ -225,9 +225,10 @@ pub struct TemporaryStagingBuffer<'a> {
     pub allocator: &'a mut Allocator,
 }
 
-impl<'a> TemporaryStagingBuffer<'a> {
+impl<'a> Drop for TemporaryStagingBuffer<'a> {
     fn drop(&mut self) {
         unsafe {
+            self.device.device_wait_idle().unwrap();
             self.device.destroy_buffer(self.buffer, None);
             self.allocator.free(self.allocation.take().unwrap()).unwrap();
         }

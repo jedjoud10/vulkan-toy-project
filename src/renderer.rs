@@ -17,6 +17,7 @@ use vek::Clamp;
 use vek::num_integer::Integer;
 use crate::input::Button;
 use crate::input::Input;
+use crate::material::Material;
 use crate::model;
 use crate::movement::Movement;
 use crate::per_frame_data;
@@ -110,6 +111,9 @@ pub struct InternalApp {
         vk::DebugUtilsMessengerEXT
     )>,
     debug_marker: Option<ash::ext::debug_utils::Device>,
+
+    // materials
+    materials: Vec<Material>,
     
     // surface & swapchain
     surface_loader: ash::khr::surface::Instance,
@@ -135,6 +139,7 @@ pub struct InternalApp {
     mesh_shader_device: ash::ext::mesh_shader::Device,
     extended_dynamic_state3_device: ash::ext::extended_dynamic_state3::Device,
     acceleration_structure_device: ash::khr::acceleration_structure::Device,
+    host_image_copy_device: ash::ext::host_image_copy::Device,
     // TODO: when using ash rewrite; use KHR_copy_memory_indirect since it was promoted from NV_copy_memory_indirect
 
     // descriptors & frames in flight
@@ -477,6 +482,7 @@ impl InternalApp {
         let mesh_shader_device = ash::ext::mesh_shader::Device::new(&instance, &device);
         let extended_dynamic_state3_device = ash::ext::extended_dynamic_state3::Device::new(&instance, &device);
         let acceleration_structure_device = ash::khr::acceleration_structure::Device::new(&instance, &device);
+        let host_image_copy_device = ash::ext::host_image_copy::Device::new(&instance, &device);
         
         let models = vec![
             model::Model::new(include_bytes!("../models/modular_industrial_pipes_01_1k.obj"), &device, &acceleration_structure_device, &mut allocator, &debug_marker, pool, queue),
@@ -500,6 +506,10 @@ impl InternalApp {
             "per frame uniform buffer",
             vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST
         );
+
+        let materials = vec![
+            Material::new(include_bytes!("../materials/metal/metal_0077_color_1k.jpg"), &device, &host_image_copy_device, &mut allocator, &debug_marker, queue, pool, queue_family_index)
+        ];
 
         Self {
             multiple_chunks,
@@ -558,6 +568,8 @@ impl InternalApp {
             static_instances: Vec::new(),
             dynamic_instances: Vec::new(),
             tlas,
+            materials,
+            host_image_copy_device,
         }
     }
 
@@ -878,6 +890,14 @@ impl InternalApp {
                 .image_view(*bloom_sampled_image_view)
                 .image_layout(vk::ImageLayout::GENERAL)
             );
+        }
+
+        // add material sampled image views
+        for material in self.materials.iter_mut() {
+            material.albedo_index = sampled_image_infos.len();
+            sampled_image_infos.push(vk::DescriptorImageInfo::default()
+                .image_view(material.albedo_image_view)
+                .image_layout(vk::ImageLayout::GENERAL));
         }
 
         let sampled_image_write = vk::WriteDescriptorSet::default()
@@ -1328,7 +1348,8 @@ impl InternalApp {
         for model in self.models.iter() {
             self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_SPV]);
             self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
-            model.render(cmd, &self.device, self.main_pipeline_layout);
+            model.render(cmd, &self.device, self.main_pipeline_layout, &self.materials[0]);
+            
         }
 
         
@@ -1589,6 +1610,11 @@ impl InternalApp {
             model.destroy(&self.acceleration_structure_device, &self.device, &mut self.allocator);
         }
         log::info!("destroyed models");
+
+        for material in self.materials {
+            material.destroy(&self.device, &mut self.allocator);
+        }
+        log::info!("destroyed materials");
 
         self.multiple_chunks.destroy(&self.acceleration_structure_device, &self.device, &mut self.allocator);
         for chunk in self.chunks {

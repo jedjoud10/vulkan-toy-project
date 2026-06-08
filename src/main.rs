@@ -24,6 +24,7 @@ mod tesselation;
 mod voxel;
 mod model;
 mod ray_tracing;
+mod material;
 
 use clap::Parser;
 use std::ops::ControlFlow;

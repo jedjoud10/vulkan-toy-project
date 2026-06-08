@@ -1,8 +1,8 @@
 use ash::vk;
-use bytemuck::bytes_of;
+use bytemuck::{Pod, Zeroable, bytes_of};
 use gpu_allocator::vulkan::Allocator;
 
-use crate::{buffer, debug, others, ray_tracing};
+use crate::{buffer, debug, material::Material, others, ray_tracing};
 
 // pretty inefficient as there's no batching or culling of any kind
 pub struct Model {
@@ -78,8 +78,8 @@ impl Model {
     }
 
     pub fn update(&mut self, elapsed: f32, movement: &crate::movement::Movement) {
-        let position = movement.position + movement.forward() * 2f32;
-
+        //let position = movement.position + movement.forward() * 2f32;
+        let position = vek::Vec3::new(0f32, 10f32, 0f32); 
         let matrix = vek::Mat4::<f32>::translation_3d(position);
 
         self.object_to_world = matrix;
@@ -91,10 +91,22 @@ impl Model {
         self.instance.transform = vk::TransformMatrixKHR { matrix: m } 
     }
 
-    pub unsafe fn render(&self, cmd: vk::CommandBuffer, device: &ash::Device, pipeline_layout: vk::PipelineLayout) {
+    pub unsafe fn render(&self, cmd: vk::CommandBuffer, device: &ash::Device, pipeline_layout: vk::PipelineLayout, material: &Material) {
+        #[derive(Clone, Copy, Pod, Zeroable)]
+        #[repr(C)]
+        struct PushConstant {
+            object_to_world: vek::Mat4<f32>,
+            albedo_sampled_image_index: usize,
+        }
+
+        let pc = PushConstant {
+            object_to_world: self.object_to_world,
+            albedo_sampled_image_index: material.albedo_index,
+        };
+
         device.cmd_bind_vertex_buffers(cmd, 0, &[self.vertex_buffer.buffer], &[0]);
         device.cmd_bind_index_buffer(cmd, self.index_buffer.buffer, 0, vk::IndexType::UINT32);
-        device.cmd_push_constants(cmd, pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytes_of(&self.object_to_world));
+        device.cmd_push_constants(cmd, pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytes_of(&pc));
         device.cmd_draw_indexed(cmd, self.index_count as u32, 1, 0, 0, 0);
     }
 

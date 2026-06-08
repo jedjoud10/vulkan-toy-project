@@ -1,8 +1,12 @@
 #language slang 2026
 #include "utils/pbr.slang"
-
+#include "utils/triplanar.slang"
 #include "utils/bindless.slang"
 
+struct PushConstants {
+    float4x4 object_to_world;
+    uint albedo_sampled_image_index;
+}
 
 struct VertexInput {
     float3 object;
@@ -14,12 +18,12 @@ struct VertexOutput {
 };
 
 [shader("vertex")]
-VertexOutput vert_main(VertexInput input, uniform float4x4 object_to_world) {
+VertexOutput vert_main(VertexInput input, uniform PushConstants pc) {
     VertexOutput output;
 
     let uniforms = load_per_frame_uniforms();
 
-    float4 world_position = mul(float4(input.object, 1), object_to_world);
+    float4 world_position = mul(float4(input.object, 1), pc.object_to_world);
 
 
     float4 t = mul(world_position, uniforms.view_projection_matrix);
@@ -32,18 +36,18 @@ VertexOutput vert_main(VertexInput input, uniform float4x4 object_to_world) {
 }
 
 [shader("fragment")]
-float4 frag_main(VertexOutput in_vert) : SV_Target {
+float4 frag_main(VertexOutput in_vert, uniform PushConstants pc) : SV_Target {
     let uniforms = load_per_frame_uniforms();
     
     float3 world = in_vert.world_pos;
     float3 normal = -normalize(cross(ddy(in_vert.world_pos), ddx(in_vert.world_pos)));
     float3 view = -normalize(in_vert.world_pos - uniforms.position.xyz);
     
-    float3 diffuse = 0.5;
+    float3 diffuse = sample_triplanar_albedo(pc.albedo_sampled_image_index, world, normal);
     float roughness = 0.8;
     float metallic = 0.2;
     float ao = hw_ao(world, normal);
-    float shadow = hw_trace_shadow(world); 
+    float shadow = (1.0-clouds(uniforms.sun.xyz, world).a) * hw_trace_shadow(world); 
 
     float3 ray_pos = uniforms.position.xyz;
 
