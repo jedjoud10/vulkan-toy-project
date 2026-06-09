@@ -46,7 +46,7 @@ pub unsafe fn create_buffer(
             requirements,
             linear: true,
             allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
-            location: gpu_allocator::MemoryLocation::GpuOnly,
+            location: gpu_allocator::MemoryLocation::CpuToGpu,
         })
         .unwrap();
 

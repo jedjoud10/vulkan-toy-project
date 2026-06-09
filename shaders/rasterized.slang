@@ -46,11 +46,25 @@ VertexOutput vert_main(VertexInput input, uniform PushConstants pc) {
 [shader("fragment")]
 float4 frag_main(VertexOutput in_vert, uniform PushConstants pc) : SV_Target {
     let uniforms = load_per_frame_uniforms();
+    let sampler = samplers[NEAREST_SAMPLER_IDX];
+
+    // I eventually need to understand why this works but I don't...
+    // compute tangent and bitangent from derivatives of position and UV
+    float3 dp1 = ddx(in_vert.world_pos);
+    float3 dp2 = ddy(in_vert.world_pos);
+    float2 duv1 = ddx(in_vert.uv);
+    float2 duv2 = ddy(in_vert.uv);
+
+    // Solve for tangent and bitangent
+    float3 normal = normalize(cross(dp1, dp2));
+    float3 tangent = normalize(duv2.y * dp1 - duv1.y * dp2);
+    float3 bitangent = normalize(-duv2.x * dp1 + duv1.x * dp2);
+    float3x3 tbn = float3x3(tangent, bitangent, normal);
         
     if (uniforms.debug_type == 1) {
         return float4(normalize(in_vert.world_normal), 1.0);
     } else if (uniforms.debug_type == 2) {
-        return float4(in_vert.uv, 0, 1.0);
+        return float4(normalize(tangent), 1.0);
     } else if (uniforms.debug_type == 3) {
         return float4(in_vert.world_pos, 1.0);
     }
@@ -58,12 +72,16 @@ float4 frag_main(VertexOutput in_vert, uniform PushConstants pc) : SV_Target {
     
     float3 world = in_vert.world_pos;
 
-    float3 normal = 0;
+    normal = 0;
     if ((uniforms.toggles_bitmask & 2) == 2) {
-        normal = -normalize(cross(ddy(in_vert.world_pos), ddx(in_vert.world_pos)));
+        float3 tangent_normal = sampled_images[pc.albedo_sampled_image_index+3].Sample(sampler, in_vert.uv).xyz;
+        tangent_normal = tangent_normal * 2.0 - 1.0;   
+        normal = normalize(mul(tangent_normal, tbn)); 
     } else {
         normal = normalize(in_vert.world_normal);
     }
+
+
 
     float3 view = -normalize(in_vert.world_pos - uniforms.position.xyz);    
 
@@ -97,13 +115,12 @@ float4 frag_main(VertexOutput in_vert, uniform PushConstants pc) : SV_Target {
         view = -normalize(world - uniforms.position.xyz);
     }
     
-    let sampler = samplers[NEAREST_SAMPLER_IDX];
-    
 
     // float3 diffuse = sample_triplanar_albedo(pc.albedo_sampled_image_index, world, normal);
     float3 diffuse = sampled_images[pc.albedo_sampled_image_index].Sample(sampler, in_vert.uv).xyz;
-    float roughness = 0.8;
-    float metallic = 0.2;
+    float roughness = sampled_images[pc.albedo_sampled_image_index+1].Sample(sampler, in_vert.uv).x;
+    float metallic = sampled_images[pc.albedo_sampled_image_index+2].Sample(sampler, in_vert.uv).x;
+
     float ao = hw_ao(world, normal);
     float shadow = (1.0-clouds(uniforms.sun.xyz, world).a) * hw_trace_shadow(world + normal * 0.002); 
 

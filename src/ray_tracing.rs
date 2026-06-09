@@ -135,7 +135,7 @@ pub unsafe fn pre_create_tlas(
         .geometry(geometry_tmp)
         .flags(vk::GeometryFlagsKHR::OPAQUE);
     let geometries = [geometry];
-    let mut acceleration_structure_build_geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
+    let acceleration_structure_build_geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
         .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
         .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
         .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE | vk::BuildAccelerationStructureFlagsKHR::ALLOW_DATA_ACCESS)

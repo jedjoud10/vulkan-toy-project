@@ -547,7 +547,7 @@ impl InternalApp {
         );
 
         let materials = vec![
-            Material::new(&mut ctx, include_bytes!("../materials/metal/metal_0077_color_1k.jpg"))
+            Material::new(&mut ctx)
         ];
 
         Self {
@@ -964,10 +964,7 @@ impl InternalApp {
 
         // add material sampled image views
         for material in self.materials.iter_mut() {
-            material.albedo_index = sampled_image_infos.len();
-            sampled_image_infos.push(vk::DescriptorImageInfo::default()
-                .image_view(material.albedo_texture.image_view)
-                .image_layout(vk::ImageLayout::GENERAL));
+            material.add_per_frame_sampled_images(&mut sampled_image_infos);
         }
 
         let sampled_image_write = vk::WriteDescriptorSet::default()

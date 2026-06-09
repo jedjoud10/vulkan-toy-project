@@ -34,7 +34,12 @@ pub unsafe fn create_texture(
 
     let opt_image_buffer = image_file_bytes.map(|image_file_bytes| {
         let dynamic_image = image::load_from_memory(image_file_bytes).unwrap();
-        let dynamic_image = dynamic_image.resize_exact(size, size, image::imageops::FilterType::Nearest);
+
+        let dynamic_image = if size != dynamic_image.width() {
+            dynamic_image.resize_exact(size, size, image::imageops::FilterType::Nearest)
+        } else {
+            dynamic_image
+        };
         dynamic_image.into_rgba8()
     });
 

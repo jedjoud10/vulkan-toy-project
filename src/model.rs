@@ -101,7 +101,7 @@ impl Model {
         //let position = movement.position + movement.forward() * 2f32;
         let scale = 3f32;
 
-        let matrix = vek::Mat4::<f32>::identity().scaled_3d(scale).translated_3d(self.position);
+        let matrix = vek::Mat4::<f32>::identity().scaled_3d(scale).rotated_x(elapsed * 0.2f32).translated_3d(self.position + vek::Vec3::unit_y() * elapsed.sin() * 0.2f32);
 
         self.object_to_world = matrix;
 
@@ -129,7 +129,7 @@ impl Model {
         device.cmd_draw_indexed(cmd, self.index_count as u32, 1, 0, 0, 0);
     }
 
-    pub unsafe fn destroy(self, acceleration_structure_device: &ash::khr::acceleration_structure::Device, device: &ash::Device, mut allocator: &mut Allocator) {
+    pub unsafe fn destroy(self, acceleration_structure_device: &ash::khr::acceleration_structure::Device, device: &ash::Device, allocator: &mut Allocator) {
         self.index_buffer.destroy(device, allocator);
         self.vertex_positions_buffer.destroy(device, allocator);
         self.vertex_normals_buffer.destroy(device, allocator);
