@@ -1,10 +1,8 @@
-use std::ptr::slice_from_raw_parts;
-
 use ash::vk;
-use bytemuck::{Pod, Zeroable, bytes_of, cast_slice};
+use bytemuck::{Pod, Zeroable, cast_slice};
 use gpu_allocator::vulkan::{Allocation, Allocator};
 
-use crate::{buffer, ray_tracing};
+use crate::{buffer, ray_tracing, renderer::GraphicsContext};
 
 pub const VERTICES_PER_CHUNK: usize = 1 << 18;
 pub const TRIANGLES_PER_CHUNK: usize = 1 << 18;
@@ -38,18 +36,13 @@ pub struct DrawIndexedIndirectCommand {
 
 impl MultipleChunks {
     pub unsafe fn create(
-        device: &ash::Device,
-        allocator: &mut Allocator,
-        debug_marker: &Option<ash::ext::debug_utils::Device>,
-        queue: vk::Queue,
-        pool: vk::CommandPool,
-        queue_family_index: u32,
+        ctx: &mut GraphicsContext,
         total_num_chunks: usize,
     ) -> Self {
         
-        let vertex_buffer = buffer::create_buffer(&device, allocator, VERTEX_STRIDE * VERTICES_PER_CHUNK * total_num_chunks, &debug_marker, "vertex buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
-        let index_buffer = buffer::create_buffer(&device, allocator, INDEX_STRIDE * 3 * TRIANGLES_PER_CHUNK * total_num_chunks, &debug_marker, "index buffer", vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
-        let indirect_draw_buffer = buffer::create_buffer(&device, allocator, size_of::<DrawIndexedIndirectCommand>() * total_num_chunks, &debug_marker, "indirect buffer", vk::BufferUsageFlags::INDIRECT_BUFFER);
+        let vertex_buffer = buffer::create_buffer(ctx, VERTEX_STRIDE * VERTICES_PER_CHUNK * total_num_chunks, "vertex buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
+        let index_buffer = buffer::create_buffer(ctx, INDEX_STRIDE * 3 * TRIANGLES_PER_CHUNK * total_num_chunks, "index buffer", vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
+        let indirect_draw_buffer = buffer::create_buffer(ctx, size_of::<DrawIndexedIndirectCommand>() * total_num_chunks, "indirect buffer", vk::BufferUsageFlags::INDIRECT_BUFFER);
 
         
         let arr = (0..total_num_chunks).into_iter().map(|i| DrawIndexedIndirectCommand {
@@ -59,11 +52,11 @@ impl MultipleChunks {
             vertex_offset: (VERTICES_PER_CHUNK * i) as i32,
             first_instance: 0,
         }).collect::<Vec<_>>();
-        buffer::write_to_buffer_with_offset(device, pool, queue, indirect_draw_buffer.buffer, allocator, cast_slice(&arr), 0);
+        buffer::write_to_buffer_with_offset(ctx, indirect_draw_buffer.buffer, cast_slice(&arr), 0);
 
-        let vertex_counter = buffer::create_counter_buffer(&device, allocator, &debug_marker, "vertex counter");
-        let index_counter = buffer::create_counter_buffer(&device, allocator, &debug_marker, "index counter");
-        let voxel_texture = create_voxel_texture(device, allocator, &debug_marker, queue, pool, queue_family_index);
+        let vertex_counter = buffer::create_counter_buffer(ctx, "vertex counter");
+        let index_counter = buffer::create_counter_buffer(ctx, "index counter");
+        let voxel_texture = create_voxel_texture(ctx);
 
         Self {
             voxel_texture,
@@ -227,20 +220,14 @@ impl MultipleChunks {
 
     pub unsafe fn create_blas(
         &mut self,
+        ctx: &mut GraphicsContext,
         chunk_index: usize,
-        device: &ash::Device,
         cmd: vk::CommandBuffer,
-        acceleration_structure_device: &ash::khr::acceleration_structure::Device,
-        mut allocator: &mut Allocator,
-        debug_marker: &Option<ash::ext::debug_utils::Device>
     ) -> (ray_tracing::AccelerationStructureData, vk::AccelerationStructureInstanceKHR) {
 
         crate::ray_tracing::create_blas(
-            device,
+            ctx,
             cmd,
-            acceleration_structure_device,
-            allocator,
-            debug_marker,
             VERTICES_PER_CHUNK,
             VERTICES_PER_CHUNK * chunk_index,
             VERTEX_STRIDE,
@@ -252,7 +239,7 @@ impl MultipleChunks {
         )
     }
     
-    pub unsafe fn destroy(self, acceleration_structure_device: &ash::khr::acceleration_structure::Device, device: &ash::Device, allocator: &mut Allocator) {
+    pub unsafe fn destroy(self, device: &ash::Device, allocator: &mut Allocator) {
         self.vertex_buffer.destroy(device, allocator);
         self.index_buffer.destroy(device, allocator);
         self.vertex_counter.destroy(device, allocator);
@@ -294,14 +281,19 @@ impl VoxelTexture3D {
 }
 
 pub unsafe fn create_voxel_texture(
-    device: &ash::Device,
-    allocator: &mut Allocator,
-    binder: &Option<ash::ext::debug_utils::Device>,
-    queue: vk::Queue,
-    pool: vk::CommandPool,
-    queue_family_index: u32,
+    ctx: &mut GraphicsContext,
 ) -> VoxelTexture3D {
-    let queue_family_indices = [queue_family_index];
+    let GraphicsContext {
+        device,
+        pool,
+        queue,
+        queue_family_index,
+        allocator,
+        debug_marker,
+        ..
+    } = ctx;
+
+    let queue_family_indices = [*queue_family_index];
     let image_create_info = vk::ImageCreateInfo::default()
         .extent(vk::Extent3D {
             width: SIZE+PADDING,
@@ -319,7 +311,7 @@ pub unsafe fn create_voxel_texture(
         .tiling(vk::ImageTiling::OPTIMAL)
         .array_layers(1);
     let image = device.create_image(&image_create_info, None).unwrap();
-    crate::debug::set_object_name(image, binder, "Voxel Texture");
+    crate::debug::set_object_name(image, debug_marker, "Voxel Texture");
 
     
     let image_requirements = device.get_image_memory_requirements(image);
@@ -337,7 +329,7 @@ pub unsafe fn create_voxel_texture(
     let cmd_buffer_create_info = vk::CommandBufferAllocateInfo::default()
         .command_buffer_count(1)
         .level(vk::CommandBufferLevel::PRIMARY)
-        .command_pool(pool);
+        .command_pool(*pool);
     let cmd = device
         .allocate_command_buffers(&cmd_buffer_create_info)
         .unwrap()[0];
@@ -357,8 +349,8 @@ pub unsafe fn create_voxel_texture(
         .dst_access_mask(vk::AccessFlags2::MEMORY_WRITE)
         .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
         .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-        .src_queue_family_index(queue_family_index)
-        .dst_queue_family_index(queue_family_index)
+        .src_queue_family_index(*queue_family_index)
+        .dst_queue_family_index(*queue_family_index)
         .image(image)
         .subresource_range(image_subresource_range);
     let image_memory_barriers = [image_layout_transition];
@@ -370,7 +362,7 @@ pub unsafe fn create_voxel_texture(
     let buffers = [cmd];
     let submit = vk::SubmitInfo::default()
         .command_buffers(&buffers);
-    device.queue_submit(queue, & [submit], vk::Fence::null()).unwrap();
+    device.queue_submit(*queue, & [submit], vk::Fence::null()).unwrap();
     device.device_wait_idle().unwrap();
 
     let image_view_create_info = vk::ImageViewCreateInfo::default()

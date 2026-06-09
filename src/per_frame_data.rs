@@ -1,6 +1,6 @@
 use ash::vk;
 use gpu_allocator::vulkan::{Allocation, Allocator};
-use crate::{buffer, others, pipeline::{self, PerFrameUniformData}, ray_tracing};
+use crate::{buffer, others, pipeline::{self, PerFrameUniformData}, ray_tracing, renderer::GraphicsContext};
 
 pub const FRAMES_IN_FLIGHT: usize = 3;
 pub const SCRATCH_BUFFER_SIZE: usize = 1 << 13;
@@ -48,41 +48,36 @@ pub struct PerFrameData {
 
 impl PerFrameData {
     pub unsafe fn create_per_frame_data(
-        device: &ash::Device,
-        pool: vk::CommandPool,
-        descriptor_pool: vk::DescriptorPool,
-        allocator: &mut Allocator,
-        descriptor_set_layout: vk::DescriptorSetLayout,
-        binder: &Option<ash::ext::debug_utils::Device>,
+        ctx: &mut GraphicsContext,
     ) -> Self {
-        let present_complete_semaphore = device
+        let present_complete_semaphore = ctx.device
             .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
             .unwrap();
-        let end_fence = device.create_fence(&vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED), None).unwrap();
+        let end_fence = ctx.device.create_fence(&vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED), None).unwrap();
         log::info!("created semaphore and fence");
 
-        let layouts = [descriptor_set_layout];
+        let layouts = [ctx.main_descriptor_set_layout];
         let allocate_info = vk::DescriptorSetAllocateInfo::default()
-            .descriptor_pool(descriptor_pool)
+            .descriptor_pool(ctx.descriptor_pool)
             .set_layouts(&layouts);
         
-        let main_descriptor_set = device.allocate_descriptor_sets(&allocate_info).unwrap()[0];
-        crate::debug::set_object_name(main_descriptor_set, binder, "main descriptor set");
+        let main_descriptor_set = ctx.device.allocate_descriptor_sets(&allocate_info).unwrap()[0];
+        crate::debug::set_object_name(main_descriptor_set, ctx.debug_marker, "main descriptor set");
         log::info!("created bindless descriptor set");
 
         let cmd_buffer_create_info = vk::CommandBufferAllocateInfo::default()
             .command_buffer_count(1)
             .level(vk::CommandBufferLevel::PRIMARY)
-            .command_pool(pool);
-        let cmd = device
+            .command_pool(ctx.pool);
+        let cmd = ctx.device
             .allocate_command_buffers(&cmd_buffer_create_info)
             .unwrap()[0];
 
         
-        let query_pool = others::create_query_pool(&device);
-        let pipeline_statistics_query_pool = others::create_pipeline_stats_pool(&device);
+        let query_pool = others::create_query_pool(&ctx.device);
+        let pipeline_statistics_query_pool = others::create_pipeline_stats_pool(&ctx.device);
 
-        let scratch_buffer_buffer = buffer::create_buffer(device, allocator, SCRATCH_BUFFER_SIZE, binder, "per frame scratch buffer", vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
+        let scratch_buffer_buffer = buffer::create_buffer(ctx, SCRATCH_BUFFER_SIZE, "per frame scratch buffer", vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
 
         
         Self {

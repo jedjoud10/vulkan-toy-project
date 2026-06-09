@@ -1,6 +1,8 @@
 use ash::vk;
 use gpu_allocator::vulkan::Allocation;
 
+use crate::{debug::DebugMarker, renderer::GraphicsContext};
+
 pub struct RenderTargetsData {    
     pub rendered_image: vk::Image,
     pub rendered_image_allocation: Option<Allocation>,
@@ -35,25 +37,32 @@ impl RenderTargetsData {
     
     pub unsafe fn recreate_rt_images_and_image_views_and_update_descriptor_sets(
         &mut self,
-        device: &ash::Device,
-        allocator: &mut gpu_allocator::vulkan::Allocator,
-        queue_family_index: u32,
+        ctx: &mut GraphicsContext,
         extent: vk::Extent2D,
-        binder: &Option<ash::ext::debug_utils::Device>,
         scaling_factor: u32,
     ) {
+        let GraphicsContext {
+            device,
+            queue_family_index,
+            allocator,
+            debug_marker,
+            ..
+        } = ctx;
+
+        let queue_family_index = *queue_family_index;
+
         log::debug!("recreate images & descriptor set stuff for per-frame-data...");
 
         let rendered_image_format = vk::Format::R16G16B16A16_SFLOAT;
-        let (rendered_image, rendered_image_allocation) = create_image(device, rendered_image_format, allocator, queue_family_index, extent, binder, scaling_factor, "Tmp Rendered Texture (pre-process)", None, vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED);
+        let (rendered_image, rendered_image_allocation) = create_image(device, rendered_image_format, allocator, queue_family_index, extent, debug_marker, scaling_factor, "Tmp Rendered Texture (pre-process)", None, vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED);
 
         let depth_image_format = vk::Format::D32_SFLOAT;
-        let (depth_image, depth_image_allocation) = create_image(device, depth_image_format, allocator, queue_family_index, extent, binder, scaling_factor, "Depth Texture", None, vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT);
+        let (depth_image, depth_image_allocation) = create_image(device, depth_image_format, allocator, queue_family_index, extent, debug_marker, scaling_factor, "Depth Texture", None, vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT);
 
         let scaled = vek::Vec2::new(extent.width, extent.height) / scaling_factor;
         let bloom_mip_levels = scaled.map(|x| u32::ilog2(x)).reduce_min() - 2;
 
-        let (bloom_image, bloom_image_allocation) = create_image(device, rendered_image_format, allocator, queue_family_index, extent, binder, scaling_factor, "Bloom Texture", Some(bloom_mip_levels), vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED);
+        let (bloom_image, bloom_image_allocation) = create_image(device, rendered_image_format, allocator, queue_family_index, extent, debug_marker, scaling_factor, "Bloom Texture", Some(bloom_mip_levels), vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED);
         
         self.rendered_image = rendered_image;
         self.rendered_image_allocation = Some(rendered_image_allocation);
@@ -172,7 +181,7 @@ unsafe fn create_image(
     allocator: &mut gpu_allocator::vulkan::Allocator,
     queue_family_index: u32,
     extent: vk::Extent2D,
-    binder: &Option<ash::ext::debug_utils::Device>,
+    debug_marker: &DebugMarker,
     scaling_factor: u32,
     name: &str,
     mip_levels: Option<u32>,
@@ -212,7 +221,7 @@ unsafe fn create_image(
         .bind_image_memory(image, image_allocation.memory(), image_allocation.offset())
         .unwrap();
 
-    crate::debug::set_object_name(image, binder, name);
+    crate::debug::set_object_name(image, debug_marker, name);
     (image, image_allocation)
 }
 

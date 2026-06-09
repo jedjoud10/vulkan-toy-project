@@ -2,7 +2,7 @@ use std::ptr::slice_from_raw_parts;
 
 use ash::vk;
 use gpu_allocator::vulkan::Allocator;
-use crate::buffer;
+use crate::{buffer, renderer::GraphicsContext};
 
 pub struct AccelerationStructureData {
     pub backing_buffer: buffer::Buffer,
@@ -21,11 +21,8 @@ impl AccelerationStructureData {
 
 
 pub unsafe fn create_blas(
-    device: &ash::Device,
+    ctx: &mut GraphicsContext,
     cmd: vk::CommandBuffer,
-    acceleration_structure_device: &ash::khr::acceleration_structure::Device,
-    mut allocator: &mut Allocator,
-    debug_marker: &Option<ash::ext::debug_utils::Device>,
     vertex_count: usize,
     vertex_offset: usize,
     vertex_stride: usize,
@@ -64,18 +61,18 @@ pub unsafe fn create_blas(
 
     let mut sizes = vk::AccelerationStructureBuildSizesInfoKHR::default();
 
-    acceleration_structure_device.get_acceleration_structure_build_sizes(vk::AccelerationStructureBuildTypeKHR::DEVICE, &acceleration_structure_build_geometry_info, &max_primitive_counts, &mut sizes);
+    ctx.acceleration_structure_device.get_acceleration_structure_build_sizes(vk::AccelerationStructureBuildTypeKHR::DEVICE, &acceleration_structure_build_geometry_info, &max_primitive_counts, &mut sizes);
     
 
-    let backing_buffer = buffer::create_buffer(&device, &mut allocator, sizes.acceleration_structure_size as usize, &debug_marker, "AS backing buffer", vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR);
-    let scratch_buffer = buffer::create_buffer(&device, &mut allocator, sizes.build_scratch_size as usize, &debug_marker, "AS scratch buffer", vk::BufferUsageFlags::empty());
+    let backing_buffer = buffer::create_buffer(ctx, sizes.acceleration_structure_size as usize, "AS backing buffer", vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR);
+    let scratch_buffer = buffer::create_buffer(ctx, sizes.build_scratch_size as usize, "AS scratch buffer", vk::BufferUsageFlags::empty());
 
     let create_info = vk::AccelerationStructureCreateInfoKHR::default()
         .buffer(backing_buffer.buffer)
         .size(sizes.acceleration_structure_size)
         .offset(0)
         .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL);
-    let acceleration_structure = acceleration_structure_device.create_acceleration_structure(&create_info, None).unwrap();
+    let acceleration_structure = ctx.acceleration_structure_device.create_acceleration_structure(&create_info, None).unwrap();
 
     let tmp = vk::AccelerationStructureBuildRangeInfoKHR::default()
         .first_vertex(0)
@@ -89,9 +86,9 @@ pub unsafe fn create_blas(
     acceleration_structure_build_geometry_info.dst_acceleration_structure = acceleration_structure;
 
     
-    acceleration_structure_device.cmd_build_acceleration_structures(cmd, &[acceleration_structure_build_geometry_info], build_range_infos);
+    ctx.acceleration_structure_device.cmd_build_acceleration_structures(cmd, &[acceleration_structure_build_geometry_info], build_range_infos);
     
-    let acceleration_structure_address = acceleration_structure_device.get_acceleration_structure_device_address(&vk::AccelerationStructureDeviceAddressInfoKHR::default().acceleration_structure(acceleration_structure));
+    let acceleration_structure_address = ctx.acceleration_structure_device.get_acceleration_structure_device_address(&vk::AccelerationStructureDeviceAddressInfoKHR::default().acceleration_structure(acceleration_structure));
     
     let identity_matrix = [
         1f32, 0f32, 0f32, 0f32,
@@ -127,11 +124,9 @@ impl TopLevelAccelerationStructure {
 pub const TLAS_MAX_INSTANCES: u32 = 1000;
 
 pub unsafe fn pre_create_tlas(
-    acceleration_structure_device: &ash::khr::acceleration_structure::Device,
-    device: &ash::Device,
-    mut allocator: &mut Allocator,
-    debug_marker: &Option<ash::ext::debug_utils::Device>,
-) -> TopLevelAccelerationStructure {    
+    ctx: &mut GraphicsContext,
+) -> TopLevelAccelerationStructure {
+
     let instances = vk::AccelerationStructureGeometryInstancesDataKHR::default()
         .array_of_pointers(false);
     let geometry_tmp = vk::AccelerationStructureGeometryDataKHR { instances: instances };
@@ -149,10 +144,10 @@ pub unsafe fn pre_create_tlas(
     let max_primitive_counts = [TLAS_MAX_INSTANCES];
 
     let mut sizes = vk::AccelerationStructureBuildSizesInfoKHR::default();
-    acceleration_structure_device.get_acceleration_structure_build_sizes(vk::AccelerationStructureBuildTypeKHR::DEVICE, &acceleration_structure_build_geometry_info, &max_primitive_counts, &mut sizes);
+    ctx.acceleration_structure_device.get_acceleration_structure_build_sizes(vk::AccelerationStructureBuildTypeKHR::DEVICE, &acceleration_structure_build_geometry_info, &max_primitive_counts, &mut sizes);
 
-    let backing_buffer = buffer::create_buffer(&device, &mut allocator, sizes.acceleration_structure_size as usize, &debug_marker, "TLAS backing buffer", vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR);
-    let scratch_buffer = buffer::create_buffer(&device, &mut allocator, sizes.build_scratch_size as usize, &debug_marker, "TLAS scratch buffer", vk::BufferUsageFlags::empty());
+    let backing_buffer = buffer::create_buffer(ctx, sizes.acceleration_structure_size as usize, "TLAS backing buffer", vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR);
+    let scratch_buffer = buffer::create_buffer(ctx, sizes.build_scratch_size as usize, "TLAS scratch buffer", vk::BufferUsageFlags::empty());
 
     let create_info = vk::AccelerationStructureCreateInfoKHR::default()
         .buffer(backing_buffer.buffer)
@@ -160,7 +155,7 @@ pub unsafe fn pre_create_tlas(
         .offset(0)
         .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL);
     
-    let acceleration_structure = acceleration_structure_device.create_acceleration_structure(&create_info, None).unwrap();
+    let acceleration_structure = ctx.acceleration_structure_device.create_acceleration_structure(&create_info, None).unwrap();
 
     TopLevelAccelerationStructure {
         data: Some(AccelerationStructureData { backing_buffer, scratch_buffer, acceleration_structure }),

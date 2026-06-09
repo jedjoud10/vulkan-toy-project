@@ -1,5 +1,4 @@
 #![allow(unsafe_op_in_unsafe_fn)]
-#![allow(unused)]
 
 
 mod debug;
@@ -25,6 +24,7 @@ mod voxel;
 mod model;
 mod ray_tracing;
 mod material;
+mod texture;
 
 use clap::Parser;
 use std::ops::ControlFlow;

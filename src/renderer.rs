@@ -2,19 +2,11 @@ use ash::vk;
 use bytemuck::Pod;
 use bytemuck::Zeroable;
 use bytesize::ByteSize;
-use gpu_allocator::vulkan::Allocation;
 use include_dir::Dir;
 use include_dir::include_dir;
-use rand::RngExt;
-use rand::SeedableRng;
-use rayon::iter::IndexedParallelIterator;
 use rayon::iter::IntoParallelIterator;
-use rayon::iter::IntoParallelRefIterator;
-use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
 use smallvec::SmallVec;
-use vek::Clamp;
-use vek::num_integer::Integer;
 use crate::input::Button;
 use crate::input::Input;
 use crate::material::Material;
@@ -23,8 +15,8 @@ use crate::movement::Movement;
 use crate::per_frame_data;
 use crate::ray_tracing;
 use crate::samplers;
+use crate::tesselation;
 use crate::voxel;
-use crate::voxel::VoxelTexture3D;
 use winit::event::MouseButton;
 use std::collections::HashMap;
 use std::ops::ControlFlow;
@@ -81,6 +73,11 @@ const VERTEX_ATTRIBUTE_DESCRIPTIONS: &'static [vk::VertexInputAttributeDescripti
     format: vk::Format::R32G32B32_SFLOAT,
     location: 1,
     offset: 0
+}, vk::VertexInputAttributeDescription {
+    binding: 2,
+    format: vk::Format::R32G32_SFLOAT,
+    location: 2,
+    offset: 0
 }];
 const VERTEX_BINDING_DESCRIPTIONS: &'static [vk::VertexInputBindingDescription] = &[vk::VertexInputBindingDescription {
     binding: 0,
@@ -89,6 +86,10 @@ const VERTEX_BINDING_DESCRIPTIONS: &'static [vk::VertexInputBindingDescription] 
 }, vk::VertexInputBindingDescription {
     binding: 1,
     stride: size_of::<vek::Vec3<f32>>() as u32,
+    input_rate: vk::VertexInputRate::VERTEX,
+}, vk::VertexInputBindingDescription {
+    binding: 2,
+    stride: size_of::<vek::Vec2<f32>>() as u32,
     input_rate: vk::VertexInputRate::VERTEX,
 }];
 
@@ -105,6 +106,22 @@ const VERTEX_BINDING_DESCRIPTIONS_CHUNK: &'static [vk::VertexInputBindingDescrip
     stride: 4 * 3 as u32,
     input_rate: vk::VertexInputRate::VERTEX,
 }];
+
+pub struct GraphicsContext<'a> {
+    pub device: &'a ash::Device,
+    pub pool: vk::CommandPool,
+    pub queue: vk::Queue,
+    pub queue_family_index: u32,
+    pub mesh_shader_device: &'a ash::ext::mesh_shader::Device,
+    pub extended_dynamic_state3_device: &'a ash::ext::extended_dynamic_state3::Device,
+    pub acceleration_structure_device: &'a ash::khr::acceleration_structure::Device,
+    pub host_image_copy_device: &'a ash::ext::host_image_copy::Device,
+    pub allocator: &'a mut gpu_allocator::vulkan::Allocator,
+    pub debug_marker: &'a debug::DebugMarker,
+    pub main_descriptor_set_layout: vk::DescriptorSetLayout,
+    pub main_pipeline_layout: vk::PipelineLayout,
+    pub descriptor_pool: vk::DescriptorPool,
+}
 
 
 pub struct InternalApp {
@@ -285,6 +302,11 @@ impl InternalApp {
         );
         log::info!("created device and fetched main queue");
 
+        let mesh_shader_device = ash::ext::mesh_shader::Device::new(&instance, &device);
+        let extended_dynamic_state3_device = ash::ext::extended_dynamic_state3::Device::new(&instance, &device);
+        let acceleration_structure_device = ash::khr::acceleration_structure::Device::new(&instance, &device);
+        let host_image_copy_device = ash::ext::host_image_copy::Device::new(&instance, &device);
+
         let debug_marker = debug_messenger.is_some().then(|| {
             let device = debug::create_debug_marker(&instance, &device);
             log::info!("created debug marker object names binder");
@@ -341,7 +363,6 @@ impl InternalApp {
 
         let main_pipeline_layout = pipeline::create_bindless_pipeline_layout(&device, &debug_marker, main_descriptor_set_layout);
         log::info!("created bindless pipeline layout");
-        
 
         let mut graphics_pipelines = HashMap::<&'static str, pipeline::GenericGraphicsPipeline>::new();
         let mut compute_pipelines = HashMap::<&'static str, pipeline::GenericComputePipeline>::new();
@@ -434,14 +455,30 @@ impl InternalApp {
         );
         log::info!("created skybox");
 
+        let mut ctx = GraphicsContext {
+            device: &device,
+            pool,
+            queue,
+            queue_family_index,
+            mesh_shader_device: &mesh_shader_device,
+            extended_dynamic_state3_device: &extended_dynamic_state3_device,
+            acceleration_structure_device: &acceleration_structure_device,
+            host_image_copy_device: &host_image_copy_device,
+            allocator: &mut allocator,
+            debug_marker: &debug_marker,
+            main_descriptor_set_layout,
+            main_pipeline_layout,
+            descriptor_pool,
+        };
+
         let frames_in_flight = (0..per_frame_data::FRAMES_IN_FLIGHT).into_iter().map(|_| {
-            PerFrameData::create_per_frame_data(&device, pool, descriptor_pool, &mut allocator, main_descriptor_set_layout, &debug_marker)
+            PerFrameData::create_per_frame_data(&mut ctx)
         }).collect::<SmallVec<[PerFrameData; per_frame_data::FRAMES_IN_FLIGHT]>>();
         log::info!("created frames in flight structures");
 
         const NUM_LIGHTS: usize = 1;
 
-        let lights_buffer = buffer::create_buffer(&device, &mut allocator, size_of::<vek::Vec4<f32>>() * NUM_LIGHTS, &debug_marker, "lights buffer", vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
+        let lights_buffer = buffer::create_buffer(&mut ctx, size_of::<vek::Vec4<f32>>() * NUM_LIGHTS, "lights buffer", vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
         let mut lights = Vec::<vek::Vec4<f32>>::new();
 
         for _i in 0..NUM_LIGHTS {
@@ -453,11 +490,11 @@ impl InternalApp {
 
         let velocities = vec![vek::Vec4::<f32>::zero(); NUM_LIGHTS];
 
-        buffer::write_to_buffer(&device, pool, queue, lights_buffer.buffer, &mut allocator, bytemuck::cast_slice(lights.as_slice()));
+        buffer::write_to_buffer(&mut ctx, lights_buffer.buffer, bytemuck::cast_slice(lights.as_slice()));
         log::info!("created lights buffer");
 
         let mut const_descriptor_sets = RenderTargetsData::create_constant_descriptor_sets();
-        const_descriptor_sets.recreate_rt_images_and_image_views_and_update_descriptor_sets(&device, &mut allocator, queue_family_index, extent, &debug_marker, args.downscale_factor);
+        const_descriptor_sets.recreate_rt_images_and_image_views_and_update_descriptor_sets(&mut ctx, extent, args.downscale_factor);
         crate::render_targets_data::transfer_layout_for_images(&device, queue_family_index, &const_descriptor_sets, pool, queue);
         log::info!("created constant descriptor sets");
 
@@ -484,43 +521,33 @@ impl InternalApp {
             }
         }
 
-        let multiple_chunks = voxel::MultipleChunks::create(&device, &mut allocator, &debug_marker, queue, pool, queue_family_index, index);
-
-
-        // extension devices
-        let mesh_shader_device = ash::ext::mesh_shader::Device::new(&instance, &device);
-        let extended_dynamic_state3_device = ash::ext::extended_dynamic_state3::Device::new(&instance, &device);
-        let acceleration_structure_device = ash::khr::acceleration_structure::Device::new(&instance, &device);
-        let host_image_copy_device = ash::ext::host_image_copy::Device::new(&instance, &device);
+        let multiple_chunks = voxel::MultipleChunks::create(&mut ctx, index);
         
         let models = vec![
-            model::Model::new(vek::Vec3::new(0f32, 20f32, 0f32), include_bytes!("../models/sphere.obj"), &device, &acceleration_structure_device, &mut allocator, &debug_marker, pool, queue),
-            model::Model::new(vek::Vec3::new(10f32, 20f32, 0f32), include_bytes!("../models/not_so_sphere.obj"), &device, &acceleration_structure_device, &mut allocator, &debug_marker, pool, queue),
-            model::Model::new(vek::Vec3::new(-10f32, 20f32, 0f32), include_bytes!("../models/modular_industrial_pipes_01_1k.obj"), &device, &acceleration_structure_device, &mut allocator, &debug_marker, pool, queue),
-            model::Model::new(vek::Vec3::new(-30f32, 20f32, 0f32), include_bytes!("../models/namaqualand_boulder_02_1k.obj"), &device, &acceleration_structure_device, &mut allocator, &debug_marker, pool, queue),
-            //model::Model::new(vek::Vec3::new(3f32, 20f32, 0f32), include_bytes!("../models/bunny_subdivided.obj"), &device, &acceleration_structure_device, &mut allocator, &debug_marker, pool, queue)
+            model::Model::new(vek::Vec3::new(0f32, 20f32, 0f32), include_bytes!("../models/sphere.obj"), &mut ctx),
+            model::Model::new(vek::Vec3::new(10f32, 20f32, 0f32), include_bytes!("../models/not_so_sphere.obj"), &mut ctx),
+            model::Model::new(vek::Vec3::new(-10f32, 20f32, 0f32), include_bytes!("../models/modular_industrial_pipes_01_1k.obj"), &mut ctx),
+            model::Model::new(vek::Vec3::new(-30f32, 20f32, 0f32), include_bytes!("../models/namaqualand_boulder_02_1k.obj"), &mut ctx),
         ];
 
-        let tlas = ray_tracing::pre_create_tlas(&acceleration_structure_device, &device, &mut allocator, &debug_marker);
+        let tlas = ray_tracing::pre_create_tlas(&mut ctx);
 
-        let tesselation_buffer = crate::tesselation::precompute_tesselation_buffer(&device, &mut allocator, &debug_marker, pool, queue);
-        let debug_text_buffer = buffer::create_buffer(&device, &mut allocator, 1024, &debug_marker, "debug text", vk::BufferUsageFlags::STORAGE_BUFFER);
+        let tesselation_buffer = tesselation::precompute_tesselation_buffer(&mut ctx);
+        let debug_text_buffer = buffer::create_buffer(&mut ctx, 1024, "debug text", vk::BufferUsageFlags::STORAGE_BUFFER);
 
         let render_finished_semaphores: SmallVec<[vk::Semaphore; swapchain::SWAPCHAIN_IMAGES]> = (0..swapchain::SWAPCHAIN_IMAGES).into_iter().map(|_| {
             device.create_semaphore(&Default::default(), None).unwrap()
         }).collect::<SmallVec<[vk::Semaphore; swapchain::SWAPCHAIN_IMAGES]>>();
 
-        let uniform_buffer = crate::buffer::create_buffer(
-            &device,
-            &mut allocator,
+        let uniform_buffer = buffer::create_buffer(
+            &mut ctx,
             size_of::<pipeline::PerFrameUniformData>(),
-            &debug_marker,
             "per frame uniform buffer",
             vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST
         );
 
         let materials = vec![
-            Material::new(include_bytes!("../materials/metal/metal_0077_color_1k.jpg"), &device, &host_image_copy_device, &mut allocator, &debug_marker, queue, pool, queue_family_index)
+            Material::new(&mut ctx, include_bytes!("../materials/metal/metal_0077_color_1k.jpg"))
         ];
 
         Self {
@@ -586,10 +613,26 @@ impl InternalApp {
     }
 
     pub unsafe fn click(&mut self, add: bool) {
-        let position = (self.movement.forward() * 5.0f32 + self.movement.position);
+        let position = self.movement.forward() * 5.0f32 + self.movement.position;
+
+        let mut ctx = GraphicsContext {
+            device: &self.device,
+            pool: self.pool,
+            queue: self.queue,
+            queue_family_index: self.queue_family_index,
+            mesh_shader_device: &self.mesh_shader_device,
+            extended_dynamic_state3_device: &self.extended_dynamic_state3_device,
+            acceleration_structure_device: &self.acceleration_structure_device,
+            host_image_copy_device: &self.host_image_copy_device,
+            allocator: &mut self.allocator,
+            debug_marker: &self.debug_marker,
+            main_descriptor_set_layout: self.main_descriptor_set_layout,
+            main_pipeline_layout: self.main_pipeline_layout,
+            descriptor_pool: self.descriptor_pool,
+        };
 
         if add {
-            let new_model = model::Model::new(position, include_bytes!("../models/sphere.obj"), &self.device, &self.acceleration_structure_device, &mut self.allocator, &self.debug_marker, self.pool, self.queue);
+            let new_model = model::Model::new(position, include_bytes!("../models/sphere.obj"), &mut ctx);
             self.models.push(new_model);
         }
     }
@@ -630,7 +673,24 @@ impl InternalApp {
         self.swapchain = swapchain;
 
         self.const_descriptor_sets.destroy_rt_images_and_image_views(&self.device, &mut self.allocator);
-        self.const_descriptor_sets.recreate_rt_images_and_image_views_and_update_descriptor_sets(&self.device, &mut self.allocator, self.queue_family_index, extent, &self.debug_marker, self.args.downscale_factor);
+
+        let mut ctx = GraphicsContext {
+            device: &self.device,
+            pool: self.pool,
+            queue: self.queue,
+            queue_family_index: self.queue_family_index,
+            mesh_shader_device: &self.mesh_shader_device,
+            extended_dynamic_state3_device: &self.extended_dynamic_state3_device,
+            acceleration_structure_device: &self.acceleration_structure_device,
+            host_image_copy_device: &self.host_image_copy_device,
+            allocator: &mut self.allocator,
+            debug_marker: &self.debug_marker,
+            main_descriptor_set_layout: self.main_descriptor_set_layout,
+            descriptor_pool: self.descriptor_pool,
+            main_pipeline_layout: self.main_pipeline_layout,
+        };
+
+        self.const_descriptor_sets.recreate_rt_images_and_image_views_and_update_descriptor_sets(&mut ctx, extent, self.args.downscale_factor);
         crate::render_targets_data::transfer_layout_for_images(&self.device, self.queue_family_index, &self.const_descriptor_sets, self.pool, self.queue);
 
 
@@ -641,7 +701,6 @@ impl InternalApp {
 
         for render_finished_semaphore in self.render_finished_semaphores.iter_mut() {
             self.device.destroy_semaphore(*render_finished_semaphore, None);
-            let create_info = vk::SemaphoreCreateInfo::default();
             *render_finished_semaphore = self.device.create_semaphore(&Default::default(), None).unwrap();
         }
 
@@ -795,8 +854,7 @@ impl InternalApp {
             index_buffer,
             vertex_counter,
             index_counter,
-            indirect_draw_buffer,
-            total_num_chunks,
+            ..
         } = &mut self.multiple_chunks;
 
         // create bindless descriptor write for storage images        
@@ -908,7 +966,7 @@ impl InternalApp {
         for material in self.materials.iter_mut() {
             material.albedo_index = sampled_image_infos.len();
             sampled_image_infos.push(vk::DescriptorImageInfo::default()
-                .image_view(material.albedo_image_view)
+                .image_view(material.albedo_texture.image_view)
                 .image_layout(vk::ImageLayout::GENERAL));
         }
 
@@ -1164,6 +1222,22 @@ impl InternalApp {
         self.device.cmd_dispatch(cmd, skybox::AMBIENT_SKYBOX_RESOLUTION, skybox::AMBIENT_SKYBOX_RESOLUTION, 6);
 
         if !*built {
+            let mut ctx = GraphicsContext {
+                device: &self.device,
+                pool: self.pool,
+                queue: self.queue,
+                queue_family_index: self.queue_family_index,
+                mesh_shader_device: &self.mesh_shader_device,
+                extended_dynamic_state3_device: &self.extended_dynamic_state3_device,
+                acceleration_structure_device: &self.acceleration_structure_device,
+                host_image_copy_device: &self.host_image_copy_device,
+                allocator: &mut self.allocator,
+                debug_marker: &self.debug_marker,
+                main_descriptor_set_layout: self.main_descriptor_set_layout,
+                descriptor_pool: self.descriptor_pool,
+                main_pipeline_layout: self.main_pipeline_layout,
+            };
+
             self.multiple_chunks.do_sum_shi(
                 *chunk_index,
                 *chunk_offset,
@@ -1173,7 +1247,7 @@ impl InternalApp {
                 self.compute_pipelines[COMPUTE_SURFACE_SPV][VOXELIZE_SURFACE_ENTRY_POINT],
                 self.queue_family_index
             );
-            let (data, instance) = self.multiple_chunks.create_blas(*chunk_index, &self.device, cmd, &self.acceleration_structure_device, &mut self.allocator, &self.debug_marker);
+            let (data, instance) = self.multiple_chunks.create_blas(&mut ctx, *chunk_index, cmd);
             accel_structure.replace(data);
             *built = true;
             self.static_instances.push(instance);
@@ -1628,7 +1702,7 @@ impl InternalApp {
         }
         log::info!("destroyed materials");
 
-        self.multiple_chunks.destroy(&self.acceleration_structure_device, &self.device, &mut self.allocator);
+        self.multiple_chunks.destroy(&self.device, &mut self.allocator);
         for chunk in self.chunks {
             chunk.destroy(&self.acceleration_structure_device, &self.device, &mut self.allocator);
         }

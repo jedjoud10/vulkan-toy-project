@@ -1,6 +1,7 @@
 use ash::vk;
 use bytemuck::{Pod, Zeroable};
-use gpu_allocator::vulkan::Allocator;
+
+use crate::renderer::GraphicsContext;
 
 struct TesselationLevel {
     weights: Vec<vek::Vec3<f32>>,
@@ -10,11 +11,7 @@ struct TesselationLevel {
 
 
 pub unsafe fn precompute_tesselation_buffer(
-    device: &ash::Device,
-    allocator: &mut Allocator,
-    binder: &Option<ash::ext::debug_utils::Device>,
-    pool: vk::CommandPool,
-    queue: vk::Queue,
+    ctx: &mut GraphicsContext,
 ) -> crate::buffer::Buffer {
     let depths = 4;
     let mut levels = Vec::<TesselationLevel>::new();
@@ -92,10 +89,10 @@ pub unsafe fn precompute_tesselation_buffer(
     //dbg!(&headers);
 
 
-    let buffer = crate::buffer::create_buffer(device, allocator, raw_bytes.len() + headers_size as usize, binder, "tesselation geometry buffer", vk::BufferUsageFlags::STORAGE_BUFFER);
+    let buffer = crate::buffer::create_buffer(ctx, raw_bytes.len() + headers_size as usize, "tesselation geometry buffer", vk::BufferUsageFlags::STORAGE_BUFFER);
 
-    crate::buffer::write_to_buffer_with_offset(device, pool, queue, buffer.buffer, allocator, bytemuck::cast_slice(&headers), 0);
-    crate::buffer::write_to_buffer_with_offset(device, pool, queue, buffer.buffer, allocator, &raw_bytes, headers_size as u64);
+    crate::buffer::write_to_buffer_with_offset(ctx, buffer.buffer, bytemuck::cast_slice(&headers), 0);
+    crate::buffer::write_to_buffer_with_offset(ctx, buffer.buffer, &raw_bytes, headers_size as u64);
     
     
     buffer
