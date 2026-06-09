@@ -6,26 +6,38 @@ use crate::{buffer, debug, material::Material, others, ray_tracing};
 
 // pretty inefficient as there's no batching or culling of any kind
 pub struct Model {
-    vertex_buffer: buffer::Buffer,
+    vertex_positions_buffer: buffer::Buffer,
+    vertex_normals_buffer: buffer::Buffer,
     index_buffer: buffer::Buffer,
     index_count: usize,
     object_to_world: vek::Mat4<f32>,
     blas: ray_tracing::AccelerationStructureData,
     pub instance: vk::AccelerationStructureInstanceKHR,
+    position: vek::Vec3<f32>,
 }
 
 impl Model {
-    pub unsafe fn new(obj_model_bytes: &[u8], device: &ash::Device, acceleration_structure_device: &ash::khr::acceleration_structure::Device, mut allocator: &mut Allocator, debug_marker: &debug::DebugMarker, pool: vk::CommandPool, queue: vk::Queue) -> Self {
-        let obj = obj::load_obj::<obj::Position, &[u8], u32>(obj_model_bytes).unwrap();
+    pub unsafe fn new(position: vek::Vec3<f32>, obj_model_bytes: &[u8], device: &ash::Device, acceleration_structure_device: &ash::khr::acceleration_structure::Device, mut allocator: &mut Allocator, debug_marker: &debug::DebugMarker, pool: vk::CommandPool, queue: vk::Queue) -> Self {
+        let obj = obj::load_obj::<obj::Vertex, &[u8], u32>(obj_model_bytes).unwrap();
 
-        let vertices: Vec<vek::Vec3<f32>> = obj.vertices.into_iter().map(|x: obj::Position| vek::Vec3::<f32>::from(x.position)).collect::<Vec<_>>();
+        let mut positions = Vec::<vek::Vec3<f32>>::new();
+        let mut normals = Vec::<vek::Vec3<f32>>::new();
+
+        let vertex_count = obj.vertices.len();
+        for vertex in obj.vertices {
+            positions.push( vek::Vec3::<f32>::from(vertex.position));
+            normals.push( vek::Vec3::<f32>::from(vertex.normal));
+        }
+
         let mut indices: Vec<u32> = obj.indices;
 
-        meshopt::optimize_vertex_cache_in_place(&mut indices, vertices.len());
+        meshopt::optimize_vertex_cache_in_place(&mut indices, vertex_count);
 
-        let vertex_count = vertices.len();
-        let vertex_buffer = buffer::create_buffer(&device, &mut allocator, size_of::<vek::Vec3::<f32>>() * vertices.len(), &debug_marker, "vertex buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
-        buffer::write_to_buffer(&device, pool, queue, vertex_buffer.buffer, &mut allocator, bytemuck::cast_slice(vertices.as_slice()));
+        let vertex_positions_buffer = buffer::create_buffer(&device, &mut allocator, size_of::<vek::Vec3::<f32>>() * vertex_count, &debug_marker, "vertex positions buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
+        buffer::write_to_buffer(&device, pool, queue, vertex_positions_buffer.buffer, &mut allocator, bytemuck::cast_slice(positions.as_slice()));
+
+        let vertex_normals_buffer = buffer::create_buffer(&device, &mut allocator, size_of::<vek::Vec3::<f32>>() * vertex_count, &debug_marker, "vertex normals buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
+        buffer::write_to_buffer(&device, pool, queue, vertex_normals_buffer.buffer, &mut allocator, bytemuck::cast_slice(normals.as_slice()));
 
         let index_count = indices.len();
         let index_buffer = buffer::create_buffer(&device, &mut allocator, size_of::<u32>()  * indices.len(), &debug_marker, "index buffer", vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
@@ -52,7 +64,7 @@ impl Model {
             index_count,
             0,
             size_of::<u32>(),
-            &vertex_buffer,
+            &vertex_positions_buffer,
             &index_buffer
         );
 
@@ -68,19 +80,22 @@ impl Model {
         device.device_wait_idle().unwrap();
 
         Self {
-            vertex_buffer,
+            vertex_positions_buffer,
+            vertex_normals_buffer,
             index_buffer,
             index_count,
             object_to_world: vek::Mat4::identity(),
             blas,
             instance,
+            position,
         }
     }
 
     pub fn update(&mut self, elapsed: f32, movement: &crate::movement::Movement) {
         //let position = movement.position + movement.forward() * 2f32;
-        let position = vek::Vec3::new(0f32, 10f32, 0f32); 
-        let matrix = vek::Mat4::<f32>::translation_3d(position);
+        let scale = 3f32;
+
+        let matrix = vek::Mat4::<f32>::identity().scaled_3d(scale).translated_3d(self.position);
 
         self.object_to_world = matrix;
 
@@ -104,7 +119,7 @@ impl Model {
             albedo_sampled_image_index: material.albedo_index,
         };
 
-        device.cmd_bind_vertex_buffers(cmd, 0, &[self.vertex_buffer.buffer], &[0]);
+        device.cmd_bind_vertex_buffers(cmd, 0, &[self.vertex_positions_buffer.buffer, self.vertex_normals_buffer.buffer], &[0, 0]);
         device.cmd_bind_index_buffer(cmd, self.index_buffer.buffer, 0, vk::IndexType::UINT32);
         device.cmd_push_constants(cmd, pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytes_of(&pc));
         device.cmd_draw_indexed(cmd, self.index_count as u32, 1, 0, 0, 0);
@@ -112,7 +127,8 @@ impl Model {
 
     pub unsafe fn destroy(self, acceleration_structure_device: &ash::khr::acceleration_structure::Device, device: &ash::Device, mut allocator: &mut Allocator) {
         self.index_buffer.destroy(device, allocator);
-        self.vertex_buffer.destroy(device, allocator);
+        self.vertex_positions_buffer.destroy(device, allocator);
+        self.vertex_normals_buffer.destroy(device, allocator);
         self.blas.destroy(acceleration_structure_device, device, allocator);
     }
 }

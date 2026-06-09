@@ -76,9 +76,18 @@ const VERTEX_ATTRIBUTE_DESCRIPTIONS: &'static [vk::VertexInputAttributeDescripti
     format: vk::Format::R32G32B32_SFLOAT,
     location: 0,
     offset: 0
+}, vk::VertexInputAttributeDescription {
+    binding: 1,
+    format: vk::Format::R32G32B32_SFLOAT,
+    location: 1,
+    offset: 0
 }];
 const VERTEX_BINDING_DESCRIPTIONS: &'static [vk::VertexInputBindingDescription] = &[vk::VertexInputBindingDescription {
     binding: 0,
+    stride: size_of::<vek::Vec3<f32>>() as u32,
+    input_rate: vk::VertexInputRate::VERTEX,
+}, vk::VertexInputBindingDescription {
+    binding: 1,
     stride: size_of::<vek::Vec3<f32>>() as u32,
     input_rate: vk::VertexInputRate::VERTEX,
 }];
@@ -485,8 +494,11 @@ impl InternalApp {
         let host_image_copy_device = ash::ext::host_image_copy::Device::new(&instance, &device);
         
         let models = vec![
-            model::Model::new(include_bytes!("../models/modular_industrial_pipes_01_1k.obj"), &device, &acceleration_structure_device, &mut allocator, &debug_marker, pool, queue),
-            //model::Model::new(include_bytes!("../models/bunny_subdivided.obj"), &device, &acceleration_structure_device, &mut allocator, &debug_marker, pool, queue)
+            model::Model::new(vek::Vec3::new(0f32, 20f32, 0f32), include_bytes!("../models/sphere.obj"), &device, &acceleration_structure_device, &mut allocator, &debug_marker, pool, queue),
+            model::Model::new(vek::Vec3::new(10f32, 20f32, 0f32), include_bytes!("../models/not_so_sphere.obj"), &device, &acceleration_structure_device, &mut allocator, &debug_marker, pool, queue),
+            model::Model::new(vek::Vec3::new(-10f32, 20f32, 0f32), include_bytes!("../models/modular_industrial_pipes_01_1k.obj"), &device, &acceleration_structure_device, &mut allocator, &debug_marker, pool, queue),
+            model::Model::new(vek::Vec3::new(-30f32, 20f32, 0f32), include_bytes!("../models/namaqualand_boulder_02_1k.obj"), &device, &acceleration_structure_device, &mut allocator, &debug_marker, pool, queue),
+            //model::Model::new(vek::Vec3::new(3f32, 20f32, 0f32), include_bytes!("../models/bunny_subdivided.obj"), &device, &acceleration_structure_device, &mut allocator, &debug_marker, pool, queue)
         ];
 
         let tlas = ray_tracing::pre_create_tlas(&acceleration_structure_device, &device, &mut allocator, &debug_marker);
@@ -574,12 +586,12 @@ impl InternalApp {
     }
 
     pub unsafe fn click(&mut self, add: bool) {
-        let position = (self.movement.forward() * 5.0f32 + self.movement.position).floor().as_::<u32>();
+        let position = (self.movement.forward() * 5.0f32 + self.movement.position);
 
-        /*
-        self.svo.set(position, add);
-        self.svo.rebuild(&self.device, self.pool, self.queue, &mut self.allocator);
-        */
+        if add {
+            let new_model = model::Model::new(position, include_bytes!("../models/sphere.obj"), &self.device, &self.acceleration_structure_device, &mut self.allocator, &self.debug_marker, self.pool, self.queue);
+            self.models.push(new_model);
+        }
     }
 
     pub unsafe fn recreate_swapchain(&mut self) {

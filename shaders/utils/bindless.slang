@@ -83,13 +83,11 @@ UniformThing load_per_frame_uniforms() {
 }
 
 float hw_trace_shadow(float3 world) {
-    bool hit = false;
-
     RayDesc desc;
     desc.Origin = world;
     desc.Direction = load_per_frame_uniforms().sun.xyz;
     desc.TMax = 100;
-    desc.TMin = 0.001;
+    desc.TMin = 0.01;
 
     RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_FORCE_OPAQUE> sq;
     let flags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_FORCE_OPAQUE;

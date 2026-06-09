@@ -9,11 +9,13 @@ struct PushConstants {
 }
 
 struct VertexInput {
-    float3 object;
+    float3 vertex;
+    float3 normal;
 };
 
 struct VertexOutput {
     float3 world_pos;
+    float3 world_normal;
     float4 sv_position : SV_Position;
 };
 
@@ -23,7 +25,9 @@ VertexOutput vert_main(VertexInput input, uniform PushConstants pc) {
 
     let uniforms = load_per_frame_uniforms();
 
-    float4 world_position = mul(float4(input.object, 1), pc.object_to_world);
+    float4 world_position = mul(float4(input.vertex, 1), pc.object_to_world);
+    float4 world_normal = mul(float4(input.normal, 0), pc.object_to_world);
+    
 
 
     float4 t = mul(world_position, uniforms.view_projection_matrix);
@@ -32,6 +36,7 @@ VertexOutput vert_main(VertexInput input, uniform PushConstants pc) {
 
     output.sv_position = t;
     output.world_pos = world_position.xyz;
+    output.world_normal = world_normal.xyz;
     return output;
 }
 
@@ -40,9 +45,71 @@ float4 frag_main(VertexOutput in_vert, uniform PushConstants pc) : SV_Target {
     let uniforms = load_per_frame_uniforms();
     
     float3 world = in_vert.world_pos;
+    float3 normal = normalize(in_vert.world_normal);
+    //float3 normal = -normalize(cross(ddy(in_vert.world_pos), ddx(in_vert.world_pos)));
+    float3 view = -normalize(in_vert.world_pos - uniforms.position.xyz);    
+
+    RayDesc desc;
+    desc.Origin = world;
+    desc.Direction = reflect(-view, normalize(normal));
+    desc.TMax = 100;
+    desc.TMin = 0.001;
+
+    RayQuery<RAY_FLAG_CULL_BACK_FACING_TRIANGLES | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_FORCE_OPAQUE> sq;
+    let flags = RAY_FLAG_CULL_BACK_FACING_TRIANGLES | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_FORCE_OPAQUE;
+
+    sq.TraceRayInline(acceleration_structures[0], flags, 0xFF, desc);
+    
+    while (sq.Proceed()) {
+        if(sq.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
+            sq.CommitNonOpaqueTriangleHit();  // forcing to be opaque
+    }
+
+    if (sq.CommittedStatus() == COMMITTED_NOTHING) {
+        return float4(sample_skybox_and_clouds(sq.WorldRayOrigin(), sq.WorldRayDirection()), 1.0);
+    }
+
+    world = sq.WorldRayOrigin() + sq.WorldRayDirection() * sq.CommittedRayT();
+
+    // https://www.khronos.org/blog/introducing-vulkan-ray-tracing-position-fetch-extension
+    float3[3] tris = sq.CommittedGetIntersectionTriangleVertexPositions();
+
+    normal = normalize(cross(tris[1] - tris[0], tris[2] - tris[0]));
+    //normal = normalize(cross(ddy(world), ddx(world)));
+    view = -normalize(world - uniforms.position.xyz);
+    
+    float3 diffuse = sample_triplanar_albedo(pc.albedo_sampled_image_index, world, normal);
+    float roughness = 0.8;
+    float metallic = 0.2;
+    float ao = hw_ao(world, normal);
+    float shadow = (1.0-clouds(uniforms.sun.xyz, world).a) * hw_trace_shadow(world); 
+
+    float3 ray_pos = uniforms.position.xyz;
+
+    PbrSurfaceData pbr_surface_data = PbrSurfaceData(world, diffuse, normal, roughness, metallic, pow(ao, 1.4), shadow);
+    CameraData camera_data = CameraData(view);
+
+    // approximate sun color based on height
+    float3 sun = uniforms.sun.xyz;
+    float3 sun_colour = sun_colour(sun.xyz);
+    SunData sun_data = SunData(sun.xyz, sun.y > 0 ? (3.2 * sun_colour) : 0);
+
+    if (uniforms.debug_type == 0) {
+        return float4(lighting(pbr_surface_data, camera_data, sun_data), 1);
+    }
+
+    return float4(normal, 1);
+}
+
+/*
+[shader("fragment")]
+float4 frag_main(VertexOutput in_vert, uniform PushConstants pc) : SV_Target {
+    let uniforms = load_per_frame_uniforms();
+    
+    float3 world = in_vert.world_pos;
     float3 normal = -normalize(cross(ddy(in_vert.world_pos), ddx(in_vert.world_pos)));
     float3 view = -normalize(in_vert.world_pos - uniforms.position.xyz);
-    
+
     float3 diffuse = sample_triplanar_albedo(pc.albedo_sampled_image_index, world, normal);
     float roughness = 0.8;
     float metallic = 0.2;
@@ -65,3 +132,4 @@ float4 frag_main(VertexOutput in_vert, uniform PushConstants pc) : SV_Target {
 
     return float4(1);
 }
+*/

@@ -47,6 +47,8 @@ pub unsafe fn create_device_and_queue(
         .descriptor_binding_acceleration_structure_update_after_bind(true);
     let mut ray_query_features = vk::PhysicalDeviceRayQueryFeaturesKHR::default()
         .ray_query(true);
+    let mut ray_tracing_position_fetch = vk::PhysicalDeviceRayTracingPositionFetchFeaturesKHR::default()
+        .ray_tracing_position_fetch(true);
     let device_features_base = vk::PhysicalDeviceFeatures::default()
         .multi_draw_indirect(true)
         .shader_int16(true)
@@ -88,28 +90,33 @@ pub unsafe fn create_device_and_queue(
 
     let device_extension_names = [
         ash::khr::swapchain::NAME,
+        
+        // host / device
+        ash::ext::host_query_reset::NAME,
+        ash::ext::host_image_copy::NAME,
+        ash::khr::buffer_device_address::NAME,
+        ash::khr::timeline_semaphore::NAME,
+        ash::khr::deferred_host_operations::NAME,
+
+        // extra shader / pipeline extensions
+        ash::khr::dynamic_rendering::NAME,
+        ash::ext::mesh_shader::NAME,
         ash::khr::shader_float16_int8::NAME,
         ash::khr::shader_atomic_int64::NAME,
         ash::khr::shader_clock::NAME,
         ash::ext::shader_image_atomic_int64::NAME,
         ash::ext::shader_atomic_float::NAME,
-        
         ash::khr::shader_draw_parameters::NAME,
-        ash::khr::dynamic_rendering::NAME,
-        ash::ext::host_image_copy::NAME,
-        ash::ext::host_query_reset::NAME,
-        ash::khr::timeline_semaphore::NAME,
-        ash::khr::buffer_device_address::NAME,
-        ash::ext::mesh_shader::NAME,
-        ash::khr::deferred_host_operations::NAME,
         ash::ext::extended_dynamic_state3::NAME,
+        c"VK_KHR_compute_shader_derivatives",         // TODO: remove when ash vk1.4
+
+        // ray tracing extensions
+        ash::khr::ray_tracing_position_fetch::NAME,
         ash::khr::acceleration_structure::NAME,
         ash::khr::ray_query::NAME,
         
         
         
-        // TODO: remove when ash vk1.4
-        c"VK_KHR_compute_shader_derivatives",
     ];
 
     let device_extension_names_ptrs = device_extension_names
@@ -132,7 +139,8 @@ pub unsafe fn create_device_and_queue(
         .push_next(&mut mesh_shader)
         .push_next(&mut extended_state3)
         .push_next(&mut acceleration_structure)
-        .push_next(&mut ray_query_features);
+        .push_next(&mut ray_query_features)
+        .push_next(&mut ray_tracing_position_fetch);
 
     let device = instance
         .create_device(physical_device, &device_create_info, None)

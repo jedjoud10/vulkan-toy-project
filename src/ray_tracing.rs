@@ -56,7 +56,7 @@ pub unsafe fn create_blas(
 
     let mut acceleration_structure_build_geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
         .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
-        .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
+        .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE | vk::BuildAccelerationStructureFlagsKHR::ALLOW_DATA_ACCESS)
         .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
         .geometries(&geometries);
 
@@ -143,7 +143,7 @@ pub unsafe fn pre_create_tlas(
     let mut acceleration_structure_build_geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
         .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
         .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
-        .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
+        .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE | vk::BuildAccelerationStructureFlagsKHR::ALLOW_DATA_ACCESS)
         .geometries(&geometries);
 
     let max_primitive_counts = [TLAS_MAX_INSTANCES];
