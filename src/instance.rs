@@ -48,9 +48,11 @@ pub unsafe fn create_instance(
         validation_ptrs.extend(DEBUG_INSTANCE_VALIDATION_LAYERS
             .iter()
             .map(|cstr| cstr.as_ptr()));
-        //enabled_validation_features.push(vk::ValidationFeatureEnableEXT::SYNCHRONIZATION_VALIDATION);
-        enabled_validation_features.push(vk::ValidationFeatureEnableEXT::DEBUG_PRINTF);
-        //enabled_validation_features.push(vk::ValidationFeatureEnableEXT::BEST_PRACTICES);
+        enabled_validation_features.extend([
+            vk::ValidationFeatureEnableEXT::DEBUG_PRINTF,
+            vk::ValidationFeatureEnableEXT::SYNCHRONIZATION_VALIDATION,
+            vk::ValidationFeatureEnableEXT::BEST_PRACTICES
+        ]);
     }
 
     let mut validation_features = ash::vk::ValidationFeaturesEXT::default()

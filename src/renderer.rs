@@ -1,6 +1,7 @@
 use ash::vk;
 use bytemuck::Pod;
 use bytemuck::Zeroable;
+use bytemuck::cast_slice;
 use bytesize::ByteSize;
 use include_dir::Dir;
 use include_dir::include_dir;
@@ -61,6 +62,11 @@ const RASTERIZED_MS_TESSELALTION_SPV: &str = "rasterized_ms_tesselation.spv";
 const RASTERIZED_MS_GENERATED_1_SPV: &str = "rasterized_ms_generated_1.spv";
 const RASTERIZED_MS_GENERATED_GRASS_SPV: &str = "rasterized_ms_generated_grass.spv";
 const RASTERIZED_BACKGROUND_SPV: &str = "rasterized_background.spv";
+
+const NUM_LIGHTS: usize = 1;
+const SUN_SHADOW_RAY_ENABLED: bool = true;
+const EXTRA_LIGHTS_ENABLED: bool = true;
+const EXTRA_LIGHTS_SHADOW_RAY_ENABLED: bool = true;
         
 
 const VERTEX_ATTRIBUTE_DESCRIPTIONS: &'static [vk::VertexInputAttributeDescription] = &[vk::VertexInputAttributeDescription {
@@ -191,7 +197,6 @@ pub struct InternalApp {
     skybox: skybox::Skybox,
     lights_buffer: buffer::Buffer,
     lights: Vec<vek::Vec4<f32>>,
-    velocities: Vec<vek::Vec4<f32>>,
     samplers: samplers::Samplers,
     tesselation_buffer: buffer::Buffer,
     uniform_buffer: buffer::Buffer,
@@ -215,11 +220,13 @@ pub struct InternalApp {
     stats: Statistics,
 }
 
+
 static COMPILED_SHADERS: Dir = include_dir!("$CARGO_MANIFEST_DIR/compiled_shaders");
 
 impl InternalApp {
     pub unsafe fn new(event_loop: &ActiveEventLoop, args: crate::Args) -> Self {
-        let mut assets = HashMap::<&str, Vec<u32>>::new();
+        // load compiled shaders binaries to dictionary
+        let mut compiled_shaders = HashMap::<&str, Vec<u32>>::new();
         for file in COMPILED_SHADERS.files() {
             let len = file.contents().len();
             assert!(len.is_multiple_of(4));
@@ -231,7 +238,7 @@ impl InternalApp {
 
             let file_name = file.path().file_name().unwrap().to_str().unwrap();
             log::debug!("added shader '{file_name}' to assets");
-            assets.insert(file_name, vec);
+            compiled_shaders.insert(file_name, vec);
         }
 
         let window = event_loop
@@ -309,7 +316,7 @@ impl InternalApp {
 
         let debug_marker = debug_messenger.is_some().then(|| {
             let device = debug::create_debug_marker(&instance, &device);
-            log::info!("created debug marker object names binder");
+            log::info!("created debug marker object");
             device
         });
 
@@ -367,6 +374,13 @@ impl InternalApp {
         let mut graphics_pipelines = HashMap::<&'static str, pipeline::GenericGraphicsPipeline>::new();
         let mut compute_pipelines = HashMap::<&'static str, pipeline::GenericComputePipeline>::new();
 
+        let rasterization_base_spec_constants = [
+            SUN_SHADOW_RAY_ENABLED as u32, // enable sun shadow ray
+            EXTRA_LIGHTS_ENABLED as u32, // enable extra lights
+            EXTRA_LIGHTS_SHADOW_RAY_ENABLED as u32, // enable extra lights shadow ray
+            NUM_LIGHTS as u32, // extra lights number
+        ];
+
         let settings = [pipeline::PipelineCreateSettings {
             pipeline_debug_name: "post process compute pipeline",
             wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &[WRITE_SWAPCHAIN_IMAGE_ENTRY_POINT, BLOOM_DOWNSAMPLE_ENTRY_POINT, BLOOM_UPSAMPLE_ENTRY_POINT] },
@@ -400,7 +414,7 @@ impl InternalApp {
         }, pipeline::PipelineCreateSettings {
             pipeline_debug_name: "grass render pipeline",
             wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::GraphicsMeshShader { face_culling: false, task_shader: true },
-            spec_constants: None,
+            spec_constants: Some(&rasterization_base_spec_constants),
             spv_file_name: RASTERIZED_MS_GENERATED_GRASS_SPV,
         }, pipeline::PipelineCreateSettings {
             pipeline_debug_name: "rasterized render pipeline",
@@ -408,7 +422,7 @@ impl InternalApp {
                 face_culling: true,
                 vertex_input: vk::PipelineVertexInputStateCreateInfo::default().vertex_attribute_descriptions(VERTEX_ATTRIBUTE_DESCRIPTIONS).vertex_binding_descriptions(VERTEX_BINDING_DESCRIPTIONS),
             },
-            spec_constants: None,
+            spec_constants: Some(&rasterization_base_spec_constants),
             spv_file_name: RASTERIZED_SPV,
         }, pipeline::PipelineCreateSettings {
             pipeline_debug_name: "rasterized chunk render pipeline",
@@ -416,7 +430,7 @@ impl InternalApp {
                 face_culling: true,
                 vertex_input: vk::PipelineVertexInputStateCreateInfo::default().vertex_attribute_descriptions(VERTEX_ATTRIBUTE_DESCRIPTIONS_CHUNK).vertex_binding_descriptions(VERTEX_BINDING_DESCRIPTIONS_CHUNK),
             },
-            spec_constants: None,
+            spec_constants: Some(&rasterization_base_spec_constants),
             spv_file_name: RASTERIZED_CHUNK_SPV,
         }, pipeline::PipelineCreateSettings {
             pipeline_debug_name: "compute surface shader",
@@ -430,7 +444,7 @@ impl InternalApp {
         log::info!("creating pipelines...");
         let generic_pipelines = settings.into_par_iter().map(|setting| {
             let spv_file_name = setting.spv_file_name;
-            let raw = &assets[spv_file_name];
+            let raw = &compiled_shaders[spv_file_name];
             let pipeline = pipeline::create_generic_pipeline(raw, &device, &debug_marker, main_pipeline_layout, setting);
             (spv_file_name, pipeline)
         }).collect::<Vec<_>>();
@@ -476,8 +490,6 @@ impl InternalApp {
         }).collect::<SmallVec<[PerFrameData; per_frame_data::FRAMES_IN_FLIGHT]>>();
         log::info!("created frames in flight structures");
 
-        const NUM_LIGHTS: usize = 1;
-
         let lights_buffer = buffer::create_buffer(&mut ctx, size_of::<vek::Vec4<f32>>() * NUM_LIGHTS, "lights buffer", vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
         let mut lights = Vec::<vek::Vec4<f32>>::new();
 
@@ -487,8 +499,6 @@ impl InternalApp {
             let z = rand::random_range(-10f32..10f32);
             lights.push(vek::Vec4::new(x,y,z, 1.0));
         }
-
-        let velocities = vec![vek::Vec4::<f32>::zero(); NUM_LIGHTS];
 
         buffer::write_to_buffer(&mut ctx, lights_buffer.buffer, bytemuck::cast_slice(lights.as_slice()));
         log::info!("created lights buffer");
@@ -595,7 +605,6 @@ impl InternalApp {
             tesselation_buffer,
             graphics_pipelines,
             compute_pipelines,
-            velocities,
             wireframe: false,
             toggles_bitmask: 0,
             debug_text_buffer,
@@ -778,7 +787,7 @@ impl InternalApp {
             ref mut scratch_buffer,
             ..
         } = &mut self.frames_in_flight[frame_in_flight_index as usize];
-        
+
 
         let present_complete_semaphores = [present_complete_semaphore];
 
@@ -987,25 +996,18 @@ impl InternalApp {
             .dst_set(main_descriptor_set)
             .image_info(&samplers);
 
-        if let Some(tlas) = self.tlas.data.as_ref() {
-            let wuh = [tlas.acceleration_structure];
+        let tlases = [self.tlas.data.acceleration_structure];
+        let mut acceleration_structure_write_tmp = vk::WriteDescriptorSetAccelerationStructureKHR::default()
+            .acceleration_structures(&tlases);
 
-            let mut acceleration_structure_write_tmp = vk::WriteDescriptorSetAccelerationStructureKHR::default()
-                .acceleration_structures(&wuh);
+        let acceleration_structure_write = vk::WriteDescriptorSet::default()
+            .descriptor_count(1)
+            .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+            .dst_set(main_descriptor_set)
+            .dst_binding(4)
+            .push_next(&mut acceleration_structure_write_tmp);
 
-            let acceleration_structure_write = vk::WriteDescriptorSet::default()
-                .descriptor_count(1)
-                .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-                .dst_set(main_descriptor_set)
-                .dst_binding(4)
-                .push_next(&mut acceleration_structure_write_tmp);
-
-            self.device.update_descriptor_sets(&[storage_image_write, storage_buffer_write, sampled_image_write, sampler_states_write, acceleration_structure_write], &[]);
-        } else {
-            self.device.update_descriptor_sets(&[storage_image_write, storage_buffer_write, sampled_image_write, sampler_states_write], &[]);
-        }
-
-        //self.device.update_descriptor_sets(&[storage_image_write, storage_buffer_write, sampled_image_write, sampler_states_write], &[]);
+        self.device.update_descriptor_sets(&[storage_image_write, storage_buffer_write, sampled_image_write, sampler_states_write, acceleration_structure_write], &[]);
 
         // TODO: ideally, these would:
         // 1. be dynamically allocated using some sort of per-frame arena with indexing
@@ -1014,7 +1016,6 @@ impl InternalApp {
         const RENDERED_SAMPLER_IMAGE_IDX: u32 = 3;
         const BLOOM_MIPS_SAMPLED_IMAGE_START_IDX: u32 = 5; // bloom needs to be last since it is dynamically allocated (can have a dynamic number of bloom mips, depending on screen res)
 
-        scratch_buffer.bytes_written = 0;
         let cmd_buffer_begin_info = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
         self.device.reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty()).unwrap();
@@ -1025,6 +1026,10 @@ impl InternalApp {
         self.device.cmd_reset_query_pool(cmd, query_pool, 0, 2);
         self.device.cmd_reset_query_pool(cmd, pipeline_statistics_query_pool, 0, 1);
         self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, query_pool, 0);
+        scratch_buffer.begin_of_cmd_recording(&self.device, cmd);
+        
+        self.lights[0] = (vek::Vec3::lerp(self.lights[0].xyz(), self.movement.forward() + self.movement.position, 10f32 * delta)).with_w(0f32);
+        self.device.cmd_update_buffer(cmd, self.lights_buffer.buffer, 0, cast_slice(self.lights.as_slice()));
 
         let subresource_range = vk::ImageSubresourceRange::default()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -1138,7 +1143,7 @@ impl InternalApp {
         let uniform_buffer_barrier = vk::BufferMemoryBarrier2::default()
             .buffer(self.uniform_buffer.buffer)
             .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
-            .dst_access_mask(vk::AccessFlags2::MEMORY_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::MEMORY_WRITE)
             .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
             .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
             .src_queue_family_index(self.queue_family_index)
@@ -1147,13 +1152,22 @@ impl InternalApp {
         let debug_text_buffer_barrier = vk::BufferMemoryBarrier2::default()
             .buffer(self.debug_text_buffer.buffer)
             .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
-            .dst_access_mask(vk::AccessFlags2::MEMORY_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::MEMORY_WRITE)
             .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
             .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)
             .size(vk::WHOLE_SIZE);
-        let buffer_memory_barriers = [uniform_buffer_barrier, debug_text_buffer_barrier];
+        let lights_buffer_barrier = vk::BufferMemoryBarrier2::default()
+            .buffer(self.lights_buffer.buffer)
+            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .size(vk::WHOLE_SIZE);
+        let buffer_memory_barriers = [uniform_buffer_barrier, debug_text_buffer_barrier, lights_buffer_barrier];
         let dep = vk::DependencyInfo::default().buffer_memory_barriers(&buffer_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
@@ -1265,8 +1279,6 @@ impl InternalApp {
             cmd,
             &self.acceleration_structure_device,
             &self.device,
-            &mut self.allocator,
-            &self.debug_marker,
             self.queue_family_index,
             scratch_buffer
         );
@@ -1414,28 +1426,28 @@ impl InternalApp {
             }
         }
         */
+
         /*
+        // render grass
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_GENERATED_GRASS_SPV]);
         self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
         self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  16, 16, 1);
         */
+
+        
+        // render chunks
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_CHUNK_SPV]);
         self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
-
-        // render chunks
         self.device.cmd_bind_vertex_buffers(cmd, 0, &[self.multiple_chunks.vertex_buffer.buffer], &[0]);
         self.device.cmd_bind_index_buffer(cmd, self.multiple_chunks.index_buffer.buffer, 0, vk::IndexType::UINT32);
         self.device.cmd_draw_indexed_indirect(cmd, self.multiple_chunks.indirect_draw_buffer.buffer, 0, self.chunks.len() as u32, size_of::<voxel::DrawIndexedIndirectCommand>() as u32);
 
         // render models
+        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_SPV]);
         for model in self.models.iter() {
-            self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_SPV]);
             self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
             model.render(cmd, &self.device, self.main_pipeline_layout, &self.materials[0]);
-            
-        }
-
-        
+        }        
 
         self.device.cmd_end_rendering(cmd);
         self.device.cmd_end_query(cmd, pipeline_statistics_query_pool, 0);

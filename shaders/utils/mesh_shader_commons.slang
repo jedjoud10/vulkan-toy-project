@@ -32,6 +32,8 @@ VertexOutput transform_vertex(
 }
 
 float4 shared_frag_shading(VertexOutput in_vert) {
+    return 1.0;
+    /*
     let uniforms = storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
 
     
@@ -72,6 +74,7 @@ float4 shared_frag_shading(VertexOutput in_vert) {
     } else {
         return float4(normal * 0.5 + 0.5, 1);
     }
+    */
 }
 
 #endif

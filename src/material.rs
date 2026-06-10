@@ -3,6 +3,7 @@ use std::io::Read;
 use ash::vk;
 use bytemuck::{bytes_of, cast_slice};
 use gpu_allocator::vulkan::{Allocation, Allocator};
+use image::EncodableLayout;
 
 use crate::{buffer, renderer::GraphicsContext, texture::{Texture, create_texture}};
 
@@ -16,6 +17,22 @@ pub struct Material {
     pub albedo_index: usize,
 }
 
+unsafe fn load_image_and_create_texture(
+    ctx: &mut GraphicsContext,
+    image_file_bytes: &[u8],
+    size: u32,
+) -> Texture {
+    let dynamic_image = image::load_from_memory(image_file_bytes).unwrap();
+
+    let dynamic_image = if size != dynamic_image.width() {
+        dynamic_image.resize_exact(size, size, image::imageops::FilterType::Nearest)
+    } else {
+        dynamic_image
+    };
+
+    let img = dynamic_image.to_rgba8();
+    create_texture(ctx, Some(img.as_bytes()), size)
+}
 
 impl Material {
     pub unsafe fn new(
@@ -24,10 +41,10 @@ impl Material {
         // TODO: do some channel packing here
         // TODO: implement compressed textures using DXT / BC formats
         let size = 256;
-        let albedo_texture = create_texture(ctx, Some(include_bytes!("../materials/metal/metal_0077_color_1k.jpg")), size);
-        let roughness_texture = create_texture(ctx, Some(include_bytes!("../materials/metal/metal_0077_roughness_1k.jpg")), size);
-        let metal_texture = create_texture(ctx, Some(include_bytes!("../materials/metal/metal_0077_metallic_1k.jpg")), size);
-        let normal_texture = create_texture(ctx, Some(include_bytes!("../materials/metal/metal_0077_normal_opengl_1k.png")), size);
+        let albedo_texture = load_image_and_create_texture(ctx, include_bytes!("../materials/metal/metal_0077_color_1k.jpg"), size);
+        let roughness_texture = load_image_and_create_texture(ctx, include_bytes!("../materials/metal/metal_0077_roughness_1k.jpg"), size);
+        let metal_texture = load_image_and_create_texture(ctx, include_bytes!("../materials/metal/metal_0077_metallic_1k.jpg"), size);
+        let normal_texture = load_image_and_create_texture(ctx, include_bytes!("../materials/metal/metal_0077_normal_opengl_1k.png"), size);
 
 
         Self {

@@ -82,49 +82,4 @@ UniformThing load_per_frame_uniforms() {
     return storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
 }
 
-float hw_trace_shadow(float3 world) {
-    RayDesc desc;
-    desc.Origin = world;
-    desc.Direction = load_per_frame_uniforms().sun.xyz;
-    desc.TMax = 100;
-    desc.TMin = 0.01;
-
-    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_FORCE_OPAQUE> sq;
-    let flags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_FORCE_OPAQUE;
-
-    sq.TraceRayInline(acceleration_structures[0], flags, 0xFF, desc);
-
-    sq.Proceed();
-
-    return (sq.CommittedStatus() == COMMITTED_TRIANGLE_HIT) ? 0.0 : 1.0;
-}
-
-float hw_ao(float3 world, float3 normal) {
-    return 1.0;
-    
-    /*
-    RayDesc desc;
-    desc.TMax = 10.0;
-    desc.TMin = 0.001;
-    desc.Origin = world;
-
-    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_FORCE_OPAQUE> sq;
-    let flags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_FORCE_OPAQUE;
-
-    float count = 0.0;
-
-    int samples = 4;
-
-    for (int i = 0; i < samples; i++) {
-        desc.Direction = normalize((hash33(world * float3(20.3231, -30.21231, 50.36856) + i * 30.1232) * 2.0 - 1.0) * 0.3 + normal);
-        sq.TraceRayInline(acceleration_structures[0], flags, 0xFF, desc);
-        sq.Proceed();
-
-        count += sq.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
-    }
-
-    return 1 - (count / (float)samples);
-    */
-}
-
 #endif

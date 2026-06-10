@@ -20,7 +20,7 @@ impl Texture {
 
 pub unsafe fn create_texture(
     ctx: &mut GraphicsContext,
-    image_file_bytes: Option<&[u8]>,
+    bytes: Option<&[u8]>,
     size: u32,
 ) -> Texture {
     let GraphicsContext {
@@ -31,18 +31,6 @@ pub unsafe fn create_texture(
         debug_marker,
         ..
     } = ctx;
-
-    let opt_image_buffer = image_file_bytes.map(|image_file_bytes| {
-        let dynamic_image = image::load_from_memory(image_file_bytes).unwrap();
-
-        let dynamic_image = if size != dynamic_image.width() {
-            dynamic_image.resize_exact(size, size, image::imageops::FilterType::Nearest)
-        } else {
-            dynamic_image
-        };
-        dynamic_image.into_rgba8()
-    });
-
 
     let queue_family_indices = [*queue_family_index];
     let format = vk::Format::R8G8B8A8_UNORM;
@@ -100,9 +88,7 @@ pub unsafe fn create_texture(
 
     host_image_copy_device.transition_image_layout(&[transition]);
 
-    if let Some(image_buffer) = opt_image_buffer {
-        let bytes = image_buffer.as_raw();
-
+    if let Some(bytes) = bytes {
         let region = vk::MemoryToImageCopyEXT::default()
             .host_pointer(bytes.as_ptr() as *const _)
             .image_extent(vk::Extent3D::default().height(size).width(size).depth(1))

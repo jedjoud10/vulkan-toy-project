@@ -2,6 +2,8 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use ash::vk;
 use smallvec::SmallVec;
 
+use crate::debug::DebugMarker;
+
 pub const STORAGE_IMAGE_COUNT: u32 = 160;
 pub const STORAGE_BUFFER_COUNT: u32 = 60;
 pub const UNIFORM_BUFFER_COUNT: u32 = 60;
@@ -11,7 +13,7 @@ pub const ACCELERATION_STRUCTURES_COUNT: u32 = 1;
 pub const MAX_DESCRIPTOR_SETS: u32 = crate::per_frame_data::FRAMES_IN_FLIGHT as u32;
 
 
-pub unsafe fn create_descriptor_pool_and_bindless_descriptor_set(device: &ash::Device, binder: &Option<ash::ext::debug_utils::Device>) -> (vk::DescriptorPool, vk::DescriptorSetLayout) {
+pub unsafe fn create_descriptor_pool_and_bindless_descriptor_set(device: &ash::Device, debug_marker: &DebugMarker) -> (vk::DescriptorPool, vk::DescriptorSetLayout) {
     let images = vk::DescriptorPoolSize::default()
         .descriptor_count(STORAGE_IMAGE_COUNT*MAX_DESCRIPTOR_SETS)
         .ty(vk::DescriptorType::STORAGE_IMAGE);
@@ -39,7 +41,7 @@ pub unsafe fn create_descriptor_pool_and_bindless_descriptor_set(device: &ash::D
     let descriptor_pool = device
         .create_descriptor_pool(&descriptor_pool_create_info, None)
         .unwrap();
-    crate::debug::set_object_name(descriptor_pool, binder, "descriptor pool");
+    crate::debug::set_object_name(descriptor_pool, debug_marker, "descriptor pool");
     log::info!("created descriptor pool");
 
 
@@ -82,7 +84,7 @@ pub unsafe fn create_descriptor_pool_and_bindless_descriptor_set(device: &ash::D
     let descriptor_set_layout = device
         .create_descriptor_set_layout(&descriptor_set_layout_create_info, None)
         .unwrap();
-    crate::debug::set_object_name(descriptor_set_layout, binder, "main descriptor set layout");
+    crate::debug::set_object_name(descriptor_set_layout, debug_marker, "main descriptor set layout");
     log::info!("created bindless descriptor set layout");
 
     (descriptor_pool, descriptor_set_layout)

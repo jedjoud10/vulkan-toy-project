@@ -8,30 +8,73 @@ pub const SCRATCH_BUFFER_SIZE: usize = 1 << 13;
 
 pub struct ScratchBuffer {
     pub buffer: buffer::Buffer, 
-    pub bytes_written: u64,
+    pub bytes_written: usize,
+    queue_family_index: u32,
+}
+
+pub struct ScratchBufferBarrierInfo {
+    pub src_stage_mask: vk::PipelineStageFlags2,
+    pub dst_stage_mask: vk::PipelineStageFlags2,
+    pub src_access_mask: vk::AccessFlags2,
+    pub dst_access_mask: vk::AccessFlags2,
+
+} 
+
+impl ScratchBufferBarrierInfo {
+    pub fn full() -> Self {
+        Self {
+            src_stage_mask: vk::PipelineStageFlags2::ALL_COMMANDS,
+            dst_stage_mask: vk::PipelineStageFlags2::ALL_COMMANDS,
+            src_access_mask: vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE,
+            dst_access_mask: vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE,
+        }
+    }
 }
 
 impl ScratchBuffer {
-    pub unsafe fn write_bytes(&mut self, device: &ash::Device, cmd: vk::CommandBuffer, bytes: &[u8], queue_family_index: u32) -> u64 {
-        device.cmd_update_buffer(cmd, self.buffer.buffer, self.bytes_written, bytes);
-    
+    pub unsafe fn begin_of_cmd_recording(&mut self, device: &ash::Device, cmd: vk::CommandBuffer) {
+        self.bytes_written = 0;
         let barrier = vk::BufferMemoryBarrier2::default()
             .buffer(self.buffer.buffer)
             .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
             .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .src_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
-            .dst_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE | vk::AccessFlags2::MEMORY_READ)
+            .dst_access_mask(vk::AccessFlags2::MEMORY_WRITE | vk::AccessFlags2::MEMORY_READ)
             .size(vk::WHOLE_SIZE)
             .offset(0)
-            .src_queue_family_index(queue_family_index)
-            .dst_queue_family_index(queue_family_index);
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index);
+        let buffer_memory_barriers = [barrier];
+        let dep = vk::DependencyInfo::default()
+            .buffer_memory_barriers(&buffer_memory_barriers);
+        device.cmd_pipeline_barrier2(cmd, &dep);
+    }
+
+    /// Returns the GPU buffer start address range of the written data  
+    pub unsafe fn write_bytes(&mut self, device: &ash::Device, cmd: vk::CommandBuffer, bytes: &[u8], barrier_info: Option<ScratchBufferBarrierInfo>) -> u64 {
+        assert!(bytes.len() + self.bytes_written < SCRATCH_BUFFER_SIZE, "scratch buffer overrun");
+
+        device.cmd_update_buffer(cmd, self.buffer.buffer, self.bytes_written as u64, bytes);
+    
+        let barrier_info = barrier_info.unwrap_or_else(ScratchBufferBarrierInfo::full);
+        
+        let barrier = vk::BufferMemoryBarrier2::default()
+            .buffer(self.buffer.buffer)
+            .src_stage_mask(barrier_info.src_stage_mask)
+            .dst_stage_mask(barrier_info.dst_stage_mask)
+            .src_access_mask(barrier_info.src_access_mask)
+            .dst_access_mask(barrier_info.dst_access_mask)
+            .size(bytes.len() as u64)
+            .offset(self.bytes_written as u64)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index);
         let buffer_memory_barriers = [barrier];
         let dep = vk::DependencyInfo::default()
             .buffer_memory_barriers(&buffer_memory_barriers);
         device.cmd_pipeline_barrier2(cmd, &dep);
 
-        let prev = self.buffer.address + self.bytes_written;
-        self.bytes_written += bytes.len() as u64;
+        let prev = self.buffer.address + self.bytes_written as u64;
+        self.bytes_written += bytes.len();
         prev
     }
 }
@@ -87,7 +130,7 @@ impl PerFrameData {
             main_descriptor_set,
             query_pool,
             pipeline_statistics_query_pool,
-            scratch_buffer: ScratchBuffer { buffer: scratch_buffer_buffer, bytes_written: 0 },
+            scratch_buffer: ScratchBuffer { buffer: scratch_buffer_buffer, bytes_written: 0, queue_family_index: ctx.queue_family_index },
         }
     }
     

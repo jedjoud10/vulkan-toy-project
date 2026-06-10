@@ -1,7 +1,4 @@
 #language slang 2026
-#include "utils/lighting.slang"
-#include "utils/pbr.slang"
-#include "utils/noises.slang"
 #include "utils/bindless.slang"
 #include "utils/font.slang"
 
@@ -65,7 +62,15 @@ void render_debug_font(uint2 id, inout float3 color) {
 
 [SpecializationConstant] const uint DOWNSCALE_FACTOR = 1;
 
-
+// Narkowicz 2015, "ACES Filmic Tone Mapping Curve"
+float3 aces(float3 x) {
+    const float a = 2.51;
+    const float b = 0.03;
+    const float c = 2.43;
+    const float d = 0.59;
+    const float e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
 
 
 //#define SHORT_CIRCUIT_NO_TONEMAPPING

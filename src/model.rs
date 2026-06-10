@@ -1,5 +1,5 @@
 use ash::vk;
-use bytemuck::{Pod, Zeroable, bytes_of};
+use bytemuck::{Pod, Zeroable, bytes_of, cast_slice};
 use gpu_allocator::vulkan::Allocator;
 
 use crate::{buffer, debug, material::Material, others, ray_tracing, renderer::GraphicsContext, texture};
@@ -26,29 +26,25 @@ impl Model {
         let mut normals = Vec::<vek::Vec3<f32>>::new();
         let mut uvs = Vec::<vek::Vec2<f32>>::new();
 
+        let mut indices: Vec<u32> = obj.indices;
         let vertex_count = obj.vertices.len();
+        let index_count = indices.len();
         for vertex in obj.vertices {
             positions.push(vek::Vec3::<f32>::from(vertex.position));
             normals.push(vek::Vec3::<f32>::from(vertex.normal));
             uvs.push(vek::Vec2::<f32>::from_slice(&vertex.texture[0..2]));
         }
 
-        let mut indices: Vec<u32> = obj.indices;
 
         meshopt::optimize_vertex_cache_in_place(&mut indices, vertex_count);
 
-        let vertex_positions_buffer = buffer::create_buffer(ctx, size_of::<vek::Vec3::<f32>>() * vertex_count, "vertex positions buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
-        buffer::write_to_buffer(ctx, vertex_positions_buffer.buffer, bytemuck::cast_slice(positions.as_slice()));
+        let vertex_positions_buffer = buffer::create_buffer_with(ctx, cast_slice(positions.as_slice()), "vertex positions buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
+        
+        let vertex_normals_buffer = buffer::create_buffer_with(ctx, cast_slice(normals.as_slice()), "vertex normals buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
 
-        let vertex_normals_buffer = buffer::create_buffer(ctx, size_of::<vek::Vec3::<f32>>() * vertex_count, "vertex normals buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
-        buffer::write_to_buffer(ctx, vertex_normals_buffer.buffer, bytemuck::cast_slice(normals.as_slice()));
+        let vertex_uvs_buffer = buffer::create_buffer_with(ctx, cast_slice(uvs.as_slice()), "vertex uvs buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
 
-        let vertex_uvs_buffer = buffer::create_buffer(ctx, size_of::<vek::Vec2::<f32>>() * vertex_count, "vertex uvs buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
-        buffer::write_to_buffer(ctx, vertex_uvs_buffer.buffer, bytemuck::cast_slice(uvs.as_slice()));
-
-        let index_count = indices.len();
-        let index_buffer = buffer::create_buffer(ctx, size_of::<u32>()  * indices.len(), "index buffer", vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
-        buffer::write_to_buffer(ctx, index_buffer.buffer, bytemuck::cast_slice(indices.as_slice()));
+        let index_buffer = buffer::create_buffer_with(ctx, cast_slice(indices.as_slice()), "index buffer", vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
 
         
         let cmd_buffer_create_info = vk::CommandBufferAllocateInfo::default()
@@ -99,14 +95,16 @@ impl Model {
 
     pub fn update(&mut self, elapsed: f32, movement: &crate::movement::Movement) {
         //let position = movement.position + movement.forward() * 2f32;
+        let position = self.position + vek::Vec3::unit_y() * elapsed.sin() * 0.2f32;
+        let rotation = vek::Quaternion::rotation_x(elapsed * 0.2f32);
         let scale = 3f32;
 
-        let matrix = vek::Mat4::<f32>::identity().scaled_3d(scale).rotated_x(elapsed * 0.2f32).translated_3d(self.position + vek::Vec3::unit_y() * elapsed.sin() * 0.2f32);
+        let matrix = vek::Mat4::from(rotation).scaled_3d(scale).translated_3d(position);
 
         self.object_to_world = matrix;
 
         let row_arrays = &matrix.into_row_arrays()[0..3];
-        let matrix: [f32; 12] = bytemuck::cast_slice::<[f32;4],f32>(row_arrays).try_into().unwrap();;
+        let matrix: [f32; 12] = cast_slice::<[f32;4],f32>(row_arrays).try_into().unwrap();
         self.instance.transform = vk::TransformMatrixKHR { matrix } 
     }
 

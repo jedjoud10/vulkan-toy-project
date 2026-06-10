@@ -2,7 +2,7 @@ use std::ptr::slice_from_raw_parts;
 
 use ash::vk;
 use gpu_allocator::vulkan::Allocator;
-use crate::{buffer, renderer::GraphicsContext};
+use crate::{buffer, per_frame_data::ScratchBufferBarrierInfo, renderer::GraphicsContext};
 
 pub struct AccelerationStructureData {
     pub backing_buffer: buffer::Buffer,
@@ -32,6 +32,7 @@ pub unsafe fn create_blas(
     vertex_buffer: &buffer::Buffer,
     index_buffer: &buffer::Buffer,
 ) -> (AccelerationStructureData, vk::AccelerationStructureInstanceKHR) {
+    log::debug!("creating & building BLAS");
     let vertex_data_device_address = vertex_buffer.address;
     let index_data_device_address = index_buffer.address;
     
@@ -85,7 +86,6 @@ pub unsafe fn create_blas(
     acceleration_structure_build_geometry_info.scratch_data = vk::DeviceOrHostAddressKHR { device_address: scratch_buffer.address };
     acceleration_structure_build_geometry_info.dst_acceleration_structure = acceleration_structure;
 
-    
     ctx.acceleration_structure_device.cmd_build_acceleration_structures(cmd, &[acceleration_structure_build_geometry_info], build_range_infos);
     
     let acceleration_structure_address = ctx.acceleration_structure_device.get_acceleration_structure_device_address(&vk::AccelerationStructureDeviceAddressInfoKHR::default().acceleration_structure(acceleration_structure));
@@ -109,15 +109,13 @@ pub unsafe fn create_blas(
 }
 
 pub struct TopLevelAccelerationStructure {
-    pub data: Option<AccelerationStructureData>,
+    pub data: AccelerationStructureData,
     
 }
 
 impl TopLevelAccelerationStructure {
     pub unsafe fn destroy(self, acceleration_structure_device: &ash::khr::acceleration_structure::Device, device: &ash::Device, allocator: &mut Allocator) {
-        if let Some(data) = self.data {
-            data.destroy(acceleration_structure_device, device, allocator);
-        }
+        self.data.destroy(acceleration_structure_device, device, allocator);
     }
 }
 
@@ -126,7 +124,7 @@ pub const TLAS_MAX_INSTANCES: u32 = 1000;
 pub unsafe fn pre_create_tlas(
     ctx: &mut GraphicsContext,
 ) -> TopLevelAccelerationStructure {
-
+    log::debug!("precreating TLAS");
     let instances = vk::AccelerationStructureGeometryInstancesDataKHR::default()
         .array_of_pointers(false);
     let geometry_tmp = vk::AccelerationStructureGeometryDataKHR { instances: instances };
@@ -158,7 +156,7 @@ pub unsafe fn pre_create_tlas(
     let acceleration_structure = ctx.acceleration_structure_device.create_acceleration_structure(&create_info, None).unwrap();
 
     TopLevelAccelerationStructure {
-        data: Some(AccelerationStructureData { backing_buffer, scratch_buffer, acceleration_structure }),
+        data: AccelerationStructureData { backing_buffer, scratch_buffer, acceleration_structure },
     }
 }
 
@@ -169,19 +167,24 @@ pub unsafe fn rebuild_tlas(
     cmd: vk::CommandBuffer,
     acceleration_structure_device: &ash::khr::acceleration_structure::Device,
     device: &ash::Device,
-    mut allocator: &mut Allocator,
-    debug_marker: &Option<ash::ext::debug_utils::Device>,
     queue_family_index: u32,
-    scratch_buffer: &mut crate::per_frame_data::ScratchBuffer,
+    per_frame_scratch_buffer: &mut crate::per_frame_data::ScratchBuffer,
 ) {
-    let prev = tlas.data.as_ref().unwrap();
-
     let instances = static_instances.iter().chain(dynamic_instances.iter()).copied().collect::<Vec<_>>();
     let blases = instances.as_slice();
+    
+    // the ONLY reason we are doing an unsafe `slice_from_raw_parts` is because vk::AccelerationStructureInstanceKHR does not implement bytemuck Pod/Zeroable
     let bytes = blases.len() * size_of::<vk::AccelerationStructureInstanceKHR>();
     let ptr = blases.as_ptr() as *const u8;
     let data = &*slice_from_raw_parts(ptr, bytes);
-    let written_address = scratch_buffer.write_bytes(device, cmd, data, queue_family_index);
+
+
+    let written_address = per_frame_scratch_buffer.write_bytes(device, cmd, data, Some(ScratchBufferBarrierInfo {
+        src_stage_mask: vk::PipelineStageFlags2::ALL_COMMANDS,
+        dst_stage_mask: vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR,
+        src_access_mask: vk::AccessFlags2::TRANSFER_WRITE,
+        dst_access_mask: vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR | vk::AccessFlags2::SHADER_READ,
+    }));
     
     let instances = vk::AccelerationStructureGeometryInstancesDataKHR::default()
         .array_of_pointers(false)
@@ -209,26 +212,26 @@ pub unsafe fn rebuild_tlas(
     let tmp2 = &[tmp];
     let build_range_infos: &[&[vk::AccelerationStructureBuildRangeInfoKHR]] = &[tmp2];
 
-    acceleration_structure_build_geometry_info.scratch_data = vk::DeviceOrHostAddressKHR { device_address: prev.scratch_buffer.address };
-    acceleration_structure_build_geometry_info.dst_acceleration_structure = prev.acceleration_structure;
+    acceleration_structure_build_geometry_info.scratch_data = vk::DeviceOrHostAddressKHR { device_address: tlas.data.scratch_buffer.address };
+    acceleration_structure_build_geometry_info.dst_acceleration_structure = tlas.data.acceleration_structure;
     acceleration_structure_device.cmd_build_acceleration_structures(cmd, &[acceleration_structure_build_geometry_info], build_range_infos);
 
     let backing_buffer_barrier = vk::BufferMemoryBarrier2::default()
-        .buffer(prev.backing_buffer.buffer)
+        .buffer(tlas.data.backing_buffer.buffer)
         .src_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR)
         .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
         .src_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR)
-        .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR | vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR)
+        .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR | vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR | vk::AccessFlags2::SHADER_READ)
         .size(vk::WHOLE_SIZE)
         .offset(0)
         .src_queue_family_index(queue_family_index)
         .dst_queue_family_index(queue_family_index);
     let scratch_buffer_barrier = vk::BufferMemoryBarrier2::default()
-        .buffer(prev.scratch_buffer.buffer)
+        .buffer(tlas.data.scratch_buffer.buffer)
         .src_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR)
         .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
         .src_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR)
-        .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR | vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR)
+        .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR | vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR | vk::AccessFlags2::SHADER_READ)
         .size(vk::WHOLE_SIZE)
         .offset(0)
         .src_queue_family_index(queue_family_index)

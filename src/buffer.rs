@@ -4,6 +4,13 @@ use gpu_allocator::vulkan::{Allocation, Allocator};
 
 use crate::renderer::GraphicsContext;
 
+// acceleration structure scratch buffer requires alignment to be at least 256
+// of course we can pass a flag to state that we are allocating an acceleration structure scratch buffer
+// but it is easier to simply set this as the min alignment for all buffers
+const MIN_BUFFER_ALIGNMENT: u64 = 256;
+
+// `write_to_buffer` calls that update more than these amount of bytes will revert to using the staging buffer implementation
+const BUFFER_WRITE_INLINE_MAX_BYTES_THRESHOLD: usize = 65536; // vulkan spec states that data size must be less than this 
 
 pub struct Buffer {
     pub buffer: vk::Buffer,
@@ -33,12 +40,12 @@ pub unsafe fn create_buffer(
         .usage(flags | vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::STORAGE_BUFFER)
         .sharing_mode(vk::SharingMode::EXCLUSIVE)
         .size(size as u64);
+
+    // TODO: use a user-side sub-allocator for buffers to avoid doing the expensive API call
     let buffer = ctx.device.create_buffer(&buffer_create_info, None).unwrap();
 
     let mut requirements = ctx.device.get_buffer_memory_requirements(buffer);
-
-    // acceleration structure scratch buffer min alignment
-    requirements.alignment = requirements.alignment.max(256); 
+    requirements.alignment = requirements.alignment.max(MIN_BUFFER_ALIGNMENT); 
 
     let allocation = ctx.allocator
         .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
@@ -67,8 +74,17 @@ pub unsafe fn create_buffer(
     }
 }
 
-// `write_to_buffer` calls that update more than these amount of bytes will revert to using the staging buffer implementation
-const BUFFER_WRITE_INLINE_MAX_BYTES_THRESHOLD: usize = 65536; // vulkan spec states that data size must be less than this 
+
+pub unsafe fn create_buffer_with(
+    ctx: &mut GraphicsContext,
+    bytes: &[u8],
+    name: &str,
+    flags: vk::BufferUsageFlags,
+) -> Buffer {
+    let buffer = create_buffer(ctx, bytes.len(), name, flags);
+    write_to_buffer(ctx, buffer.buffer, bytes);
+    buffer
+}
 
 // this either creates a staging buffer write or writes to the buffer through cmd_update_buffer
 // switches between both impls depending on the amount of data to write
@@ -182,6 +198,15 @@ pub unsafe fn create_staging_buffer(device: &ash::Device, allocator: &mut Alloca
     (staging_buffer, allocation)
 }
 
+pub unsafe fn create_counter_buffer(
+    ctx: &mut GraphicsContext,
+    name: &str,
+) -> Buffer {
+    create_buffer(ctx, size_of::<u32>(), name, vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST)
+}
+
+
+/*
 pub unsafe fn create_staging_buffer2<'a>(device: &'a ash::Device, allocator: &'a mut Allocator, bytes: &[u8]) -> TemporaryStagingBuffer<'a> {
     let (buffer, allocation) = create_staging_buffer(device, allocator, bytes);
     TemporaryStagingBuffer { buffer, allocation: Some(allocation), device, allocator }
@@ -203,13 +228,7 @@ impl<'a> Drop for TemporaryStagingBuffer<'a> {
         }
     }
 }
-
-pub unsafe fn create_counter_buffer(
-    ctx: &mut GraphicsContext,
-    name: &str,
-) -> Buffer {
-    create_buffer(ctx, size_of::<u32>(), name, vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST)
-}
+*/
 
 /*
 // TODO: finish impl when needed. not needed rn since there's no bottleneck lol
