@@ -25,6 +25,7 @@ mod model;
 mod ray_tracing;
 mod material;
 mod texture;
+mod physics;
 
 use clap::Parser;
 use std::ops::ControlFlow;

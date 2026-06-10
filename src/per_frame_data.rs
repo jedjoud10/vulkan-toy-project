@@ -8,12 +8,14 @@ pub const SCRATCH_BUFFER_SIZE: usize = 1 << 13;
 
 pub struct ScratchBuffer {
     pub buffer: buffer::Buffer, 
-    pub bytes_written: u64,
+    pub bytes_written: usize,
 }
 
 impl ScratchBuffer {
     pub unsafe fn write_bytes(&mut self, device: &ash::Device, cmd: vk::CommandBuffer, bytes: &[u8], queue_family_index: u32) -> u64 {
-        device.cmd_update_buffer(cmd, self.buffer.buffer, self.bytes_written, bytes);
+        assert!(bytes.len() + self.bytes_written < SCRATCH_BUFFER_SIZE, "scratch buffer overrun");
+
+        device.cmd_update_buffer(cmd, self.buffer.buffer, self.bytes_written as u64, bytes);
     
         let barrier = vk::BufferMemoryBarrier2::default()
             .buffer(self.buffer.buffer)
@@ -30,8 +32,8 @@ impl ScratchBuffer {
             .buffer_memory_barriers(&buffer_memory_barriers);
         device.cmd_pipeline_barrier2(cmd, &dep);
 
-        let prev = self.buffer.address + self.bytes_written;
-        self.bytes_written += bytes.len() as u64;
+        let prev = self.buffer.address + self.bytes_written as u64;
+        self.bytes_written += bytes.len();
         prev
     }
 }

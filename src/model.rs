@@ -97,11 +97,11 @@ impl Model {
         }
     }
 
-    pub fn update(&mut self, elapsed: f32, movement: &crate::movement::Movement) {
+    pub fn update(&mut self, elapsed: f32, pos: vek::Vec3<f32>, movement: &crate::movement::Movement) {
         //let position = movement.position + movement.forward() * 2f32;
-        let scale = 3f32;
+        let scale = 0.5f32;
 
-        let matrix = vek::Mat4::<f32>::identity().scaled_3d(scale).rotated_x(elapsed * 0.2f32).translated_3d(self.position + vek::Vec3::unit_y() * elapsed.sin() * 0.2f32);
+        let matrix = vek::Mat4::<f32>::identity().scaled_3d(scale).rotated_x(elapsed * 0.2f32).translated_3d(pos);
 
         self.object_to_world = matrix;
 

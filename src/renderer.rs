@@ -13,6 +13,7 @@ use crate::material::Material;
 use crate::model;
 use crate::movement::Movement;
 use crate::per_frame_data;
+use crate::physics;
 use crate::ray_tracing;
 use crate::samplers;
 use crate::tesselation;
@@ -203,6 +204,7 @@ pub struct InternalApp {
     debug_text_buffer: buffer::Buffer,
 
     // other CPU stuff
+    physics: physics::Physics,
     pub was_resized: bool,
     pub window: Window,
     pub input: Input,    
@@ -524,10 +526,10 @@ impl InternalApp {
         let multiple_chunks = voxel::MultipleChunks::create(&mut ctx, index);
         
         let models = vec![
-            model::Model::new(vek::Vec3::new(0f32, 20f32, 0f32), include_bytes!("../models/sphere.obj"), &mut ctx),
-            model::Model::new(vek::Vec3::new(10f32, 20f32, 0f32), include_bytes!("../models/not_so_sphere.obj"), &mut ctx),
-            model::Model::new(vek::Vec3::new(-10f32, 20f32, 0f32), include_bytes!("../models/modular_industrial_pipes_01_1k.obj"), &mut ctx),
-            model::Model::new(vek::Vec3::new(-30f32, 20f32, 0f32), include_bytes!("../models/namaqualand_boulder_02_1k.obj"), &mut ctx),
+            //model::Model::new(vek::Vec3::new(0f32, 20f32, 0f32), include_bytes!("../models/sphere.obj"), &mut ctx),
+            //model::Model::new(vek::Vec3::new(10f32, 20f32, 0f32), include_bytes!("../models/not_so_sphere.obj"), &mut ctx),
+            //model::Model::new(vek::Vec3::new(-10f32, 20f32, 0f32), include_bytes!("../models/modular_industrial_pipes_01_1k.obj"), &mut ctx),
+            //model::Model::new(vek::Vec3::new(-30f32, 20f32, 0f32), include_bytes!("../models/namaqualand_boulder_02_1k.obj"), &mut ctx),
         ];
 
         let tlas = ray_tracing::pre_create_tlas(&mut ctx);
@@ -549,6 +551,32 @@ impl InternalApp {
         let materials = vec![
             Material::new(&mut ctx)
         ];
+
+        let physics = physics::Physics {
+            objects: vec![
+                /*
+                physics::DynamicObject {
+                    vertices: vec![
+                        physics::Vertex { inv_mass: 0f32, position: vek::Vec3::new(0f32, 20f32, 0f32), velocity: vek::Vec3::default() },
+                        physics::Vertex { inv_mass: 1f32, position: vek::Vec3::new(1f32, 16f32, -1f32), velocity: vek::Vec3::default() },
+                        physics::Vertex { inv_mass: 1f32, position: vek::Vec3::new(2f32, 14f32, 0f32), velocity: vek::Vec3::default() },
+                        physics::Vertex { inv_mass: 1f32, position: vek::Vec3::new(4f32, 10f32, 2f32), velocity: vek::Vec3::default() },        
+                    ],
+                    constraints: vec![
+                        physics::Constraint { cardinality: 2, function: Box::new(|data: &[vek::Vec3<f32>]| -> f32 {
+                            (data[0] - data[1]).magnitude() - 2f32
+                        }), indices: Vec::from([1, 0]), stiffness: 1.0f32, mode: physics::Mode::Equality },
+                        physics::Constraint { cardinality: 2, function: Box::new(|data: &[vek::Vec3<f32>]| -> f32 {
+                            (data[0] - data[1]).magnitude() - 2f32
+                        }), indices: Vec::from([1, 2]), stiffness: 1.0f32, mode: physics::Mode::Equality },
+                        physics::Constraint { cardinality: 2, function: Box::new(|data: &[vek::Vec3<f32>]| -> f32 {
+                            (data[0] - data[1]).magnitude() - 2f32
+                        }), indices: Vec::from([3, 2]), stiffness: 0.1f32, mode: physics::Mode::Equality },
+                    ]
+                }
+                */
+            ]
+        };
 
         Self {
             multiple_chunks,
@@ -609,6 +637,7 @@ impl InternalApp {
             tlas,
             materials,
             host_image_copy_device,
+            physics,
         }
     }
 
@@ -631,10 +660,18 @@ impl InternalApp {
             descriptor_pool: self.descriptor_pool,
         };
 
-        if add {
-            let new_model = model::Model::new(position, include_bytes!("../models/sphere.obj"), &mut ctx);
-            self.models.push(new_model);
-        }
+        let new_model = model::Model::new(position, include_bytes!("../models/sphere.obj"), &mut ctx);
+        self.models.push(new_model);
+
+        self.physics.objects.push(physics::DynamicObject { vertices: vec![physics::Vertex { inv_mass: if add { 1f32 } else { 0f32 }, position, velocity: vek::Vec3::zero() }], constraints: vec![] })
+        /*
+        let vcount = self.physics.objects[0].vertices.len();
+        self.physics.objects[0].vertices.push(physics::Vertex { inv_mass: if add { 1f32 } else { 0f32 }, position, velocity: vek::Vec3::zero() });
+
+        self.physics.objects[0].constraints.push(physics::Constraint { cardinality: 2, function: Box::new(|data: &[vek::Vec3<f32>]| -> f32 {
+            (data[0] - data[1]).magnitude() - 2f32
+        }), indices: Vec::from([vcount, vcount-1]), stiffness: 1.0f32, mode: physics::Mode::Equality });
+        */
     }
 
     pub unsafe fn recreate_swapchain(&mut self) {
@@ -766,6 +803,9 @@ impl InternalApp {
     }
 
     pub unsafe fn render(&mut self, delta: f32, elapsed: f32) {
+        if self.ticker.update(delta) {
+            self.physics.tick();
+        }
         let frame_in_flight_index = self.frame_count % (self.frames_in_flight.len() as u64);
         let const_data = &self.const_descriptor_sets;
         let &mut PerFrameData {
@@ -1252,8 +1292,9 @@ impl InternalApp {
 
         // update dynamic instances for TLAS
         self.dynamic_instances.clear();
-        for model in self.models.iter_mut() {
-            model.update(elapsed, &self.movement);
+        for (idx, model) in self.models.iter_mut().enumerate() {
+            model.update(elapsed, self.physics.objects[idx].vertices[0].position, &self.movement);
+            //model.update(elapsed, self.physics.objects[0].vertices[idx].position, &self.movement);
             self.dynamic_instances.push(model.instance);
         }
 
