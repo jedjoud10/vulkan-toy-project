@@ -70,18 +70,15 @@ float4 frag_main(VertexOutput in_vert, uniform PushConstants pc) : SV_Target {
     // sample textures
     let sampler = samplers[NEAREST_SAMPLER_IDX];
     float3 diffuse = sampled_images[pc.albedo_sampled_image_index].Sample(sampler, in_vert.uv).xyz;
-    float roughness = sampled_images[pc.albedo_sampled_image_index+1].Sample(sampler, in_vert.uv).x;
-    float metallic = sampled_images[pc.albedo_sampled_image_index+2].Sample(sampler, in_vert.uv).x;
-    float ao = 1.0;
+    float3 arm = sampled_images[pc.albedo_sampled_image_index+1].Sample(sampler, in_vert.uv).xyz;
     
     // calculate world space normal perturbed by sampled tangent normal map
     if ((uniforms.toggles_bitmask & 2) == 2) {
-        float3 tangent_normal = sampled_images[pc.albedo_sampled_image_index+3].Sample(sampler, in_vert.uv).xyz * 2.0 - 1.0;
+        float3 tangent_normal = sampled_images[pc.albedo_sampled_image_index+2].Sample(sampler, in_vert.uv).xyz * 2.0 - 1.0;
         normal = normalize(mul(tangent_normal, tbn)); 
     }
 
     // construct PBR data
-    float3 arm = float3(ao, roughness, metallic);
     PbrSurfaceData pbr_surface_data = PbrSurfaceData(world, diffuse, normal, arm);
     CameraData camera_data = CameraData(view);
     float3 sun = uniforms.sun.xyz;

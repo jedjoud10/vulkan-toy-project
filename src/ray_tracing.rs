@@ -212,6 +212,31 @@ pub unsafe fn rebuild_tlas(
     let tmp2 = &[tmp];
     let build_range_infos: &[&[vk::AccelerationStructureBuildRangeInfoKHR]] = &[tmp2];
 
+    let backing_buffer_barrier = vk::BufferMemoryBarrier2::default()
+        .buffer(tlas.data.backing_buffer.buffer)
+        .src_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR | vk::PipelineStageFlags2::FRAGMENT_SHADER | vk::PipelineStageFlags2::ALL_TRANSFER)
+        .dst_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR)
+        .src_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR | vk::AccessFlags2::TRANSFER_WRITE | vk::AccessFlags2::SHADER_READ)
+        .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR | vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR )
+        .size(vk::WHOLE_SIZE)
+        .offset(0)
+        .src_queue_family_index(queue_family_index)
+        .dst_queue_family_index(queue_family_index);
+    let scratch_buffer_barrier = vk::BufferMemoryBarrier2::default()
+        .buffer(tlas.data.scratch_buffer.buffer)
+        .src_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR | vk::PipelineStageFlags2::FRAGMENT_SHADER | vk::PipelineStageFlags2::ALL_TRANSFER)
+        .dst_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR)
+        .src_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR | vk::AccessFlags2::TRANSFER_WRITE | vk::AccessFlags2::SHADER_READ)
+        .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR | vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR)
+        .size(vk::WHOLE_SIZE)
+        .offset(0)
+        .src_queue_family_index(queue_family_index)
+        .dst_queue_family_index(queue_family_index);
+    let buffer_memory_barriers = [backing_buffer_barrier, scratch_buffer_barrier];
+    let dep = vk::DependencyInfo::default()
+        .buffer_memory_barriers(&buffer_memory_barriers);
+    device.cmd_pipeline_barrier2(cmd, &dep);
+
     acceleration_structure_build_geometry_info.scratch_data = vk::DeviceOrHostAddressKHR { device_address: tlas.data.scratch_buffer.address };
     acceleration_structure_build_geometry_info.dst_acceleration_structure = tlas.data.acceleration_structure;
     acceleration_structure_device.cmd_build_acceleration_structures(cmd, &[acceleration_structure_build_geometry_info], build_range_infos);
@@ -219,9 +244,9 @@ pub unsafe fn rebuild_tlas(
     let backing_buffer_barrier = vk::BufferMemoryBarrier2::default()
         .buffer(tlas.data.backing_buffer.buffer)
         .src_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR)
-        .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+        .dst_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR | vk::PipelineStageFlags2::FRAGMENT_SHADER)
         .src_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR)
-        .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR | vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR | vk::AccessFlags2::SHADER_READ)
+        .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR | vk::AccessFlags2::SHADER_READ)
         .size(vk::WHOLE_SIZE)
         .offset(0)
         .src_queue_family_index(queue_family_index)
@@ -229,9 +254,9 @@ pub unsafe fn rebuild_tlas(
     let scratch_buffer_barrier = vk::BufferMemoryBarrier2::default()
         .buffer(tlas.data.scratch_buffer.buffer)
         .src_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR)
-        .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+        .dst_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR | vk::PipelineStageFlags2::FRAGMENT_SHADER)
         .src_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR)
-        .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR | vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR | vk::AccessFlags2::SHADER_READ)
+        .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR | vk::AccessFlags2::SHADER_READ)
         .size(vk::WHOLE_SIZE)
         .offset(0)
         .src_queue_family_index(queue_family_index)

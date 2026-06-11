@@ -22,7 +22,9 @@ pub unsafe fn create_texture(
     ctx: &mut GraphicsContext,
     bytes: Option<&[u8]>,
     size: u32,
+    srgb: bool,
 ) -> Texture {
+    log::debug!("creating texture ({size}x{size}) (from bytes: {})", bytes.is_some());
     let GraphicsContext {
         device,
         queue_family_index,
@@ -33,7 +35,7 @@ pub unsafe fn create_texture(
     } = ctx;
 
     let queue_family_indices = [*queue_family_index];
-    let format = vk::Format::R8G8B8A8_UNORM;
+    let format = if srgb { vk::Format::R8G8B8A8_SRGB } else { vk::Format::R8G8B8A8_UNORM };
 
     let image_create_info = vk::ImageCreateInfo::default()
         .extent(vk::Extent3D {
@@ -86,7 +88,7 @@ pub unsafe fn create_texture(
         .new_layout(vk::ImageLayout::GENERAL)
         .subresource_range(image_subresource_range);
 
-    host_image_copy_device.transition_image_layout(&[transition]);
+    host_image_copy_device.transition_image_layout(&[transition]).unwrap();
 
     if let Some(bytes) = bytes {
         let region = vk::MemoryToImageCopyEXT::default()
@@ -101,7 +103,7 @@ pub unsafe fn create_texture(
             .flags(vk::HostImageCopyFlagsEXT::empty())
             .regions(&regions);
 
-        host_image_copy_device.copy_memory_to_image(&copy_memory_to_image_info);
+        host_image_copy_device.copy_memory_to_image(&copy_memory_to_image_info).unwrap();
     }
     
 
@@ -115,6 +117,14 @@ pub unsafe fn create_texture(
     let image_view = device
         .create_image_view(&image_view_create_info, None)
         .unwrap();
+
+    let transition = vk::HostImageLayoutTransitionInfoEXT::default()
+        .image(image)
+        .old_layout(vk::ImageLayout::GENERAL)
+        .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+        .subresource_range(image_subresource_range);
+
+    host_image_copy_device.transition_image_layout(&[transition]).unwrap();
 
     Texture {
         image,

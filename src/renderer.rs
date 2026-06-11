@@ -1,6 +1,7 @@
 use ash::vk;
 use bytemuck::Pod;
 use bytemuck::Zeroable;
+use bytemuck::bytes_of;
 use bytemuck::cast_slice;
 use bytesize::ByteSize;
 use include_dir::Dir;
@@ -222,6 +223,7 @@ pub struct InternalApp {
 
 
 static COMPILED_SHADERS: Dir = include_dir!("$CARGO_MANIFEST_DIR/compiled_shaders");
+static MATERIALS: Dir = include_dir!("$CARGO_MANIFEST_DIR/materials");
 
 impl InternalApp {
     pub unsafe fn new(event_loop: &ActiveEventLoop, args: crate::Args) -> Self {
@@ -557,7 +559,9 @@ impl InternalApp {
         );
 
         let materials = vec![
-            Material::new(&mut ctx)
+            Material::new(&mut ctx, "metal/metal_0077", &MATERIALS),
+            Material::new(&mut ctx, "ground/ground_0029", &MATERIALS),
+            Material::new(&mut ctx, "metal_2/metal_0066", &MATERIALS)
         ];
 
         Self {
@@ -1028,8 +1032,12 @@ impl InternalApp {
         self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, query_pool, 0);
         scratch_buffer.begin_of_cmd_recording(&self.device, cmd);
         
-        self.lights[0] = (vek::Vec3::lerp(self.lights[0].xyz(), self.movement.forward() + self.movement.position, 10f32 * delta)).with_w(0f32);
+
+        // update lights and its respective buffer
+        self.lights[0] = (vek::Vec3::lerp(self.lights[0].xyz(), self.movement.forward() * 5f32 + self.movement.position, 10f32 * delta)).with_w(0f32);
         self.device.cmd_update_buffer(cmd, self.lights_buffer.buffer, 0, cast_slice(self.lights.as_slice()));
+
+
 
         let subresource_range = vk::ImageSubresourceRange::default()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -1437,6 +1445,7 @@ impl InternalApp {
         
         // render chunks
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_CHUNK_SPV]);
+        self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytes_of(&self.materials[1].albedo_index));
         self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
         self.device.cmd_bind_vertex_buffers(cmd, 0, &[self.multiple_chunks.vertex_buffer.buffer], &[0]);
         self.device.cmd_bind_index_buffer(cmd, self.multiple_chunks.index_buffer.buffer, 0, vk::IndexType::UINT32);
@@ -1444,9 +1453,9 @@ impl InternalApp {
 
         // render models
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_SPV]);
-        for model in self.models.iter() {
+        for (i, model) in self.models.iter().enumerate() {
             self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
-            model.render(cmd, &self.device, self.main_pipeline_layout, &self.materials[0]);
+            model.render(cmd, &self.device, self.main_pipeline_layout, &self.materials[i % self.materials.len()]);
         }        
 
         self.device.cmd_end_rendering(cmd);
