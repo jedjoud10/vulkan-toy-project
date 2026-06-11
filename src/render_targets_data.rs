@@ -146,6 +146,42 @@ impl RenderTargetsData {
                 .unwrap();
             self.bloom_mip_image_views.push(image_view);
         }
+
+        /*
+        // transfer layout of newly created images on host 
+        let subresource_range = vk::ImageSubresourceRange::default()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .level_count(1)
+            .layer_count(1);
+        let depth_subresource_range = vk::ImageSubresourceRange::default()
+            .aspect_mask(vk::ImageAspectFlags::DEPTH)
+            .level_count(1)
+            .layer_count(1);
+
+        let rendered_image_transition = vk::HostImageLayoutTransitionInfoEXT::default()
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .image(self.rendered_image)
+            .subresource_range(subresource_range);
+
+        let depth_image_transition = vk::HostImageLayoutTransitionInfoEXT::default()
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+            .image(self.rendered_depth_image)
+            .subresource_range(depth_subresource_range);
+
+        let bloom_subresource_range = vk::ImageSubresourceRange::default()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .level_count(vk::REMAINING_MIP_LEVELS)
+            .layer_count(1);
+        let bloom_image_transition = vk::HostImageLayoutTransitionInfoEXT::default()
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .image(self.bloom_image)
+            .subresource_range(bloom_subresource_range);
+
+        ctx.host_image_copy_device.transition_image_layout(&[rendered_image_transition, bloom_image_transition, depth_image_transition]).unwrap();
+        */
     }
     
     pub unsafe fn destroy_rt_images_and_image_views(&mut self, device: &ash::Device, allocator: &mut gpu_allocator::vulkan::Allocator) {
@@ -223,97 +259,4 @@ unsafe fn create_image(
 
     crate::debug::set_object_name(image, debug_marker, name);
     (image, image_allocation)
-}
-
-pub unsafe fn transfer_layout_for_images(
-    device: &ash::Device,
-    queue_family_index: u32,
-    const_data: &RenderTargetsData,
-    pool: vk::CommandPool,
-    queue: vk::Queue,
-) {
-    let cmd_buffer_create_info = vk::CommandBufferAllocateInfo::default()
-        .command_buffer_count(1)
-        .level(vk::CommandBufferLevel::PRIMARY)
-        .command_pool(pool);
-    let cmd = device
-        .allocate_command_buffers(&cmd_buffer_create_info)
-        .unwrap()[0];
-
-    let cmd_buffer_begin_info =
-        vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-    device
-        .begin_command_buffer(cmd, &cmd_buffer_begin_info)
-        .unwrap();
-
-    let subresource_range = vk::ImageSubresourceRange::default()
-        .aspect_mask(vk::ImageAspectFlags::COLOR)
-        .level_count(1)
-        .layer_count(1);
-    let depth_subresource_range = vk::ImageSubresourceRange::default()
-        .aspect_mask(vk::ImageAspectFlags::DEPTH)
-        .level_count(1)
-        .layer_count(1);
-
-    let rendered_image_transition = vk::ImageMemoryBarrier2::default()
-        .old_layout(vk::ImageLayout::UNDEFINED)
-        .new_layout(vk::ImageLayout::GENERAL)
-        .src_access_mask(vk::AccessFlags2::NONE)
-        .dst_access_mask(
-            vk::AccessFlags2::TRANSFER_READ
-                | vk::AccessFlags2::SHADER_WRITE
-                | vk::AccessFlags2::SHADER_STORAGE_WRITE,
-        )
-        .src_stage_mask(vk::PipelineStageFlags2::NONE)
-        .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-        .src_queue_family_index(queue_family_index)
-        .dst_queue_family_index(queue_family_index)
-        .image(const_data.rendered_image)
-        .subresource_range(subresource_range);
-
-    let depth_image_transition = vk::ImageMemoryBarrier2::default()
-        .old_layout(vk::ImageLayout::UNDEFINED)
-        .new_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
-        .src_access_mask(vk::AccessFlags2::NONE)
-        .dst_access_mask(vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ)
-        .src_stage_mask(vk::PipelineStageFlags2::NONE)
-        .dst_stage_mask(vk::PipelineStageFlags2::ALL_GRAPHICS)
-        .src_queue_family_index(queue_family_index)
-        .dst_queue_family_index(queue_family_index)
-        .image(const_data.rendered_depth_image)
-        .subresource_range(depth_subresource_range);
-
-    let bloom_subresource_range = vk::ImageSubresourceRange::default()
-        .aspect_mask(vk::ImageAspectFlags::COLOR)
-        .level_count(vk::REMAINING_MIP_LEVELS)
-        .layer_count(1);
-    let bloom_image_transition = vk::ImageMemoryBarrier2::default()
-        .old_layout(vk::ImageLayout::UNDEFINED)
-        .new_layout(vk::ImageLayout::GENERAL)
-        .src_access_mask(vk::AccessFlags2::NONE)
-        .dst_access_mask(
-            vk::AccessFlags2::TRANSFER_READ
-                | vk::AccessFlags2::SHADER_WRITE
-                | vk::AccessFlags2::SHADER_STORAGE_WRITE
-                | vk::AccessFlags2::SHADER_SAMPLED_READ,
-        )
-        .src_stage_mask(vk::PipelineStageFlags2::NONE)
-        .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-        .src_queue_family_index(queue_family_index)
-        .dst_queue_family_index(queue_family_index)
-        .image(const_data.bloom_image)
-        .subresource_range(bloom_subresource_range);
-
-    let barriers = [rendered_image_transition, bloom_image_transition, depth_image_transition];
-    let dep = vk::DependencyInfo::default().image_memory_barriers(&barriers);
-    device.cmd_pipeline_barrier2(cmd, &dep);
-
-    
-    device.end_command_buffer(cmd).unwrap();
-    let cmds = [cmd];
-    let submit_info = vk::SubmitInfo::default()
-        .command_buffers(&cmds);
-    device.queue_submit(queue, &[submit_info], vk::Fence::null()).unwrap();
-    device.device_wait_idle().unwrap();
-    device.free_command_buffers(pool, &[cmd]);
 }

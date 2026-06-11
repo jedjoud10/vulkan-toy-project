@@ -1,5 +1,7 @@
 use ash::vk;
 use gpu_allocator::vulkan::{Allocation, Allocator};
+
+use crate::renderer::GraphicsContext;
 pub struct Skybox {
     pub skybox_image: vk::Image,
     pub skybox_image_view: vk::ImageView,
@@ -46,13 +48,17 @@ const FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
 
 
 pub unsafe fn create_skybox(
-    device: &ash::Device,
-    allocator: &mut Allocator,
-    binder: &Option<ash::ext::debug_utils::Device>,
-    queue: vk::Queue,
-    pool: vk::CommandPool,
-    queue_family_index: u32,
+    ctx: &mut GraphicsContext,
 ) -> Skybox {
+    let GraphicsContext {
+        device,
+        queue_family_index,
+        host_image_copy_device,
+        ref mut allocator,
+        debug_marker,
+        ..
+    } = *ctx;
+
     let queue_family_indices = [queue_family_index];
     
     let skybox_image_create_info = vk::ImageCreateInfo::default()
@@ -67,13 +73,13 @@ pub unsafe fn create_skybox(
         .mip_levels(1)
         .sharing_mode(vk::SharingMode::EXCLUSIVE)
         .flags(vk::ImageCreateFlags::CUBE_COMPATIBLE)
-        .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::STORAGE)
+        .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::HOST_TRANSFER_EXT)
         .samples(vk::SampleCountFlags::TYPE_1)
         .queue_family_indices(&queue_family_indices)
         .tiling(vk::ImageTiling::OPTIMAL)
         .array_layers(6);
     let skybox_image = device.create_image(&skybox_image_create_info, None).unwrap();
-    crate::debug::set_object_name(skybox_image, binder, "Skybox Texture");
+    crate::debug::set_object_name(skybox_image, debug_marker, "Skybox Texture");
 
     let requirements = device.get_image_memory_requirements(skybox_image);
     let skybox_image_allocation = allocator
@@ -98,13 +104,13 @@ pub unsafe fn create_skybox(
         .initial_layout(vk::ImageLayout::UNDEFINED)
         .mip_levels(1)
         .sharing_mode(vk::SharingMode::EXCLUSIVE)
-        .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::STORAGE)
+        .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::HOST_TRANSFER_EXT)
         .samples(vk::SampleCountFlags::TYPE_1)
         .queue_family_indices(&queue_family_indices)
         .tiling(vk::ImageTiling::OPTIMAL)
         .array_layers(1);
     let clouds_image = device.create_image(&clouds_image_create_info, None).unwrap();
-    crate::debug::set_object_name(clouds_image, binder, "Clouds Texture");
+    crate::debug::set_object_name(clouds_image, debug_marker, "Clouds Texture");
 
     let requirements = device.get_image_memory_requirements(clouds_image);
     let clouds_image_allocation = allocator
@@ -131,13 +137,13 @@ pub unsafe fn create_skybox(
         .mip_levels(1)
         .sharing_mode(vk::SharingMode::EXCLUSIVE)
         .flags(vk::ImageCreateFlags::CUBE_COMPATIBLE)
-        .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::STORAGE)
+        .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::HOST_TRANSFER_EXT)
         .samples(vk::SampleCountFlags::TYPE_1)
         .queue_family_indices(&queue_family_indices)
         .tiling(vk::ImageTiling::OPTIMAL)
         .array_layers(6);
     let ambient_skybox_image = device.create_image(&ambient_skybox_image_create_info, None).unwrap();
-    crate::debug::set_object_name(ambient_skybox_image, binder, "Ambient Skybox Texture");
+    crate::debug::set_object_name(ambient_skybox_image, debug_marker, "Ambient Skybox Texture");
 
     let requirements = device.get_image_memory_requirements(ambient_skybox_image);
     let ambient_skybox_image_allocation = allocator
@@ -150,16 +156,6 @@ pub unsafe fn create_skybox(
         })
         .unwrap();
     device.bind_image_memory(ambient_skybox_image, ambient_skybox_image_allocation.memory(), ambient_skybox_image_allocation.offset()).unwrap();
-
-    // create command buffer
-    let cmd_buffer_create_info = vk::CommandBufferAllocateInfo::default()
-        .command_buffer_count(1)
-        .level(vk::CommandBufferLevel::PRIMARY)
-        .command_pool(pool);
-    let cmd = device
-        .allocate_command_buffers(&cmd_buffer_create_info)
-        .unwrap()[0];
-    device.begin_command_buffer(cmd, &Default::default()).unwrap();
 
     let skybox_image_subresource_range = vk::ImageSubresourceRange::default()
         .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -174,71 +170,30 @@ pub unsafe fn create_skybox(
         .base_mip_level(0)
         .level_count(1);
 
-    let skybox_image_layout_transition = vk::ImageMemoryBarrier2::default()
-        .old_layout(vk::ImageLayout::UNDEFINED)
-        .new_layout(vk::ImageLayout::GENERAL)
-        .src_access_mask(vk::AccessFlags2::empty())
-        .dst_access_mask(vk::AccessFlags2::MEMORY_WRITE)
-        .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-        .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-        .src_queue_family_index(queue_family_index)
-        .dst_queue_family_index(queue_family_index)
+    let skybox_image_layout_transition = vk::HostImageLayoutTransitionInfoEXT::default()
         .image(skybox_image)
-        .subresource_range(skybox_image_subresource_range);
-    let ambient_skybox_image_layout_transition = vk::ImageMemoryBarrier2::default()
         .old_layout(vk::ImageLayout::UNDEFINED)
         .new_layout(vk::ImageLayout::GENERAL)
-        .src_access_mask(vk::AccessFlags2::empty())
-        .dst_access_mask(vk::AccessFlags2::MEMORY_WRITE)
-        .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-        .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-        .src_queue_family_index(queue_family_index)
-        .dst_queue_family_index(queue_family_index)
+        .subresource_range(skybox_image_subresource_range);
+    let ambient_skybox_image_layout_transition = vk::HostImageLayoutTransitionInfoEXT::default()
         .image(ambient_skybox_image)
-        .subresource_range(skybox_image_subresource_range);
-    let clouds_image_layout_transition = vk::ImageMemoryBarrier2::default()
         .old_layout(vk::ImageLayout::UNDEFINED)
         .new_layout(vk::ImageLayout::GENERAL)
-        .src_access_mask(vk::AccessFlags2::empty())
-        .dst_access_mask(vk::AccessFlags2::MEMORY_WRITE)
-        .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-        .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-        .src_queue_family_index(queue_family_index)
-        .dst_queue_family_index(queue_family_index)
+        .subresource_range(skybox_image_subresource_range);
+    let clouds_image_layout_transition = vk::HostImageLayoutTransitionInfoEXT::default()
         .image(clouds_image)
+        .old_layout(vk::ImageLayout::UNDEFINED)
+        .new_layout(vk::ImageLayout::GENERAL)
         .subresource_range(clouds_image_subresource_range);
-    let image_memory_barriers = [skybox_image_layout_transition, ambient_skybox_image_layout_transition, clouds_image_layout_transition];
-    let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
-    device.cmd_pipeline_barrier2(cmd, &dep);
 
-    // end command buffer and submit
-    device.end_command_buffer(cmd).unwrap();
-    let buffers = [cmd];
-    let submit = vk::SubmitInfo::default()
-        .command_buffers(&buffers);
-    device.queue_submit(queue, & [submit], vk::Fence::null()).unwrap();
-    device.device_wait_idle().unwrap();
-
-    let skybox_subresource_range = vk::ImageSubresourceRange::default()
-        .aspect_mask(vk::ImageAspectFlags::COLOR)
-        .base_mip_level(0)
-        .base_array_layer(0)
-        .layer_count(6)
-        .level_count(1);
-
-    let clouds_subresource_range = vk::ImageSubresourceRange::default()
-        .aspect_mask(vk::ImageAspectFlags::COLOR)
-        .base_mip_level(0)
-        .base_array_layer(0)
-        .layer_count(1)
-        .level_count(1);
+    host_image_copy_device.transition_image_layout(&[skybox_image_layout_transition, ambient_skybox_image_layout_transition, clouds_image_layout_transition]).unwrap();
 
     let skybox_image_view_create_info = vk::ImageViewCreateInfo::default()
         .components(vk::ComponentMapping::default())
         .flags(vk::ImageViewCreateFlags::empty())
         .format(FORMAT)
         .image(skybox_image)
-        .subresource_range(skybox_subresource_range)
+        .subresource_range(skybox_image_subresource_range)
         .view_type(vk::ImageViewType::CUBE);
     let skybox_image_view = device
         .create_image_view(&skybox_image_view_create_info, None)
@@ -250,7 +205,7 @@ pub unsafe fn create_skybox(
         .flags(vk::ImageViewCreateFlags::empty())
         .format(FORMAT)
         .image(ambient_skybox_image)
-        .subresource_range(skybox_subresource_range)
+        .subresource_range(skybox_image_subresource_range)
         .view_type(vk::ImageViewType::CUBE);
     let ambient_skybox_image_view = device
         .create_image_view(&ambient_skybox_image_view_create_info, None)
@@ -261,7 +216,7 @@ pub unsafe fn create_skybox(
         .flags(vk::ImageViewCreateFlags::empty())
         .format(FORMAT)
         .image(skybox_image)
-        .subresource_range(skybox_subresource_range)
+        .subresource_range(skybox_image_subresource_range)
         .view_type(vk::ImageViewType::TYPE_2D_ARRAY);
     let skybox_array_image_view = device
         .create_image_view(&skybox_image_view_create_info, None)
@@ -272,7 +227,7 @@ pub unsafe fn create_skybox(
         .flags(vk::ImageViewCreateFlags::empty())
         .format(FORMAT)
         .image(ambient_skybox_image)
-        .subresource_range(skybox_subresource_range)
+        .subresource_range(skybox_image_subresource_range)
         .view_type(vk::ImageViewType::TYPE_2D_ARRAY);
     let ambient_skybox_array_image_view = device
         .create_image_view(&ambient_skybox_image_view_create_info, None)
@@ -284,7 +239,7 @@ pub unsafe fn create_skybox(
         .flags(vk::ImageViewCreateFlags::empty())
         .format(FORMAT)
         .image(clouds_image)
-        .subresource_range(clouds_subresource_range)
+        .subresource_range(clouds_image_subresource_range)
         .view_type(vk::ImageViewType::TYPE_2D);
     let clouds_image_view = device
         .create_image_view(&clouds_image_view_create_info, None)
