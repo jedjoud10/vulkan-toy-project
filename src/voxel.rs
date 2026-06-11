@@ -235,7 +235,7 @@ impl MultipleChunks {
             TRIANGLES_PER_CHUNK * 3 * chunk_index,
             INDEX_STRIDE,
             &self.vertex_buffer,
-            &self.index_buffer
+            &self.index_buffer,
         )
     }
     

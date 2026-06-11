@@ -59,8 +59,10 @@ fn main() {
     println!("cargo:rerun-if-changed=shaders");
     let global_session = GlobalSession::new().unwrap();
 
+    // TODO: revert optimization level when vulkan-sdk ships with latest slang compiler bugfix for NonUniform indexing
+    // nvm I still get the HWRT blocky group artifacts on my hw. AMD driver issue perhaps? could also be a code issue. I might be missing a NonUniform somewhere
     let session_options = CompilerOptions::default()
-        .optimization(OptimizationLevel::Maximal)
+        .optimization(OptimizationLevel::None)
         .debug_information(DebugInfoLevel::None)
         .obfuscate(false)
         .no_mangle(true)

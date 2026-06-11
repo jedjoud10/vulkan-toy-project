@@ -4,6 +4,13 @@ use gpu_allocator::vulkan::Allocator;
 
 use crate::{buffer, debug, material::Material, others, ray_tracing, renderer::GraphicsContext, texture};
 
+#[derive(Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+pub struct GpuModelMetadata {
+    pub material_base_index: u32,
+    pub storage_buffers_base_index: u32,
+}
+
 // pretty inefficient as there's no batching or culling of any kind
 pub struct Model {
     vertex_positions_buffer: buffer::Buffer,
@@ -16,10 +23,13 @@ pub struct Model {
     blas: ray_tracing::AccelerationStructureData,
     pub instance: vk::AccelerationStructureInstanceKHR,
     position: vek::Vec3<f32>,
+    pub base_index: u32,
+
+    pub material_index: u32,
 }
 
 impl Model {
-    pub unsafe fn new(position: vek::Vec3<f32>, obj_model_bytes: &[u8], ctx: &mut GraphicsContext) -> Self {
+    pub unsafe fn new(position: vek::Vec3<f32>, obj_model_bytes: &[u8], ctx: &mut GraphicsContext, material_index: u32) -> Self {
         let obj = obj::load_obj::<obj::TexturedVertex, &[u8], u32>(obj_model_bytes).unwrap();
 
         let mut positions = Vec::<vek::Vec3<f32>>::new();
@@ -66,7 +76,7 @@ impl Model {
             0,
             size_of::<u32>(),
             &vertex_positions_buffer,
-            &index_buffer
+            &index_buffer,
         );
 
         ctx.device.end_command_buffer(cmd).unwrap();
@@ -90,13 +100,27 @@ impl Model {
             blas,
             instance,
             position,
+            base_index: 0,
+            material_index,
         }
     }
 
+    pub fn add_per_frame_backing_storage_buffers(&mut self, storage_buffers: &mut Vec<vk::DescriptorBufferInfo>) {
+        self.base_index = storage_buffers.len() as u32;
+
+        storage_buffers.push(vk::DescriptorBufferInfo::default().buffer(self.index_buffer.buffer).range(vk::WHOLE_SIZE));
+        storage_buffers.push(vk::DescriptorBufferInfo::default().buffer(self.vertex_normals_buffer.buffer).range(vk::WHOLE_SIZE));
+        storage_buffers.push(vk::DescriptorBufferInfo::default().buffer(self.vertex_uvs_buffer.buffer).range(vk::WHOLE_SIZE));
+    }
+
     pub fn update(&mut self, elapsed: f32, movement: &crate::movement::Movement) {
-        //let position = movement.position + movement.forward() * 2f32;
+        let position = self.position;
+        let rotation = vek::Quaternion::identity();
+        
+        /*
         let position = self.position + vek::Vec3::unit_y() * elapsed.sin() * 0.2f32;
         let rotation = vek::Quaternion::rotation_x(elapsed * 0.2f32);
+        */
         let scale = 3f32;
 
         let matrix = vek::Mat4::from(rotation).scaled_3d(scale).translated_3d(position);
@@ -108,17 +132,17 @@ impl Model {
         self.instance.transform = vk::TransformMatrixKHR { matrix } 
     }
 
-    pub unsafe fn render(&self, cmd: vk::CommandBuffer, device: &ash::Device, pipeline_layout: vk::PipelineLayout, material: &Material) {
+    pub unsafe fn render(&self, cmd: vk::CommandBuffer, device: &ash::Device, pipeline_layout: vk::PipelineLayout, materials: &[Material]) {
         #[derive(Clone, Copy, Pod, Zeroable)]
         #[repr(C)]
         struct PushConstant {
             object_to_world: vek::Mat4<f32>,
-            albedo_sampled_image_index: usize,
+            albedo_sampled_image_index: u32,
         }
 
         let pc = PushConstant {
             object_to_world: self.object_to_world,
-            albedo_sampled_image_index: material.albedo_index,
+            albedo_sampled_image_index: materials[self.material_index as usize].base_index,
         };
 
         device.cmd_bind_vertex_buffers(cmd, 0, &[self.vertex_positions_buffer.buffer, self.vertex_normals_buffer.buffer, self.vertex_uvs_buffer.buffer], &[0, 0, 0]);

@@ -13,6 +13,7 @@ use crate::input::Button;
 use crate::input::Input;
 use crate::material::Material;
 use crate::model;
+use crate::model::GpuModelMetadata;
 use crate::movement::Movement;
 use crate::per_frame_data;
 use crate::ray_tracing;
@@ -68,6 +69,9 @@ const NUM_LIGHTS: usize = 1;
 const SUN_SHADOW_RAY_ENABLED: bool = true;
 const EXTRA_LIGHTS_ENABLED: bool = false;
 const EXTRA_LIGHTS_SHADOW_RAY_ENABLED: bool = true;
+const VERY_SHINY_REFLECTIVE_SURFACES: bool = false;
+const DEBUG_TEXT_BUFFER_SIZE_BYTES: usize = 1024;
+const GPU_MODEL_METADATA_BUFFER_MAX_ELEMENT_COUNT: usize = 1024;
         
 
 const VERTEX_ATTRIBUTE_DESCRIPTIONS: &'static [vk::VertexInputAttributeDescription] = &[vk::VertexInputAttributeDescription {
@@ -190,6 +194,7 @@ pub struct InternalApp {
     multiple_chunks: voxel::MultipleChunks,
     chunks: Vec<voxel::Chunk>,
     models: Vec<model::Model>,
+    models_buffer: buffer::Buffer,
     tlas: ray_tracing::TopLevelAccelerationStructure,
     static_instances: Vec<vk::AccelerationStructureInstanceKHR>,
     dynamic_instances: Vec<vk::AccelerationStructureInstanceKHR>,
@@ -377,10 +382,11 @@ impl InternalApp {
         let mut compute_pipelines = HashMap::<&'static str, pipeline::GenericComputePipeline>::new();
 
         let rasterization_base_spec_constants = [
-            SUN_SHADOW_RAY_ENABLED as u32, // enable sun shadow ray
-            EXTRA_LIGHTS_ENABLED as u32, // enable extra lights
-            EXTRA_LIGHTS_SHADOW_RAY_ENABLED as u32, // enable extra lights shadow ray
-            NUM_LIGHTS as u32, // extra lights number
+            SUN_SHADOW_RAY_ENABLED as u32, 
+            EXTRA_LIGHTS_ENABLED as u32,
+            EXTRA_LIGHTS_SHADOW_RAY_ENABLED as u32,
+            VERY_SHINY_REFLECTIVE_SURFACES as u32,
+            NUM_LIGHTS as u32, 
         ];
 
         let settings = [pipeline::PipelineCreateSettings {
@@ -528,16 +534,17 @@ impl InternalApp {
         let multiple_chunks = voxel::MultipleChunks::create(&mut ctx, index);
         
         let models = vec![
-            model::Model::new(vek::Vec3::new(0f32, 20f32, 0f32), include_bytes!("../models/sphere.obj"), &mut ctx),
-            model::Model::new(vek::Vec3::new(10f32, 20f32, 0f32), include_bytes!("../models/not_so_sphere.obj"), &mut ctx),
-            model::Model::new(vek::Vec3::new(-10f32, 20f32, 0f32), include_bytes!("../models/modular_industrial_pipes_01_1k.obj"), &mut ctx),
-            model::Model::new(vek::Vec3::new(-30f32, 20f32, 0f32), include_bytes!("../models/namaqualand_boulder_02_1k.obj"), &mut ctx),
+            model::Model::new(vek::Vec3::new(0f32, 20f32, 0f32), include_bytes!("../models/sphere.obj"), &mut ctx, 0),
+            model::Model::new(vek::Vec3::new(10f32, 20f32, 0f32), include_bytes!("../models/not_so_sphere.obj"), &mut ctx, 1),
+            model::Model::new(vek::Vec3::new(-10f32, 20f32, 0f32), include_bytes!("../models/modular_industrial_pipes_01_1k.obj"), &mut ctx, 2),
+            model::Model::new(vek::Vec3::new(-30f32, 20f32, 0f32), include_bytes!("../models/namaqualand_boulder_02_1k.obj"), &mut ctx, 0),
         ];
 
         let tlas = ray_tracing::pre_create_tlas(&mut ctx);
 
         let tesselation_buffer = tesselation::precompute_tesselation_buffer(&mut ctx);
-        let debug_text_buffer = buffer::create_buffer(&mut ctx, 1024, "debug text", vk::BufferUsageFlags::STORAGE_BUFFER);
+
+        let debug_text_buffer = buffer::create_buffer(&mut ctx, DEBUG_TEXT_BUFFER_SIZE_BYTES, "debug text", vk::BufferUsageFlags::STORAGE_BUFFER);
 
         let render_finished_semaphores: SmallVec<[vk::Semaphore; swapchain::SWAPCHAIN_IMAGES]> = (0..swapchain::SWAPCHAIN_IMAGES).into_iter().map(|_| {
             device.create_semaphore(&Default::default(), None).unwrap()
@@ -556,7 +563,10 @@ impl InternalApp {
             Material::new(&mut ctx, "metal_2/metal_0066", &MATERIALS)
         ];
 
+        let models_buffer = buffer::create_buffer(&mut ctx, size_of::<GpuModelMetadata>() * GPU_MODEL_METADATA_BUFFER_MAX_ELEMENT_COUNT, "models metadata buffer", vk::BufferUsageFlags::empty());
+
         Self {
+            models_buffer,
             multiple_chunks,
             last_frame_cpu_cmd_record_duration: Default::default(),
             frame_count: 0,
@@ -637,7 +647,7 @@ impl InternalApp {
         };
 
         if add {
-            let new_model = model::Model::new(position, include_bytes!("../models/sphere.obj"), &mut ctx);
+            let new_model = model::Model::new(position, include_bytes!("../models/sphere.obj"), &mut ctx, (self.models.len() % self.materials.len()) as u32);
             self.models.push(new_model);
         }
     }
@@ -899,7 +909,7 @@ impl InternalApp {
             .image_info(&storage_image_infos);      
 
         // create bindless descriptor write for storage buffers
-        let storage_buffer_infos = [
+        let mut storage_buffer_infos = vec![
             vk::DescriptorBufferInfo::default()
                 .buffer(self.uniform_buffer.buffer)
                 .offset(0)
@@ -932,7 +942,17 @@ impl InternalApp {
                 .buffer(index_counter.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
+            vk::DescriptorBufferInfo::default()
+                .buffer(self.models_buffer.buffer)
+                .offset(0)
+                .range(vk::WHOLE_SIZE),
         ];
+
+        // add models' backing storage buffers
+        for model in self.models.iter_mut() {
+            model.add_per_frame_backing_storage_buffers(&mut storage_buffer_infos);
+        }
+
         let storage_buffer_write = vk::WriteDescriptorSet::default()
             .descriptor_count(storage_buffer_infos.len() as u32)
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
@@ -1027,6 +1047,21 @@ impl InternalApp {
         // update lights and its respective buffer
         self.lights[0] = (vek::Vec3::lerp(self.lights[0].xyz(), self.movement.forward() * 5f32 + self.movement.position, 10f32 * delta)).with_w(0f32);
         self.device.cmd_update_buffer(cmd, self.lights_buffer.buffer, 0, cast_slice(self.lights.as_slice()));
+
+        // update dynamic instances for TLAS
+        self.dynamic_instances.clear();
+        let mut models_metadata_buffer_write =  Vec::<GpuModelMetadata>::new();
+        for model in self.models.iter_mut() {
+            model.update(elapsed, &self.movement);
+            self.dynamic_instances.push(model.instance);
+            models_metadata_buffer_write.push(GpuModelMetadata {
+                material_base_index: self.materials[model.material_index as usize].base_index,
+                storage_buffers_base_index: model.base_index,
+            });
+        }
+
+        // update models metadata buffer
+        self.device.cmd_update_buffer(cmd, self.models_buffer.buffer, 0, cast_slice(models_metadata_buffer_write.as_slice()));
 
 
 
@@ -1166,7 +1201,16 @@ impl InternalApp {
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)
             .size(vk::WHOLE_SIZE);
-        let buffer_memory_barriers = [uniform_buffer_barrier, debug_text_buffer_barrier, lights_buffer_barrier];
+        let materials_buffer_barrier = vk::BufferMemoryBarrier2::default()
+            .buffer(self.models_buffer.buffer)
+            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .size(vk::WHOLE_SIZE);
+        let buffer_memory_barriers = [uniform_buffer_barrier, debug_text_buffer_barrier, lights_buffer_barrier, materials_buffer_barrier];
         let dep = vk::DependencyInfo::default().buffer_memory_barriers(&buffer_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
@@ -1231,6 +1275,7 @@ impl InternalApp {
 
         self.device.cmd_dispatch(cmd, skybox::AMBIENT_SKYBOX_RESOLUTION, skybox::AMBIENT_SKYBOX_RESOLUTION, 6);
 
+        /*
         if !*built {
             let mut ctx = GraphicsContext {
                 device: &self.device,
@@ -1262,13 +1307,7 @@ impl InternalApp {
             *built = true;
             self.static_instances.push(instance);
         }
-
-        // update dynamic instances for TLAS
-        self.dynamic_instances.clear();
-        for model in self.models.iter_mut() {
-            model.update(elapsed, &self.movement);
-            self.dynamic_instances.push(model.instance);
-        }
+        */
 
         // rebuild TLAS
         ray_tracing::rebuild_tlas(
@@ -1338,10 +1377,10 @@ impl InternalApp {
         let depth_image_barrier = vk::ImageMemoryBarrier2::default()
             .old_layout(vk::ImageLayout::UNDEFINED)
             .new_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
-            .src_access_mask(vk::AccessFlags2::NONE)
-            .dst_access_mask(vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE | vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ)
-            .src_stage_mask(vk::PipelineStageFlags2::NONE)
-            .dst_stage_mask(vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS | vk::PipelineStageFlags2::FRAGMENT_SHADER)
+            .src_access_mask(vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE)
+            .dst_access_mask(vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE)
+            .src_stage_mask(vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS)
+            .dst_stage_mask(vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS)
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)
             .image(render_targets.rendered_depth_image)
@@ -1450,7 +1489,7 @@ impl InternalApp {
         
         // render chunks
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_CHUNK_SPV]);
-        self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytes_of(&self.materials[1].albedo_index));
+        self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytes_of(&1u32));
         self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
         self.device.cmd_bind_vertex_buffers(cmd, 0, &[self.multiple_chunks.vertex_buffer.buffer], &[0]);
         self.device.cmd_bind_index_buffer(cmd, self.multiple_chunks.index_buffer.buffer, 0, vk::IndexType::UINT32);
@@ -1460,7 +1499,7 @@ impl InternalApp {
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_SPV]);
         for (i, model) in self.models.iter().enumerate() {
             self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
-            model.render(cmd, &self.device, self.main_pipeline_layout, &self.materials[i % self.materials.len()]);
+            model.render(cmd, &self.device, self.main_pipeline_layout, &self.materials);
         }        
 
         self.device.cmd_end_rendering(cmd);
@@ -1749,6 +1788,9 @@ impl InternalApp {
 
         self.lights_buffer.destroy(&self.device, &mut self.allocator);
         log::info!("destroyed lights buffer");
+
+        self.models_buffer.destroy(&self.device, &mut self.allocator);
+        log::info!("destroyed models buffer");
 
         self.uniform_buffer.destroy(&self.device, &mut self.allocator);
         log::info!("destroyed per frame uniform buffer");    

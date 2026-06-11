@@ -19,6 +19,11 @@ struct UniformThing {
     float32_t time;
 };
 
+struct GpuModelMetadata {
+    uint32_t material_base_index;
+    uint32_t storage_buffers_base_index;
+}
+
 const static uint SWAPCHAIN_STORAGE_IMAGE_IDX = 0;
 const static uint RENDERED_STORAGE_IMAGE_IDX = 1;
 const static uint SKYBOX_STORAGE_IMAGE_IDX = 2;
@@ -34,7 +39,7 @@ const static uint STORAGE_BUFFER_LIGHTS_BUFFER = 4;
 const static uint STORAGE_BUFFER_DEBUG_TEXT_LINES = 5;
 const static uint STORAGE_BUFFER_VERTEX_COUNTER_IDX = 6;
 const static uint STORAGE_BUFFER_INDEX_COUNTER_IDX = 7;
-
+const static uint STORAGE_BUFFER_MODELS_METADATA_IDX = 8;
 
 const static uint SKYBOX_SAMPLER_IMAGE_IDX = 0;
 const static uint AMBIENT_SKYBOX_SAMPLER_IMAGE_IDX = 1;

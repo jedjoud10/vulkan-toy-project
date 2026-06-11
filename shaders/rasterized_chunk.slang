@@ -57,7 +57,7 @@ float4 frag_main(VertexOutput in_vert, uniform uint material_base_texture_index)
 
     
     // construct PBR data
-    PbrSurfaceData pbr_surface_data = PbrSurfaceData(world, diffuse, normal, arm);
+    PbrSurfaceData pbr_surface_data = PbrSurfaceData(world, diffuse, normal, AoRoughnessMetallic(arm));
     CameraData camera_data = CameraData(view);
     float3 sun = uniforms.sun.xyz;
     float3 sun_colour = sun_colour(sun.xyz);

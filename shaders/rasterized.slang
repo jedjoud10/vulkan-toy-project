@@ -5,7 +5,7 @@
 
 struct PushConstants {
     float4x4 object_to_world;
-    uint albedo_sampled_image_index;
+    uint material_base_sampled_image_index;
 }
 
 struct VertexInput {
@@ -43,6 +43,82 @@ VertexOutput vert_main(VertexInput input, uniform PushConstants pc) {
     return output;
 }
 
+/*
+[shader("fragment")]
+float4 frag_main(VertexOutput in_vert, uniform PushConstants pc) : SV_Target {
+    let uniforms = load_per_frame_uniforms();
+
+    float3 world = in_vert.world_pos;
+    float3 normal = normalize(in_vert.world_normal);
+    float3 view = -normalize(in_vert.world_pos - uniforms.position.xyz);  
+
+    float3 ray_pos = in_vert.world_pos;
+    float3 ray_dir = refract(-view, normalize(normal), 0.95);
+
+    RayQuery<RAY_FLAG_CULL_BACK_FACING_TRIANGLES | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_CULL_NON_OPAQUE | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> sq;
+    let flags = RAY_FLAG_CULL_BACK_FACING_TRIANGLES | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_CULL_NON_OPAQUE | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER;
+
+    float factor = 1.0;
+    for (int i = 0; i < 4; i++) {
+        factor = 1.0 - i / 4.0;
+        if ((uniforms.toggles_bitmask & 1) == 1) {
+            RayDesc desc;
+
+            desc.Origin = ray_pos;
+            desc.Direction = ray_dir;
+            desc.TMax = 100;
+            desc.TMin = 0.001;
+            
+            sq.TraceRayInline(acceleration_structures[0], flags, 0xFF, desc);
+            
+            while (sq.Proceed()) {
+                if(sq.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
+                    sq.CommitNonOpaqueTriangleHit();  // forcing to be opaque
+            }
+        
+
+            if (sq.CommittedStatus() == COMMITTED_NOTHING) {
+                return float4(sample_skybox_and_clouds(ray_pos, ray_dir) * factor, 1.0);
+            }
+
+            int custom_index = sq.CommittedRayInstanceCustomIndex();
+
+            GpuModelMetadata metadata = storage_buffers_readonly[STORAGE_BUFFER_MODELS_METADATA_IDX].Load<GpuModelMetadata>(custom_index * sizeof(GpuModelMetadata));
+
+            let index_buffer = storage_buffers_readonly[NonUniformResourceIndex(metadata.storage_buffers_base_index)];
+            let vertex_normals = storage_buffers_readonly[NonUniformResourceIndex(metadata.storage_buffers_base_index+1)];
+            let vertex_uvs = storage_buffers_readonly[NonUniformResourceIndex(metadata.storage_buffers_base_index+2)];
+
+
+            uint triangle_index = sq.CommittedPrimitiveIndex();
+            uint3 indices = index_buffer.Load<uint3>(triangle_index * sizeof(uint3)); 
+
+            float2 barycentrics = sq.CommittedRayBarycentrics();
+
+            float3 n0 = vertex_normals.Load<float3>(indices.x * sizeof(float3));
+            float3 n1 = vertex_normals.Load<float3>(indices.y * sizeof(float3));
+            float3 n2 = vertex_normals.Load<float3>(indices.z * sizeof(float3));
+
+
+
+            world = ray_pos + ray_dir * sq.CommittedRayT();
+            // https://learn.arm.com/learning-paths/mobile-graphics-and-gaming/ray_tracing/rt05_bindless/
+            normal = normalize(n0 * (1 - (barycentrics.x + barycentrics.y)) + n1 * barycentrics.x + n2 * barycentrics.y);
+            normal = mul(sq.CommittedObjectToWorld3x4(), float4(normal, 0.0)).xyz;
+            view = -ray_dir;  
+
+            ray_pos = world;
+            ray_dir = refract(-view, normalize(normal), 0.95);
+
+            //return float4(abs(normal), 1.0);
+        }
+    }
+    
+
+    return float4(float3(factor), 1.0);
+}
+*/
+
 [shader("fragment")]
 float4 frag_main(VertexOutput in_vert, uniform PushConstants pc) : SV_Target {
     let uniforms = load_per_frame_uniforms();
@@ -69,23 +145,23 @@ float4 frag_main(VertexOutput in_vert, uniform PushConstants pc) : SV_Target {
 
     // sample textures
     let sampler = samplers[NEAREST_SAMPLER_IDX];
-    float3 diffuse = sampled_images[pc.albedo_sampled_image_index].Sample(sampler, in_vert.uv).xyz;
-    float3 arm = sampled_images[pc.albedo_sampled_image_index+1].Sample(sampler, in_vert.uv).xyz;
+    float3 diffuse = sampled_images[pc.material_base_sampled_image_index].Sample(sampler, in_vert.uv).xyz;
+    float3 arm = sampled_images[pc.material_base_sampled_image_index+1].Sample(sampler, in_vert.uv).xyz;
     
     // calculate world space normal perturbed by sampled tangent normal map
     if ((uniforms.toggles_bitmask & 2) == 2) {
-        float3 tangent_normal = sampled_images[pc.albedo_sampled_image_index+2].Sample(sampler, in_vert.uv).xyz * 2.0 - 1.0;
+        float3 tangent_normal = sampled_images[pc.material_base_sampled_image_index+2].Sample(sampler, in_vert.uv).xyz * 2.0 - 1.0;
         normal = normalize(mul(tangent_normal, tbn)); 
     }
 
     // construct PBR data
-    PbrSurfaceData pbr_surface_data = PbrSurfaceData(world, diffuse, normal, arm);
+    PbrSurfaceData pbr_surface_data = PbrSurfaceData(world, diffuse, normal, AoRoughnessMetallic(arm));
     CameraData camera_data = CameraData(view);
     float3 sun = uniforms.sun.xyz;
     float3 sun_colour = sun_colour(sun.xyz);
     SunData sun_data = SunData(sun.xyz, sun.y > 0 ? (3.2 * sun_colour) : 0);
 
-    return float4(lighting2(pbr_surface_data, camera_data, sun_data), 1);
+    return float4(lighting3<1>(pbr_surface_data, camera_data, sun_data), 1);
 }
 
 /*

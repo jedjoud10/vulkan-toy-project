@@ -12,7 +12,7 @@ pub struct Material {
     pub arm_texture: Texture,
     pub normal_texture: Texture,
     
-    pub albedo_index: usize,
+    pub base_index: u32,
 }
 
 unsafe fn load_image_and_create_texture(
@@ -91,7 +91,7 @@ impl Material {
             albedo_texture,
             normal_texture,
             arm_texture,
-            albedo_index: 0,
+            base_index: 0,
         }
     }
 
@@ -102,7 +102,7 @@ impl Material {
     }
     
     pub fn add_per_frame_sampled_images(&mut self, sampled_image_infos: &mut Vec<vk::DescriptorImageInfo>) {
-        self.albedo_index = sampled_image_infos.len();
+        self.base_index = sampled_image_infos.len() as u32;
         sampled_image_infos.push(vk::DescriptorImageInfo::default()
             .image_view(self.albedo_texture.image_view)
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL));
