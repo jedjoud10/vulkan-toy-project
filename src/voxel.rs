@@ -1,6 +1,341 @@
 use ash::vk;
 use bytemuck::{Pod, Zeroable, cast_slice};
 use gpu_allocator::vulkan::{Allocation, Allocator};
+use noise::NoiseFn;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
+
+use crate::{buffer, others, ray_tracing, renderer::GraphicsContext};
+
+pub const VERTICES_PER_CHUNK: usize = 1 << 18;
+pub const TRIANGLES_PER_CHUNK: usize = 1 << 18;
+pub const VERTEX_STRIDE: usize = size_of::<vek::Vec3::<f32>>();
+pub const INDEX_STRIDE: usize = size_of::<u32>();
+
+const PADDING: u32 = 2;
+const SIZE: u32 = 64;
+
+pub const CHUNK_SIZE: usize = 64;
+pub const CHUNK_SIZE_WITH_PADDING: usize = 66;
+pub const CHUNK_VOLUME: usize = 66*66*66;
+        
+
+pub struct MultipleChunks {
+    pub chunks: Vec<Chunk>,
+}
+
+impl MultipleChunks {
+    pub unsafe fn create(
+        ctx: &mut GraphicsContext,
+    ) -> Self {
+        let chunk_render_distance = 4i32;
+        let mut chunks = Vec::<Chunk>::new();
+
+        let mut fbm = noise::Fbm::<noise::Perlin>::new(0); 
+        fbm.octaves = 6;
+        fbm.frequency = 0.001;
+        
+        let mut extra = noise::Fbm::<noise::Billow::<noise::Simplex>>::new(0); 
+        extra.octaves = 3;
+        extra.frequency = 0.01;
+
+        
+        let cmd = others::begin_recording(ctx);
+        let mut writer = buffer::create_buffer_writer(ctx);
+
+        let mut chunk_positions = Vec::<vek::Vec3<i32>>::new();
+        for x in -chunk_render_distance..chunk_render_distance {
+            for y in -1..1 {
+                for z in -chunk_render_distance..chunk_render_distance {
+                    chunk_positions.push(vek::Vec3::new(x,y,z));
+                }
+            }
+        }
+
+        let data = chunk_positions.into_par_iter().map(|chunk_offset| {
+            let mut densities = vec![0f32; CHUNK_VOLUME];
+
+            log::debug!("generating densities for chunk {chunk_offset}");
+            for index in 0..CHUNK_VOLUME  {
+                let local_position = index_to_offset(index, CHUNK_SIZE_WITH_PADDING).as_::<i32>();
+                let world_position = local_position + chunk_offset * (CHUNK_SIZE as i32);
+                let pos = world_position.as_::<f64>();
+            
+                let height = fbm.get([pos.x, pos.z]) * 30.0f64;
+            
+                let stepped = (height / 10f64).floor() * 10f64;
+                let diff = ((height - stepped).abs() / 5.0f64) - 0.5;
+
+                let density = pos.y - (stepped + -diff * extra.get([pos.x,pos.z]) * 5.0f64);
+                densities[index] = density as f32;
+            }
+
+            log::debug!("generating mesh for chunk {chunk_offset}");
+            mesh_chunk(densities, chunk_offset)
+        }).collect::<Vec::<(Vec::<vek::Vec3::<f32>>, Vec::<u32>)>>();
+
+        for (vertices, indices) in data {
+            if indices.len() > 0 && vertices.len() > 0 {
+                let vertex_buffer = buffer::create_buffer_with_2(ctx, cmd, &mut writer, cast_slice(vertices.as_slice()), "vertex buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
+                let index_buffer = buffer::create_buffer_with_2(ctx, cmd, &mut writer, cast_slice(indices.as_slice()), "index buffer", vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
+                
+                let vertex_buffer_barrier = vk::BufferMemoryBarrier2::default()
+                    .buffer(vertex_buffer.buffer)
+                    .src_stage_mask(vk::PipelineStageFlags2::COPY)
+                    .dst_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR | vk::PipelineStageFlags2::VERTEX_SHADER)
+                    .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+                    .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR | vk::AccessFlags2::SHADER_READ)
+                    .size(vertex_buffer.size as u64)
+                    .offset(0)
+                    .src_queue_family_index(ctx.queue_family_index)
+                    .dst_queue_family_index(ctx.queue_family_index);
+                let index_buffer_barrier = vk::BufferMemoryBarrier2::default()
+                    .buffer(index_buffer.buffer)
+                    .src_stage_mask(vk::PipelineStageFlags2::COPY)
+                    .dst_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR | vk::PipelineStageFlags2::VERTEX_SHADER)
+                    .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+                    .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR | vk::AccessFlags2::SHADER_READ)
+                    .size(index_buffer.size as u64)
+                    .offset(0)
+                    .src_queue_family_index(ctx.queue_family_index)
+                    .dst_queue_family_index(ctx.queue_family_index);
+                let buffer_memory_barriers = [vertex_buffer_barrier, index_buffer_barrier];
+                let dep = vk::DependencyInfo::default()
+                    .buffer_memory_barriers(&buffer_memory_barriers);
+                ctx.device.cmd_pipeline_barrier2(cmd, &dep);
+
+                let (blas, instance) = ray_tracing::create_blas(
+                    ctx,
+                    cmd,
+                    vertices.len(),
+                    0,
+                    size_of::<vek::Vec3::<f32>>(),
+                    indices.len(),
+                    0,
+                    size_of::<u32>(),
+                    &vertex_buffer,
+                    &index_buffer,
+                    1
+                );
+
+                chunks.push(Chunk {
+                    vertex_buffer,
+                    index_buffer,
+                    blas,
+                    instance,
+                    index_count: indices.len() as u32,
+                });
+            }
+        }
+        
+        others::end_recording_and_submit(ctx, cmd);
+        buffer::end_buffer_writer(ctx, writer);
+        
+        Self {
+            chunks
+        }
+    }
+    
+    pub unsafe fn destroy(self, acceleration_structure_device: &ash::khr::acceleration_structure::Device, device: &ash::Device, allocator: &mut Allocator) {
+        for chunk in self.chunks {
+            chunk.destroy(acceleration_structure_device, device, allocator);
+        }
+    }
+}
+
+pub struct Chunk {    
+    pub vertex_buffer: buffer::Buffer,
+    pub index_buffer: buffer::Buffer,
+
+    pub blas: ray_tracing::AccelerationStructureData,
+    pub instance: vk::AccelerationStructureInstanceKHR,
+    pub index_count: u32,
+}
+
+impl Chunk {
+    pub unsafe fn destroy(self, acceleration_structure_device: &ash::khr::acceleration_structure::Device, device: &ash::Device, allocator: &mut Allocator) {
+        self.index_buffer.destroy(device, allocator);
+        self.vertex_buffer.destroy(device, allocator);
+        self.blas.destroy(acceleration_structure_device, device, allocator);
+    } 
+}
+
+
+const INDEX_QUAD_ORDER: [usize; 6] = [0, 1, 2, 2, 1, 3];
+const INDEX_OPPOSITE_QUAD_ORDER: [usize; 6] = [1, 0, 2, 1, 2, 3];
+
+const EDGE_POSITIONS_0: [vek::Vec3<u32>; 12] = [
+    vek::Vec3::new(0, 0, 0),
+    vek::Vec3::new(1, 0, 0),
+    vek::Vec3::new(1, 1, 0),
+    vek::Vec3::new(0, 1, 0),
+    vek::Vec3::new(0, 0, 1),
+    vek::Vec3::new(1, 0, 1),
+    vek::Vec3::new(1, 1, 1),
+    vek::Vec3::new(0, 1, 1),
+    vek::Vec3::new(0, 0, 0),
+    vek::Vec3::new(1, 0, 0),
+    vek::Vec3::new(1, 1, 0),
+    vek::Vec3::new(0, 1, 0),
+];
+
+const EDGE_POSITIONS_1: [vek::Vec3<u32>; 12] = [
+    vek::Vec3::new(1, 0, 0),
+    vek::Vec3::new(1, 1, 0),
+    vek::Vec3::new(0, 1, 0),
+    vek::Vec3::new(0, 0, 0),
+    vek::Vec3::new(1, 0, 1),
+    vek::Vec3::new(1, 1, 1),
+    vek::Vec3::new(0, 1, 1),
+    vek::Vec3::new(0, 0, 1),
+    vek::Vec3::new(0, 0, 1),
+    vek::Vec3::new(1, 0, 1),
+    vek::Vec3::new(1, 1, 1),
+    vek::Vec3::new(0, 1, 1),
+];
+
+fn unlerp(x: f32, a: f32, b: f32) -> f32 {
+    return (x - a) / (b - a);
+}
+
+// stupid and unoptimized but works for now ig
+fn mesh_chunk(densities: Vec<f32>, chunk_position: vek::Vec3<i32>) -> (Vec::<vek::Vec3<f32>>, Vec<u32>) {
+    let mut vertices = Vec::<vek::Vec3<f32>>::new();
+    let mut indices = Vec::<u32>::new();
+    let mut lookup = vec![0u32; CHUNK_VOLUME];
+
+    // first pass will generate vertex positions
+    for x in 0..(CHUNK_SIZE_WITH_PADDING-1) {
+        for y in 0..(CHUNK_SIZE_WITH_PADDING-1) {
+            for z in 0..(CHUNK_SIZE_WITH_PADDING-1) {
+                let pos = vek::Vec3::new(x,y,z);
+
+                let mut vertex = vek::Vec3::<f32>::zero();
+                let mut count = 0;
+
+                for edge in 0..12 {
+                    let p1_offsetted = EDGE_POSITIONS_0[edge];
+                    let p2_offsetted = EDGE_POSITIONS_1[edge];
+
+                    let p1_offsetted_index = offset_to_index(pos + p1_offsetted.as_::<usize>(), CHUNK_SIZE_WITH_PADDING as usize);
+                    let p2_offsetted_index = offset_to_index(pos + p2_offsetted.as_::<usize>(), CHUNK_SIZE_WITH_PADDING as usize);
+
+                    let d1 = densities[p1_offsetted_index];
+                    let d2 = densities[p2_offsetted_index];
+
+                    if (d1 < 0f32) ^ (d2 < 0f32) {
+                        let factor = unlerp(0f32, d1, d2);
+                        vertex += vek::Vec3::lerp(p1_offsetted.as_::<f32>(), p2_offsetted.as_::<f32>(), factor);
+                        count += 1;
+                    }
+                }
+
+                if count > 0 {
+                    let inside_cell_offset = vertex / count as f32;
+                    let vertex_position = inside_cell_offset + pos.as_::<f32>() + chunk_position.as_::<f32>() * CHUNK_SIZE as f32;
+                    let index = vertices.len();
+                    lookup[offset_to_index(pos, CHUNK_SIZE_WITH_PADDING)] = index as u32;
+                    vertices.push(vertex_position);
+                }
+            }
+        }
+    }
+
+    // second pass will generate quads
+    for x in 1..(CHUNK_SIZE_WITH_PADDING-1) {
+        for y in 1..(CHUNK_SIZE_WITH_PADDING-1) {
+            for z in 1..(CHUNK_SIZE_WITH_PADDING-1) {
+                let pos = vek::Vec3::new(x,y,z);
+                let is_set = densities[offset_to_index(pos, CHUNK_SIZE_WITH_PADDING)] < 0f32;
+                
+                for axis in 0..3 {
+                    // next cell is the cell "forward" to the current cell based on axiss
+                    let mut next_cell = pos;
+                    next_cell[axis] += 1;
+                    
+                    let next_cell_is_set = densities[offset_to_index(next_cell, CHUNK_SIZE_WITH_PADDING)] < 0f32;
+                    
+                    if is_set != next_cell_is_set {
+                        let mut quad_vertex_indices: [u32; 4] = [u32::MAX; 4];
+                        
+                        let dir = is_set ^ (axis == 1);
+                        let vertex_offsets: [vek::Vec3<usize>; 4] = quad_vertex_offsets_for_axis(axis as u32);
+
+                        // inside quad local vertex index
+                        for index in 0..4 {
+                            let target = vertex_offsets[index] + next_cell - 1;
+
+                            if let Some(looked_up_vertex_index) = try_offset_to_index(target, CHUNK_SIZE_WITH_PADDING).map(|x| lookup[x]) {
+                                quad_vertex_indices[index] = looked_up_vertex_index;
+                            }
+                        }
+
+                        // don't do anything if quad contains invalid vertices
+                        if quad_vertex_indices.iter().any(|x| *x == u32::MAX) {
+                            continue;
+                        }
+
+                        // holy cursed
+                        let quad_vertex_order = if dir { INDEX_QUAD_ORDER } else { INDEX_OPPOSITE_QUAD_ORDER };
+                        for what_to_call_this_index in 0..6 {
+                            indices.push(quad_vertex_indices[quad_vertex_order[what_to_call_this_index]]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return (vertices, indices);
+}
+
+fn quad_vertex_offsets_for_axis(axis: u32) -> [vek::Vec3<usize>; 4] {
+    match axis {
+        0 => [vek::Vec3::new(0, 0, 0), vek::Vec3::new(0, 1, 0), vek::Vec3::new(0, 0, 1), vek::Vec3::new(0, 1, 1)], // x
+        1 => [vek::Vec3::new(0, 0, 0), vek::Vec3::new(1, 0, 0), vek::Vec3::new(0, 0, 1), vek::Vec3::new(1, 0, 1)], // y
+        2 => [vek::Vec3::new(0, 0, 0), vek::Vec3::new(1, 0, 0), vek::Vec3::new(0, 1, 0), vek::Vec3::new(1, 1, 0)], // z
+        _ => unreachable!()
+    }
+}
+
+
+pub fn try_offset_to_index(offset: vek::Vec3<usize>, size: usize) -> Option<usize> {
+    if offset.cmpge(&vek::Vec3::broadcast(0)).reduce_and() && offset.cmplt(&vek::Vec3::broadcast(size)).reduce_and() {
+        Some(offset.x + offset.y * size + offset.z * size * size)
+    } else {
+        None
+    }
+}
+
+pub fn offset_to_index(offset: vek::Vec3<usize>, size: usize) -> usize {
+    assert!(offset.cmpge(&vek::Vec3::broadcast(0)).reduce_and());
+    assert!(offset.cmplt(&vek::Vec3::broadcast(size)).reduce_and());
+    
+    offset.x + offset.y * size + offset.z * size * size
+}
+
+pub fn index_to_offset(index: usize, size: usize) -> vek::Vec3<usize> {
+    assert!(index < (size*size*size));
+    
+    let x: usize = index % size;
+    let y = (index / size) % size;
+    let z = index / (size*size);
+    vek::Vec3::new(x,y,z)
+}
+
+pub fn child_offset_to_child_index(offset: vek::Vec3<usize>) -> usize {
+    offset_to_index(offset, 4)
+}
+
+pub fn child_index_to_child_offset(index: usize) -> vek::Vec3<usize> {
+    index_to_offset(index, 4)
+}
+
+
+
+/*
+use ash::vk;
+use bytemuck::{Pod, Zeroable, cast_slice};
+use gpu_allocator::vulkan::{Allocation, Allocator};
 
 use crate::{buffer, ray_tracing, renderer::GraphicsContext};
 
@@ -380,3 +715,4 @@ pub unsafe fn create_voxel_texture(
         allocation: image_allocation,
     }
 }
+*/

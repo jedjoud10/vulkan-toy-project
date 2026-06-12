@@ -12,6 +12,8 @@ const MIN_BUFFER_ALIGNMENT: u64 = 256;
 // `write_to_buffer` calls that update more than these amount of bytes will revert to using the staging buffer implementation
 const BUFFER_WRITE_INLINE_MAX_BYTES_THRESHOLD: usize = 65536; // vulkan spec states that data size must be less than this 
 
+pub const BUFFER_WRITER_SIZE: usize = 1024*1024*128; // 128 mb
+
 pub struct Buffer {
     pub buffer: vk::Buffer,
     pub allocation: Allocation,
@@ -23,6 +25,15 @@ impl Buffer {
     pub unsafe fn destroy(self, device: &ash::Device, allocator: &mut Allocator) {
         device.destroy_buffer(self.buffer, None);
         allocator.free(self.allocation).unwrap();
+    }
+    
+    pub fn null() -> Buffer {
+        Self {
+            buffer: vk::Buffer::null(),
+            allocation: Allocation::default(),
+            address: 0,
+            size: 0,
+        }
     }
 }
 
@@ -53,7 +64,7 @@ pub unsafe fn create_buffer(
             requirements,
             linear: true,
             allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
-            location: gpu_allocator::MemoryLocation::CpuToGpu,
+            location: gpu_allocator::MemoryLocation::GpuOnly,
         })
         .unwrap();
 
@@ -83,6 +94,40 @@ pub unsafe fn create_buffer_with(
 ) -> Buffer {
     let buffer = create_buffer(ctx, bytes.len(), name, flags);
     write_to_buffer(ctx, buffer.buffer, bytes);
+    buffer
+}
+
+pub unsafe fn create_buffer_with_2(
+    ctx: &mut GraphicsContext,
+    cmd: vk::CommandBuffer,
+    staging_buffer_writer: &mut BufferWriter,
+    bytes: &[u8],
+    name: &str,
+    flags: vk::BufferUsageFlags,
+) -> Buffer {
+    assert!(staging_buffer_writer.offset + bytes.len() < BUFFER_WRITER_SIZE, "staging buffer write will overflow");
+    let buffer = create_buffer(ctx, bytes.len(), name, flags);
+
+    let start = staging_buffer_writer.offset;
+    let end = staging_buffer_writer.offset + bytes.len();
+    let slice = &mut staging_buffer_writer.allocation.mapped_slice_mut().unwrap()[start..end];
+    slice.copy_from_slice(bytes);
+
+    let region = vk::BufferCopy2::default()
+        .dst_offset(0)
+        .size(bytes.len() as u64)
+        .src_offset(staging_buffer_writer.offset as u64);
+
+    let regions = [region];
+    let copy_staging_buffer_to_buffer = vk::CopyBufferInfo2::default()
+        .dst_buffer(buffer.buffer)
+        .regions(&regions)
+        .src_buffer(staging_buffer_writer.scratch_buffer);
+
+    ctx.device.cmd_copy_buffer2(cmd, &copy_staging_buffer_to_buffer);
+
+    staging_buffer_writer.offset += bytes.len();
+
     buffer
 }
 
@@ -230,26 +275,40 @@ impl<'a> Drop for TemporaryStagingBuffer<'a> {
 }
 */
 
-/*
-// TODO: finish impl when needed. not needed rn since there's no bottleneck lol
-pub struct BufferWriter<'a> {
-    pub buffer: vk::Buffer,
-    pub temp: Vec<u8>,
-    pub writes: Vec<(usize, usize)>,
-    pub device: &'a ash::Device,
-    pub allocator: &'a mut Allocator,
+pub struct BufferWriter {
+    pub scratch_buffer: vk::Buffer,
+    pub allocation: Allocation,
+    pub offset: usize,
 }
 
-impl<'a> BufferWriter<'a> {
-    pub fn new(device: &'a ash::Device, allocator: &'a mut Allocator, buffer: vk::Buffer) -> Self {
-        BufferWriter { buffer, temp: Vec::new(), writes: Vec::new(), device, allocator }
-    }
+pub unsafe fn create_buffer_writer(ctx: &mut GraphicsContext) -> BufferWriter {
+    let buffer_create_info = vk::BufferCreateInfo::default()
+        .usage(vk::BufferUsageFlags::TRANSFER_SRC)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .size(BUFFER_WRITER_SIZE as u64);
+    
+    let scratch_buffer = ctx.device.create_buffer(&buffer_create_info, None).unwrap();
+    let requirements = ctx.device.get_buffer_memory_requirements(scratch_buffer);
 
-    pub fn write(&mut self, data: &[u8], dst_offset: u64) {
-        let offset = self.temp.len();
-        let length = data.len();
-        self.writes.push((offset, length));
-        self.temp.extend_from_slice(data);
-    }
+    let allocation = ctx.allocator
+        .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
+            name: "scratch buffer allocation",
+            requirements,
+            linear: true,
+            allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
+            location: gpu_allocator::MemoryLocation::CpuToGpu,
+        })
+        .unwrap();
+
+    crate::debug::set_object_name(scratch_buffer, ctx.debug_marker, "scratch buffer");
+    
+    let device_memory = allocation.memory();
+    ctx.device.bind_buffer_memory(scratch_buffer, device_memory, allocation.offset()).unwrap();
+
+    BufferWriter { scratch_buffer, allocation, offset: 0 }
 }
-*/
+
+pub unsafe fn end_buffer_writer(ctx: &mut GraphicsContext<'_>, writer: BufferWriter) {
+    ctx.allocator.free(writer.allocation).unwrap();
+    ctx.device.destroy_buffer(writer.scratch_buffer, None);
+}

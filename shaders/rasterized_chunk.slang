@@ -63,5 +63,5 @@ float4 frag_main(VertexOutput in_vert, uniform uint material_base_texture_index)
     float3 sun_colour = sun_colour(sun.xyz);
     SunData sun_data = SunData(sun.xyz, sun.y > 0 ? (3.2 * sun_colour) : 0);
 
-    return float4(lighting2(pbr_surface_data, camera_data, sun_data), 1);
+    return float4(lighting3<1>(pbr_surface_data, camera_data, sun_data), 1);
 }

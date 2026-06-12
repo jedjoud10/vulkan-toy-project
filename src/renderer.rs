@@ -69,7 +69,7 @@ const NUM_LIGHTS: usize = 1;
 const SUN_SHADOW_RAY_ENABLED: bool = true;
 const EXTRA_LIGHTS_ENABLED: bool = false;
 const EXTRA_LIGHTS_SHADOW_RAY_ENABLED: bool = true;
-const VERY_SHINY_REFLECTIVE_SURFACES: bool = false;
+const VERY_SHINY_REFLECTIVE_SURFACES: bool = true;
 const DEBUG_TEXT_BUFFER_SIZE_BYTES: usize = 1024;
 const GPU_MODEL_METADATA_BUFFER_MAX_ELEMENT_COUNT: usize = 1024;
         
@@ -192,7 +192,6 @@ pub struct InternalApp {
     
     // other GPU stuff
     multiple_chunks: voxel::MultipleChunks,
-    chunks: Vec<voxel::Chunk>,
     models: Vec<model::Model>,
     models_buffer: buffer::Buffer,
     tlas: ray_tracing::TopLevelAccelerationStructure,
@@ -333,7 +332,7 @@ impl InternalApp {
                 device: device.clone(),
                 physical_device,
                 debug_settings: gpu_allocator::AllocatorDebugSettings {
-                    log_leaks_on_shutdown: true,
+                    log_leaks_on_shutdown: running_cfg_debug_assertions,
                     log_frees: false,
                     ..Default::default()
                 },
@@ -510,34 +509,16 @@ impl InternalApp {
 
         let timestamp_period = physical_device_properties.properties.limits.timestamp_period;
 
-        let mut chunks = Vec::<voxel::Chunk>::new();
-        let chunk_render_distance = 1;
-        let mut index = 0;
-
-        for x in -chunk_render_distance..=chunk_render_distance {
-            for y in -1..1 {
-                for z in -chunk_render_distance..=chunk_render_distance {
-                    let chunk_offset = vek::Vec3::new(x, y, z);
-                    chunks.push(voxel::Chunk {
-                        chunk_index: index,
-                        chunk_offset,
-                        built: false,
-                        vertex_buffer_start_offset: (voxel::VERTICES_PER_CHUNK * index),
-                        index_buffer_start_offset: (3 * voxel::TRIANGLES_PER_CHUNK * index),
-                        accel_structure: None,
-                    });
-                    index += 1;
-                }
-            }
-        }
-
-        let multiple_chunks = voxel::MultipleChunks::create(&mut ctx, index);
+        let multiple_chunks = voxel::MultipleChunks::create(&mut ctx);
         
         let models = vec![
             model::Model::new(vek::Vec3::new(0f32, 20f32, 0f32), include_bytes!("../models/sphere.obj"), &mut ctx, 0),
             model::Model::new(vek::Vec3::new(10f32, 20f32, 0f32), include_bytes!("../models/not_so_sphere.obj"), &mut ctx, 1),
             model::Model::new(vek::Vec3::new(-10f32, 20f32, 0f32), include_bytes!("../models/modular_industrial_pipes_01_1k.obj"), &mut ctx, 2),
             model::Model::new(vek::Vec3::new(-30f32, 20f32, 0f32), include_bytes!("../models/namaqualand_boulder_02_1k.obj"), &mut ctx, 0),
+            model::Model::new(vek::Vec3::new(-40f32, 20f32, 0f32), include_bytes!("../models/ingot_mesh.obj"), &mut ctx, 1),
+            model::Model::new(vek::Vec3::new(-50f32, 20f32, 0f32), include_bytes!("../models/dust_mesh_a.obj"), &mut ctx, 2),     
+            model::Model::new(vek::Vec3::new(0f32, 18f32, 0f32), include_bytes!("../models/rough_plane.obj"), &mut ctx, 0),            
         ];
 
         let tlas = ray_tracing::pre_create_tlas(&mut ctx);
@@ -560,7 +541,7 @@ impl InternalApp {
         let materials = vec![
             Material::new(&mut ctx, "metal/metal_0077", &MATERIALS),
             Material::new(&mut ctx, "ground/ground_0029", &MATERIALS),
-            Material::new(&mut ctx, "metal_2/metal_0066", &MATERIALS)
+            Material::new(&mut ctx, "metal_2/metal_0066", &MATERIALS),
         ];
 
         let models_buffer = buffer::create_buffer(&mut ctx, size_of::<GpuModelMetadata>() * GPU_MODEL_METADATA_BUFFER_MAX_ELEMENT_COUNT, "models metadata buffer", vk::BufferUsageFlags::empty());
@@ -616,7 +597,6 @@ impl InternalApp {
             debug_text_buffer,
             render_finished_semaphores,
             uniform_buffer,
-            chunks,
             acceleration_structure_device,
             models,
             static_instances: Vec::new(),
@@ -852,25 +832,6 @@ impl InternalApp {
         self.device.reset_fences(&[end_fence]).unwrap();
         let render_finished_semaphore = [self.render_finished_semaphores[acquired_swapchain_image_index as usize]];
 
-        let num_chunks = self.chunks.len() as u64;
-        let chunk = &mut self.chunks[(self.frame_count % (num_chunks)) as usize];
-        let voxel::Chunk {
-            chunk_index,
-            chunk_offset,
-            built,
-            vertex_buffer_start_offset,
-            index_buffer_start_offset,
-            accel_structure,
-        } = chunk;
-        let voxel::MultipleChunks {
-            voxel_texture,
-            vertex_buffer,
-            index_buffer,
-            vertex_counter,
-            index_counter,
-            ..
-        } = &mut self.multiple_chunks;
-
         // create bindless descriptor write for storage images        
         let swapchain_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
             .image_view(swapchain_image_view)
@@ -887,10 +848,7 @@ impl InternalApp {
         let clouds_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
             .image_view(self.skybox.clouds_image_view)
             .image_layout(vk::ImageLayout::GENERAL);
-        let voxel_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
-            .image_view(voxel_texture.image_view)
-            .image_layout(vk::ImageLayout::GENERAL);
-        let mut storage_image_infos = vec![swapchain_image_view_descriptor_image_info, rendered_image_view_descriptor_image_info, skybox_image_view_descriptor_image_info, ambient_skybox_image_view_descriptor_image_info, clouds_image_view_descriptor_image_info, voxel_image_view_descriptor_image_info];
+        let mut storage_image_infos = vec![swapchain_image_view_descriptor_image_info, rendered_image_view_descriptor_image_info, skybox_image_view_descriptor_image_info, ambient_skybox_image_view_descriptor_image_info, clouds_image_view_descriptor_image_info];
         
         // add bloom storage image views
         for bloom_storage_image_view in render_targets.bloom_mip_image_views.iter() {
@@ -915,14 +873,6 @@ impl InternalApp {
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
             vk::DescriptorBufferInfo::default()
-                .buffer(vertex_buffer.buffer)
-                .offset((*vertex_buffer_start_offset * voxel::VERTEX_STRIDE) as u64)
-                .range((voxel::VERTICES_PER_CHUNK * voxel::VERTEX_STRIDE) as u64),
-            vk::DescriptorBufferInfo::default()
-                .buffer(index_buffer.buffer)
-                .offset((*index_buffer_start_offset * voxel::INDEX_STRIDE) as u64)
-                .range((3 * voxel::TRIANGLES_PER_CHUNK * voxel::INDEX_STRIDE) as u64),
-            vk::DescriptorBufferInfo::default()
                 .buffer(self.tesselation_buffer.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
@@ -932,14 +882,6 @@ impl InternalApp {
                 .range(vk::WHOLE_SIZE),
             vk::DescriptorBufferInfo::default()
                 .buffer(self.debug_text_buffer.buffer)
-                .offset(0)
-                .range(vk::WHOLE_SIZE),
-            vk::DescriptorBufferInfo::default()
-                .buffer(vertex_counter.buffer)
-                .offset(0)
-                .range(vk::WHOLE_SIZE),
-            vk::DescriptorBufferInfo::default()
-                .buffer(index_counter.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
             vk::DescriptorBufferInfo::default()
@@ -1027,7 +969,7 @@ impl InternalApp {
         // TODO: ideally, these would:
         // 1. be dynamically allocated using some sort of per-frame arena with indexing
         // 2. be passed to the shader either using a uniform buffer (since these are constant anyways)
-        const BLOOM_MIPS_STORAGE_IMAGE_START_IDX: u32 = 6; // bloom needs to be last since it is dynamically allocated (can have a dynamic number of bloom mips, depending on screen res)
+        const BLOOM_MIPS_STORAGE_IMAGE_START_IDX: u32 = 5; // bloom needs to be last since it is dynamically allocated (can have a dynamic number of bloom mips, depending on screen res)
         const RENDERED_SAMPLER_IMAGE_IDX: u32 = 3;
         const BLOOM_MIPS_SAMPLED_IMAGE_START_IDX: u32 = 5; // bloom needs to be last since it is dynamically allocated (can have a dynamic number of bloom mips, depending on screen res)
 
@@ -1048,17 +990,31 @@ impl InternalApp {
         self.lights[0] = (vek::Vec3::lerp(self.lights[0].xyz(), self.movement.forward() * 5f32 + self.movement.position, 10f32 * delta)).with_w(0f32);
         self.device.cmd_update_buffer(cmd, self.lights_buffer.buffer, 0, cast_slice(self.lights.as_slice()));
 
+        // update model positions
+        // TODO: ideally should be moved to tick
+        for model in self.models.iter_mut() {
+            model.update(elapsed, &self.movement);
+        }
+
         // update dynamic instances for TLAS
         self.dynamic_instances.clear();
         let mut models_metadata_buffer_write =  Vec::<GpuModelMetadata>::new();
-        for model in self.models.iter_mut() {
-            model.update(elapsed, &self.movement);
+        for model in self.models.iter() {
             self.dynamic_instances.push(model.instance);
             models_metadata_buffer_write.push(GpuModelMetadata {
                 material_base_index: self.materials[model.material_index as usize].base_index,
                 storage_buffers_base_index: model.base_index,
             });
         }
+
+        for chunk in self.multiple_chunks.chunks.iter() {
+            self.dynamic_instances.push(chunk.instance);
+            models_metadata_buffer_write.push(GpuModelMetadata {
+                material_base_index: self.materials[0].base_index,
+                storage_buffers_base_index: 0,
+            });
+        }
+
 
         // update models metadata buffer
         self.device.cmd_update_buffer(cmd, self.models_buffer.buffer, 0, cast_slice(models_metadata_buffer_write.as_slice()));
@@ -1275,40 +1231,6 @@ impl InternalApp {
 
         self.device.cmd_dispatch(cmd, skybox::AMBIENT_SKYBOX_RESOLUTION, skybox::AMBIENT_SKYBOX_RESOLUTION, 6);
 
-        /*
-        if !*built {
-            let mut ctx = GraphicsContext {
-                device: &self.device,
-                pool: self.pool,
-                queue: self.queue,
-                queue_family_index: self.queue_family_index,
-                mesh_shader_device: &self.mesh_shader_device,
-                extended_dynamic_state3_device: &self.extended_dynamic_state3_device,
-                acceleration_structure_device: &self.acceleration_structure_device,
-                host_image_copy_device: &self.host_image_copy_device,
-                allocator: &mut self.allocator,
-                debug_marker: &self.debug_marker,
-                main_descriptor_set_layout: self.main_descriptor_set_layout,
-                descriptor_pool: self.descriptor_pool,
-                main_pipeline_layout: self.main_pipeline_layout,
-            };
-
-            self.multiple_chunks.do_sum_shi(
-                *chunk_index,
-                *chunk_offset,
-                &self.device,
-                cmd, self.main_pipeline_layout,
-                self.compute_pipelines[COMPUTE_SURFACE_SPV][CALCULATE_DENSITY_ENTRY_POINT],
-                self.compute_pipelines[COMPUTE_SURFACE_SPV][VOXELIZE_SURFACE_ENTRY_POINT],
-                self.queue_family_index
-            );
-            let (data, instance) = self.multiple_chunks.create_blas(&mut ctx, *chunk_index, cmd);
-            accel_structure.replace(data);
-            *built = true;
-            self.static_instances.push(instance);
-        }
-        */
-
         // rebuild TLAS
         ray_tracing::rebuild_tlas(
             &self.static_instances,
@@ -1486,14 +1408,15 @@ impl InternalApp {
         self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  16, 16, 1);
         */
 
-        
         // render chunks
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_CHUNK_SPV]);
         self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytes_of(&1u32));
         self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
-        self.device.cmd_bind_vertex_buffers(cmd, 0, &[self.multiple_chunks.vertex_buffer.buffer], &[0]);
-        self.device.cmd_bind_index_buffer(cmd, self.multiple_chunks.index_buffer.buffer, 0, vk::IndexType::UINT32);
-        self.device.cmd_draw_indexed_indirect(cmd, self.multiple_chunks.indirect_draw_buffer.buffer, 0, self.chunks.len() as u32, size_of::<voxel::DrawIndexedIndirectCommand>() as u32);
+        for chunk in self.multiple_chunks.chunks.iter() {
+            self.device.cmd_bind_vertex_buffers(cmd, 0, &[chunk.vertex_buffer.buffer], &[0]);
+            self.device.cmd_bind_index_buffer(cmd, chunk.index_buffer.buffer, 0, vk::IndexType::UINT32);
+            self.device.cmd_draw_indexed(cmd, chunk.index_count, 1, 0, 0, 0);
+        }
 
         // render models
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_SPV]);
@@ -1764,10 +1687,7 @@ impl InternalApp {
         }
         log::info!("destroyed materials");
 
-        self.multiple_chunks.destroy(&self.device, &mut self.allocator);
-        for chunk in self.chunks {
-            chunk.destroy(&self.acceleration_structure_device, &self.device, &mut self.allocator);
-        }
+        self.multiple_chunks.destroy(&self.acceleration_structure_device, &self.device, &mut self.allocator);
         log::info!("destroyed chunks");
         
         self.tesselation_buffer.destroy(&self.device, &mut self.allocator);

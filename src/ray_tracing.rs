@@ -31,6 +31,7 @@ pub unsafe fn create_blas(
     index_stride: usize,
     vertex_buffer: &buffer::Buffer,
     index_buffer: &buffer::Buffer,
+    instance_index_low_24: u32,
 ) -> (AccelerationStructureData, vk::AccelerationStructureInstanceKHR) {
     log::debug!("creating & building BLAS");
     let vertex_data_device_address = vertex_buffer.address;
@@ -102,7 +103,7 @@ pub unsafe fn create_blas(
         acceleration_structure,
     }, vk::AccelerationStructureInstanceKHR {
         transform: vk::TransformMatrixKHR { matrix: identity_matrix },
-        instance_custom_index_and_mask: vk::Packed24_8::new(0, 0xFF),
+        instance_custom_index_and_mask: vk::Packed24_8::new(instance_index_low_24, 0xFF),
         instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(0, vk::GeometryInstanceFlagsKHR::FORCE_OPAQUE.as_raw() as u8),
         acceleration_structure_reference: vk::AccelerationStructureReferenceKHR { device_handle: acceleration_structure_address, },
     })

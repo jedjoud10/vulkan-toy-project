@@ -2,10 +2,10 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use ash::vk;
 use smallvec::SmallVec;
 
-use crate::debug::DebugMarker;
+use crate::{debug::DebugMarker, renderer::GraphicsContext};
 
 pub const STORAGE_IMAGE_COUNT: u32 = 160;
-pub const STORAGE_BUFFER_COUNT: u32 = 60;
+pub const STORAGE_BUFFER_COUNT: u32 = 160;
 pub const UNIFORM_BUFFER_COUNT: u32 = 60;
 pub const SAMPLED_IMAGE_COUNT: u32 = 40;
 pub const SAMPLER_COUNT: u32 = 2;
@@ -151,4 +151,30 @@ pub unsafe fn create_surface(
     .unwrap();
     let surface_loader = ash::khr::surface::Instance::new(entry, instance);
     (surface_loader, surface)
+}
+
+pub unsafe fn begin_recording(ctx: &mut GraphicsContext) -> vk::CommandBuffer {
+    let cmd_buffer_create_info = vk::CommandBufferAllocateInfo::default()
+        .command_buffer_count(1)
+        .level(vk::CommandBufferLevel::PRIMARY)
+        .command_pool(ctx.pool);
+    let cmd = ctx.device
+        .allocate_command_buffers(&cmd_buffer_create_info)
+        .unwrap()[0];
+    ctx.device.begin_command_buffer(cmd, &Default::default()).unwrap();
+
+    cmd
+}
+
+pub unsafe fn end_recording_and_submit(ctx: &mut GraphicsContext, cmd: vk::CommandBuffer) {
+    ctx.device.end_command_buffer(cmd).unwrap();
+
+    let buffers = [cmd];
+    let submit = vk::SubmitInfo::default()
+        .command_buffers(&buffers);
+
+    ctx.device.queue_submit(ctx.queue, & [submit], vk::Fence::null()).unwrap();
+
+    // TODO: optimize and use the same command buffer throughout initialization
+    ctx.device.device_wait_idle().unwrap();
 }

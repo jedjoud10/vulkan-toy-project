@@ -57,14 +57,7 @@ impl Model {
         let index_buffer = buffer::create_buffer_with(ctx, cast_slice(indices.as_slice()), "index buffer", vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
 
         
-        let cmd_buffer_create_info = vk::CommandBufferAllocateInfo::default()
-            .command_buffer_count(1)
-            .level(vk::CommandBufferLevel::PRIMARY)
-            .command_pool(ctx.pool);
-        let cmd = ctx.device
-            .allocate_command_buffers(&cmd_buffer_create_info)
-            .unwrap()[0];
-        ctx.device.begin_command_buffer(cmd, &Default::default()).unwrap();
+        let cmd = others::begin_recording(ctx);
 
         let (blas, instance) = ray_tracing::create_blas(
             ctx,
@@ -77,18 +70,10 @@ impl Model {
             size_of::<u32>(),
             &vertex_positions_buffer,
             &index_buffer,
+            0
         );
 
-        ctx.device.end_command_buffer(cmd).unwrap();
-
-        let buffers = [cmd];
-        let submit = vk::SubmitInfo::default()
-            .command_buffers(&buffers);
-
-        ctx.device.queue_submit(ctx.queue, & [submit], vk::Fence::null()).unwrap();
-
-        // TODO: optimize and use the same command buffer throughout initialization
-        ctx.device.device_wait_idle().unwrap();
+        others::end_recording_and_submit(ctx, cmd);
 
         Self {
             vertex_positions_buffer,
