@@ -84,6 +84,9 @@ SamplerState samplers[];
 RaytracingAccelerationStructure acceleration_structures[];
 
 UniformThing load_per_frame_uniforms() {
+    // using an aligned load results in higher VGPR and SGPR pressure
+    // this leads to overall worse performance by a pretty big margin
+    // it (probably) does not help that `UniformThing` is not very well structured 
     return storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
 }
 

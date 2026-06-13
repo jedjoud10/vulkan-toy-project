@@ -1,11 +1,11 @@
-use std::io::Read;
+use std::{borrow::Cow, io::Read};
 
 use ash::vk;
 use bytemuck::{bytes_of, cast_slice};
 use gpu_allocator::vulkan::{Allocation, Allocator};
 use image::{EncodableLayout, GenericImage, GenericImageView};
 
-use crate::{buffer, renderer::GraphicsContext, texture::{Texture, create_texture}};
+use crate::{buffer, others, renderer::GraphicsContext, texture::{Texture, create_texture}};
 
 pub struct Material {
     pub albedo_texture: Texture,
@@ -56,30 +56,29 @@ impl Material {
     pub unsafe fn new(
         ctx: &mut GraphicsContext,
         name: &str,
-        material_assets: &include_dir::Dir,
     ) -> Self {
-        let load_file = |thing_in_middle: &str| -> Option<&[u8]> {
-            material_assets.get_file(format!("{name}_{thing_in_middle}_1k.png")).or_else(|| material_assets.get_file(format!("{name}_{thing_in_middle}_1k.jpg"))).map(|img| img.contents())
+        let load_file = |thing_in_middle: &str| -> Option<Cow<'static, [u8]>> {
+            others::load_material_texture(&format!("{name}_{thing_in_middle}_1k.png")).or_else(|| others::load_material_texture(&format!("{name}_{thing_in_middle}_1k.jpg")))
         };
 
         // TODO: implement compressed textures using DXT / BC formats
         let size = 256;
-        let albedo_texture = load_image_and_create_texture(ctx, load_file("color").unwrap(), size, true);
-        let normal_texture = load_image_and_create_texture(ctx, load_file("normal_opengl").unwrap(), size, false);
+        let albedo_texture = load_image_and_create_texture(ctx, &load_file("color").unwrap(), size, true);
+        let normal_texture = load_image_and_create_texture(ctx, &load_file("normal_opengl").unwrap(), size, false);
 
         let mut arm_texture = image::RgbaImage::new(size, size).into_flat_samples();
         if let Some(ao_image_file_bytes) = load_file("ao") {
-            let dynamic_image = image::load_from_memory(ao_image_file_bytes).unwrap();
+            let dynamic_image = image::load_from_memory(&ao_image_file_bytes).unwrap();
             store_in_channel(&mut arm_texture, dynamic_image, 0, size);
         }
 
         if let Some(ao_image_file_bytes) = load_file("roughness") {
-            let dynamic_image = image::load_from_memory(ao_image_file_bytes).unwrap();
+            let dynamic_image = image::load_from_memory(&ao_image_file_bytes).unwrap();
             store_in_channel(&mut arm_texture, dynamic_image, 1, size);
         }
 
         if let Some(ao_image_file_bytes) = load_file("metallic") {
-            let dynamic_image = image::load_from_memory(ao_image_file_bytes).unwrap();
+            let dynamic_image = image::load_from_memory(&ao_image_file_bytes).unwrap();
             store_in_channel(&mut arm_texture, dynamic_image, 2, size);
         }
 

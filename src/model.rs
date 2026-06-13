@@ -29,8 +29,9 @@ pub struct Model {
 }
 
 impl Model {
-    pub unsafe fn new(position: vek::Vec3<f32>, obj_model_bytes: &[u8], ctx: &mut GraphicsContext, material_index: u32, cmd: vk::CommandBuffer, mut writer: &mut buffer::BufferWriter) -> Self {
-        let obj = obj::load_obj::<obj::TexturedVertex, &[u8], u32>(obj_model_bytes).unwrap();
+    pub unsafe fn new(position: vek::Vec3<f32>, name: &str, ctx: &mut GraphicsContext, material_index: u32, cmd: vk::CommandBuffer, mut writer: &mut buffer::BufferWriter) -> Self {
+        let obj_model_bytes = others::load_model(name).unwrap();
+        let obj = obj::load_obj::<obj::TexturedVertex, &[u8], u32>(&obj_model_bytes).unwrap();
 
         let mut positions = Vec::<vek::Vec3<f32>>::new();
         let mut normals = Vec::<vek::Vec3<f32>>::new();

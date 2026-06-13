@@ -177,3 +177,66 @@ pub unsafe fn end_recording_and_submit(ctx: &mut GraphicsContext, cmd: vk::Comma
     ctx.device.queue_submit(ctx.queue, & [submit], vk::Fence::null()).unwrap();
     ctx.device.device_wait_idle().unwrap();
 }
+
+#[cfg(debug_assertions)]
+mod dynamically_loaded {
+    use std::{borrow::Cow, io::Read, path::PathBuf};
+
+    fn load_from_folder(folder: &str, value: &str) -> Option<Cow<'static, [u8]>> {
+        log::debug!("load '{}' dynamically", value);
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let mut path = PathBuf::from(manifest_dir);
+        path.push(folder);
+        path.push(value);
+        
+        let mut file = std::fs::File::open(path).ok()?;
+        
+        let mut vec = Vec::<u8>::new();
+        file.read_to_end(&mut vec).ok()?;
+        Some(Cow::Owned(vec))
+    }
+
+
+    pub fn load_compiled_shader(value: &str) -> Option<Cow<'static, [u8]>> {
+        load_from_folder("compiled_shaders", value)
+    }
+
+    pub fn load_material_texture(value: &str) -> Option<Cow<'static, [u8]>> {
+        load_from_folder("materials", value)
+    }
+
+    pub fn load_model(value: &str) -> Option<Cow<'static, [u8]>> {
+        load_from_folder("models", value)
+    }
+}
+
+#[cfg(not(debug_assertions))]
+mod statically_loaded {
+    use std::{borrow::Cow};
+
+    static COMPILED_SHADERS: include_dir::Dir = include_dir::include_dir!("$CARGO_MANIFEST_DIR/compiled_shaders");
+    static MATERIALS: include_dir::Dir = include_dir::include_dir!("$CARGO_MANIFEST_DIR/materials");
+    static MODELS: include_dir::Dir = include_dir::include_dir!("$CARGO_MANIFEST_DIR/models");
+
+    pub fn load_compiled_shader(value: &str) -> Option<Cow<'static, [u8]>> {
+        log::debug!("load '{}' statically", value);
+        COMPILED_SHADERS.get_file(value).map(|x| Cow::Borrowed(x.contents()))
+    }
+
+    pub fn load_material_texture(value: &str) -> Option<Cow<'static, [u8]>> {
+        log::debug!("load '{}' statically", value);
+        MATERIALS.get_file(value).map(|x| Cow::Borrowed(x.contents()))
+    }
+
+    pub fn load_model(value: &str) -> Option<Cow<'static, [u8]>> {
+        log::debug!("load '{}' statically", value);
+        MODELS.get_file(value).map(|x| Cow::Borrowed(x.contents()))
+    }
+}
+
+#[cfg(debug_assertions)]
+pub use dynamically_loaded::*;
+
+
+#[cfg(not(debug_assertions))]
+pub use statically_loaded::*;

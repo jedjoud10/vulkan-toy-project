@@ -4,8 +4,6 @@ use bytemuck::Zeroable;
 use bytemuck::bytes_of;
 use bytemuck::cast_slice;
 use bytesize::ByteSize;
-use include_dir::Dir;
-use include_dir::include_dir;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
 use smallvec::SmallVec;
@@ -225,28 +223,8 @@ pub struct InternalApp {
     stats: Statistics,
 }
 
-
-static COMPILED_SHADERS: Dir = include_dir!("$CARGO_MANIFEST_DIR/compiled_shaders");
-static MATERIALS: Dir = include_dir!("$CARGO_MANIFEST_DIR/materials");
-
 impl InternalApp {
     pub unsafe fn new(event_loop: &ActiveEventLoop, args: crate::Args) -> Self {
-        // load compiled shaders binaries to dictionary
-        let mut compiled_shaders = HashMap::<&str, Vec<u32>>::new();
-        for file in COMPILED_SHADERS.files() {
-            let len = file.contents().len();
-            assert!(len.is_multiple_of(4));
-
-            let mut vec = vec![0u32; len / 4];
-            let dst_slice = bytemuck::cast_slice_mut::<u32, u8>(vec.as_mut_slice());
-
-            dst_slice.copy_from_slice(file.contents());
-
-            let file_name = file.path().file_name().unwrap().to_str().unwrap();
-            log::debug!("added shader '{file_name}' to assets");
-            compiled_shaders.insert(file_name, vec);
-        }
-
         let window = event_loop
             .create_window(Window::default_attributes())
             .unwrap();
@@ -451,8 +429,20 @@ impl InternalApp {
         log::info!("creating pipelines...");
         let generic_pipelines = settings.into_par_iter().map(|setting| {
             let spv_file_name = setting.spv_file_name;
-            let raw = &compiled_shaders[spv_file_name];
-            let pipeline = pipeline::create_generic_pipeline(raw, &device, &debug_marker, main_pipeline_layout, setting);
+            let raw_bytes = others::load_compiled_shader(spv_file_name).unwrap();
+
+            
+            let len = raw_bytes.len();
+            assert!(len.is_multiple_of(4));
+
+            // align to word sizes
+            // previous assertion upholds that the number of bytes is a multiple of word size
+            let mut vec = vec![0u32; len / 4];
+            let dst_slice = bytemuck::cast_slice_mut::<u32, u8>(vec.as_mut_slice());
+            dst_slice.copy_from_slice(&raw_bytes);
+
+            let raw_words = &vec;
+            let pipeline = pipeline::create_generic_pipeline(raw_words, &device, &debug_marker, main_pipeline_layout, setting);
             (spv_file_name, pipeline)
         }).collect::<Vec<_>>();
 
@@ -515,14 +505,14 @@ impl InternalApp {
         let mut writer = buffer::begin_buffer_writer(&mut ctx);
 
         let models = vec![
-            model::Model::new(vek::Vec3::new(0f32, 20f32, 0f32), include_bytes!("../models/sphere.obj"), &mut ctx, 0, cmd, &mut writer),
-            model::Model::new(vek::Vec3::new(10f32, 20f32, 0f32), include_bytes!("../models/not_so_sphere.obj"), &mut ctx, 1, cmd, &mut writer),
-            model::Model::new(vek::Vec3::new(-10f32, 20f32, 0f32), include_bytes!("../models/modular_industrial_pipes_01_1k.obj"), &mut ctx, 2, cmd, &mut writer),
-            model::Model::new(vek::Vec3::new(-30f32, 20f32, 0f32), include_bytes!("../models/namaqualand_boulder_02_1k.obj"), &mut ctx, 0, cmd, &mut writer),
-            model::Model::new(vek::Vec3::new(-40f32, 20f32, 0f32), include_bytes!("../models/ingot_mesh.obj"), &mut ctx, 1, cmd, &mut writer),
-            model::Model::new(vek::Vec3::new(-50f32, 20f32, 0f32), include_bytes!("../models/dust_mesh_a.obj"), &mut ctx, 2, cmd, &mut writer),     
-            model::Model::new(vek::Vec3::new(0f32, 18f32, 0f32), include_bytes!("../models/rough_plane.obj"), &mut ctx, 0, cmd, &mut writer),         
-            model::Model::new(vek::Vec3::new(0f32, 30f32, 0f32), include_bytes!("../models/space_thing.obj"), &mut ctx, 0, cmd, &mut writer),       
+            model::Model::new(vek::Vec3::new(0f32, 20f32, 0f32), "sphere.obj", &mut ctx, 0, cmd, &mut writer),
+            model::Model::new(vek::Vec3::new(10f32, 20f32, 0f32), "not_so_sphere.obj", &mut ctx, 1, cmd, &mut writer),
+            model::Model::new(vek::Vec3::new(-10f32, 20f32, 0f32), "modular_industrial_pipes_01_1k.obj", &mut ctx, 2, cmd, &mut writer),
+            model::Model::new(vek::Vec3::new(-30f32, 20f32, 0f32), "namaqualand_boulder_02_1k.obj", &mut ctx, 0, cmd, &mut writer),
+            model::Model::new(vek::Vec3::new(-40f32, 20f32, 0f32), "ingot_mesh.obj", &mut ctx, 1, cmd, &mut writer),
+            model::Model::new(vek::Vec3::new(-50f32, 20f32, 0f32), "dust_mesh_a.obj", &mut ctx, 2, cmd, &mut writer),     
+            model::Model::new(vek::Vec3::new(0f32, 18f32, 0f32), "rough_plane.obj", &mut ctx, 0, cmd, &mut writer),         
+            model::Model::new(vek::Vec3::new(0f32, 30f32, 0f32), "space_thing.obj", &mut ctx, 0, cmd, &mut writer),       
         ];
 
         others::end_recording_and_submit(&mut ctx, cmd);
@@ -546,10 +536,10 @@ impl InternalApp {
         );
 
         let materials = vec![
-            Material::new(&mut ctx, "metal/metal_0077", &MATERIALS),
-            Material::new(&mut ctx, "ground/ground_0029", &MATERIALS),
-            Material::new(&mut ctx, "metal_2/metal_0066", &MATERIALS),
-            Material::new(&mut ctx, "ground_2/ground_0019", &MATERIALS),
+            Material::new(&mut ctx, "metal/metal_0077"),
+            Material::new(&mut ctx, "ground/ground_0029"),
+            Material::new(&mut ctx, "metal_2/metal_0066"),
+            Material::new(&mut ctx, "ground_2/ground_0019"),
         ];
 
         let models_buffer = buffer::create_buffer(&mut ctx, size_of::<GpuModelMetadata>() * GPU_MODEL_METADATA_BUFFER_MAX_ELEMENT_COUNT, "models metadata buffer", vk::BufferUsageFlags::empty());
@@ -637,7 +627,7 @@ impl InternalApp {
         if add {
             let cmd = others::begin_recording(&mut ctx);
             let mut writer = buffer::begin_buffer_writer(&mut ctx);
-            let new_model = model::Model::new(position, include_bytes!("../models/sphere.obj"), &mut ctx, (self.models.len() % self.materials.len()) as u32, cmd, &mut writer);
+            let new_model = model::Model::new(position, "sphere.obj", &mut ctx, (self.models.len() % self.materials.len()) as u32, cmd, &mut writer);
             self.models.push(new_model);
             others::end_recording_and_submit(&mut ctx, cmd);
             buffer::end_buffer_writer(&mut ctx, writer);
