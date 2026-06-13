@@ -27,7 +27,7 @@ impl MultipleChunks {
     pub unsafe fn create(
         ctx: &mut GraphicsContext,
     ) -> Self {
-        let chunk_render_distance = 4i32;
+        let chunk_render_distance = 1i32;
         let mut chunks = Vec::<Chunk>::new();
 
         let mut fbm = noise::Fbm::<noise::Perlin>::new(0); 
@@ -40,7 +40,7 @@ impl MultipleChunks {
 
         
         let cmd = others::begin_recording(ctx);
-        let mut writer = buffer::create_buffer_writer(ctx);
+        let mut writer = buffer::begin_buffer_writer(ctx);
 
         let mut chunk_positions = Vec::<vek::Vec3<i32>>::new();
         for x in -chunk_render_distance..chunk_render_distance {

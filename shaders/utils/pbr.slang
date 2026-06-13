@@ -122,8 +122,8 @@ float hw_trace_shadow_towards_sun(float3 world, float3 normal, float3 sun_direct
 	    desc.TMax = SHADOW_RAY_TMAX;
 	    desc.TMin = SHADOW_RAY_TMIN;
 
-	    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_FORCE_OPAQUE> sq;
-	    let flags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_FORCE_OPAQUE;
+	    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_CULL_NON_OPAQUE> sq;
+	    let flags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_CULL_NON_OPAQUE;
 
 	    sq.TraceRayInline(acceleration_structures[0], flags, 0xFF, desc);
 
@@ -143,8 +143,8 @@ float hw_trace_shadow_light(float3 world, float3 light) {
     	desc.TMax = distance(world, light);
     	desc.TMin = 0.01;
 
-    	RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_FORCE_OPAQUE> sq;
-    	let flags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_FORCE_OPAQUE;
+    	RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_CULL_NON_OPAQUE> sq;
+    	let flags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_CULL_NON_OPAQUE;
 
     	sq.TraceRayInline(acceleration_structures[0], flags, 0xFF, desc);
 
@@ -161,7 +161,9 @@ float3 get_sun_shadow(float3 world, float3 normal, float3 sun_direction) {
 	float shadow = 1-clouds(sun_direction, world).a;
 
 	// little trick to avoid tracing the shadow ray in case clouds already cover the sun's light
-	if (shadow > 0.0) {
+	bool clouds_not_shadowed = shadow > 0.0;
+	bool face_visible = dot(normal, sun_direction) > 0;
+	if (clouds_not_shadowed && face_visible) {
 		shadow *= hw_trace_shadow_towards_sun(world, normal, sun_direction);
 	}
 
@@ -269,8 +271,9 @@ public float3 lighting3<let K: uint>(
 		int samples = 1;
 		for (int l = 0; l < samples; l++) {
 			float3 perturb = (hash33(surface.position * float3(34.2143, -50.54353, 90.2342) + l * 400.523423 + uniforms.time) * 2.0 - 1.0) * surface.arm.roughness;
+			//float3 perturb = 0;
 			float3 ray_dir = reflect(-camera.view, normalize(surface.normal + perturb));
-			if (surface.arm.roughness < 10.0) {
+			if (surface.arm.roughness < 0.9) {
 				if (K > 0) {
 					RayQuery<RAY_FLAG_CULL_BACK_FACING_TRIANGLES | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_CULL_NON_OPAQUE | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> sq;
     				let flags = RAY_FLAG_CULL_BACK_FACING_TRIANGLES | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_CULL_NON_OPAQUE | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER;

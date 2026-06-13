@@ -29,7 +29,7 @@ pub struct Model {
 }
 
 impl Model {
-    pub unsafe fn new(position: vek::Vec3<f32>, obj_model_bytes: &[u8], ctx: &mut GraphicsContext, material_index: u32) -> Self {
+    pub unsafe fn new(position: vek::Vec3<f32>, obj_model_bytes: &[u8], ctx: &mut GraphicsContext, material_index: u32, cmd: vk::CommandBuffer, mut writer: &mut buffer::BufferWriter) -> Self {
         let obj = obj::load_obj::<obj::TexturedVertex, &[u8], u32>(obj_model_bytes).unwrap();
 
         let mut positions = Vec::<vek::Vec3<f32>>::new();
@@ -48,16 +48,38 @@ impl Model {
 
         meshopt::optimize_vertex_cache_in_place(&mut indices, vertex_count);
 
-        let vertex_positions_buffer = buffer::create_buffer_with(ctx, cast_slice(positions.as_slice()), "vertex positions buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
+        let vertex_positions_buffer = buffer::create_buffer_with_2(ctx, cmd, &mut writer, cast_slice(positions.as_slice()), "vertex positions buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
         
-        let vertex_normals_buffer = buffer::create_buffer_with(ctx, cast_slice(normals.as_slice()), "vertex normals buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
+        let vertex_normals_buffer = buffer::create_buffer_with_2(ctx, cmd, &mut writer, cast_slice(normals.as_slice()), "vertex normals buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
 
-        let vertex_uvs_buffer = buffer::create_buffer_with(ctx, cast_slice(uvs.as_slice()), "vertex uvs buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
+        let vertex_uvs_buffer = buffer::create_buffer_with_2(ctx, cmd, &mut writer, cast_slice(uvs.as_slice()), "vertex uvs buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
 
-        let index_buffer = buffer::create_buffer_with(ctx, cast_slice(indices.as_slice()), "index buffer", vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
+        let index_buffer = buffer::create_buffer_with_2(ctx, cmd, &mut writer, cast_slice(indices.as_slice()), "index buffer", vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
 
-        
-        let cmd = others::begin_recording(ctx);
+        let vertex_buffer_barrier = vk::BufferMemoryBarrier2::default()
+            .buffer(vertex_positions_buffer.buffer)
+            .src_stage_mask(vk::PipelineStageFlags2::COPY)
+            .dst_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR | vk::PipelineStageFlags2::VERTEX_SHADER)
+            .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+            .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR | vk::AccessFlags2::SHADER_READ)
+            .size(vertex_positions_buffer.size as u64)
+            .offset(0)
+            .src_queue_family_index(ctx.queue_family_index)
+            .dst_queue_family_index(ctx.queue_family_index);
+        let index_buffer_barrier = vk::BufferMemoryBarrier2::default()
+            .buffer(index_buffer.buffer)
+            .src_stage_mask(vk::PipelineStageFlags2::COPY)
+            .dst_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR | vk::PipelineStageFlags2::VERTEX_SHADER)
+            .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+            .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR | vk::AccessFlags2::SHADER_READ)
+            .size(index_buffer.size as u64)
+            .offset(0)
+            .src_queue_family_index(ctx.queue_family_index)
+            .dst_queue_family_index(ctx.queue_family_index);
+        let buffer_memory_barriers = [vertex_buffer_barrier, index_buffer_barrier];
+        let dep = vk::DependencyInfo::default()
+            .buffer_memory_barriers(&buffer_memory_barriers);
+        ctx.device.cmd_pipeline_barrier2(cmd, &dep);
 
         let (blas, instance) = ray_tracing::create_blas(
             ctx,
@@ -72,8 +94,6 @@ impl Model {
             &index_buffer,
             0
         );
-
-        others::end_recording_and_submit(ctx, cmd);
 
         Self {
             vertex_positions_buffer,

@@ -511,15 +511,22 @@ impl InternalApp {
 
         let multiple_chunks = voxel::MultipleChunks::create(&mut ctx);
         
+        let cmd = others::begin_recording(&mut ctx);
+        let mut writer = buffer::begin_buffer_writer(&mut ctx);
+
         let models = vec![
-            model::Model::new(vek::Vec3::new(0f32, 20f32, 0f32), include_bytes!("../models/sphere.obj"), &mut ctx, 0),
-            model::Model::new(vek::Vec3::new(10f32, 20f32, 0f32), include_bytes!("../models/not_so_sphere.obj"), &mut ctx, 1),
-            model::Model::new(vek::Vec3::new(-10f32, 20f32, 0f32), include_bytes!("../models/modular_industrial_pipes_01_1k.obj"), &mut ctx, 2),
-            model::Model::new(vek::Vec3::new(-30f32, 20f32, 0f32), include_bytes!("../models/namaqualand_boulder_02_1k.obj"), &mut ctx, 0),
-            model::Model::new(vek::Vec3::new(-40f32, 20f32, 0f32), include_bytes!("../models/ingot_mesh.obj"), &mut ctx, 1),
-            model::Model::new(vek::Vec3::new(-50f32, 20f32, 0f32), include_bytes!("../models/dust_mesh_a.obj"), &mut ctx, 2),     
-            model::Model::new(vek::Vec3::new(0f32, 18f32, 0f32), include_bytes!("../models/rough_plane.obj"), &mut ctx, 0),            
+            model::Model::new(vek::Vec3::new(0f32, 20f32, 0f32), include_bytes!("../models/sphere.obj"), &mut ctx, 0, cmd, &mut writer),
+            model::Model::new(vek::Vec3::new(10f32, 20f32, 0f32), include_bytes!("../models/not_so_sphere.obj"), &mut ctx, 1, cmd, &mut writer),
+            model::Model::new(vek::Vec3::new(-10f32, 20f32, 0f32), include_bytes!("../models/modular_industrial_pipes_01_1k.obj"), &mut ctx, 2, cmd, &mut writer),
+            model::Model::new(vek::Vec3::new(-30f32, 20f32, 0f32), include_bytes!("../models/namaqualand_boulder_02_1k.obj"), &mut ctx, 0, cmd, &mut writer),
+            model::Model::new(vek::Vec3::new(-40f32, 20f32, 0f32), include_bytes!("../models/ingot_mesh.obj"), &mut ctx, 1, cmd, &mut writer),
+            model::Model::new(vek::Vec3::new(-50f32, 20f32, 0f32), include_bytes!("../models/dust_mesh_a.obj"), &mut ctx, 2, cmd, &mut writer),     
+            model::Model::new(vek::Vec3::new(0f32, 18f32, 0f32), include_bytes!("../models/rough_plane.obj"), &mut ctx, 0, cmd, &mut writer),         
+            model::Model::new(vek::Vec3::new(0f32, 30f32, 0f32), include_bytes!("../models/space_thing.obj"), &mut ctx, 0, cmd, &mut writer),       
         ];
+
+        others::end_recording_and_submit(&mut ctx, cmd);
+        buffer::end_buffer_writer(&mut ctx, writer);
 
         let tlas = ray_tracing::pre_create_tlas(&mut ctx);
 
@@ -542,6 +549,7 @@ impl InternalApp {
             Material::new(&mut ctx, "metal/metal_0077", &MATERIALS),
             Material::new(&mut ctx, "ground/ground_0029", &MATERIALS),
             Material::new(&mut ctx, "metal_2/metal_0066", &MATERIALS),
+            Material::new(&mut ctx, "ground_2/ground_0019", &MATERIALS),
         ];
 
         let models_buffer = buffer::create_buffer(&mut ctx, size_of::<GpuModelMetadata>() * GPU_MODEL_METADATA_BUFFER_MAX_ELEMENT_COUNT, "models metadata buffer", vk::BufferUsageFlags::empty());
@@ -627,8 +635,12 @@ impl InternalApp {
         };
 
         if add {
-            let new_model = model::Model::new(position, include_bytes!("../models/sphere.obj"), &mut ctx, (self.models.len() % self.materials.len()) as u32);
+            let cmd = others::begin_recording(&mut ctx);
+            let mut writer = buffer::begin_buffer_writer(&mut ctx);
+            let new_model = model::Model::new(position, include_bytes!("../models/sphere.obj"), &mut ctx, (self.models.len() % self.materials.len()) as u32, cmd, &mut writer);
             self.models.push(new_model);
+            others::end_recording_and_submit(&mut ctx, cmd);
+            buffer::end_buffer_writer(&mut ctx, writer);
         }
     }
 

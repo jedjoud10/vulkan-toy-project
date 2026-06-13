@@ -281,7 +281,7 @@ pub struct BufferWriter {
     pub offset: usize,
 }
 
-pub unsafe fn create_buffer_writer(ctx: &mut GraphicsContext) -> BufferWriter {
+pub unsafe fn begin_buffer_writer(ctx: &mut GraphicsContext) -> BufferWriter {
     let buffer_create_info = vk::BufferCreateInfo::default()
         .usage(vk::BufferUsageFlags::TRANSFER_SRC)
         .sharing_mode(vk::SharingMode::EXCLUSIVE)

@@ -173,8 +173,7 @@ pub unsafe fn end_recording_and_submit(ctx: &mut GraphicsContext, cmd: vk::Comma
     let submit = vk::SubmitInfo::default()
         .command_buffers(&buffers);
 
+    // TODO: batch submits perhaps?
     ctx.device.queue_submit(ctx.queue, & [submit], vk::Fence::null()).unwrap();
-
-    // TODO: optimize and use the same command buffer throughout initialization
     ctx.device.device_wait_idle().unwrap();
 }

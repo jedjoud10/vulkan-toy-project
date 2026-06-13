@@ -101,31 +101,7 @@ void write_swapchain_image(uint3 id: SV_DispatchThreadID) {
     float2 screen_uvs = -screen_uvs_negative_one_to_one * 0.5 + 0.5;
 
     float3 final_colour = pre_compose[src_coords].xyz;
-
-    /*
-    float total = 1;
-    if (pre_post_process.w > 0.3) {
-        float blur_size = pre_post_process.w;
-
-        for (int x = -4; x <= 4; x++) {
-            for (int y = -4; y <= 4; y++) {
-                if (x != 0 && y != 0) {
-                    float strength = 1/length(int2(x,y));
-                    total += strength;
-
-                    float4 sample = pre_compose[id.xy + int2(x,y) * blur_size];
-
-                    if (sample.w > 0.3) {
-                        final_colour += sample.xyz * strength;
-                    }
-                }
-            }    
-        }
-        
-        final_colour /= total;
-    }
-    */
-    
+   
     SamplerState sampler = samplers[LINEAR_SAMPLER_IDX];
 
     float bloom_strength = 0.05;
