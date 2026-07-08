@@ -1,5 +1,6 @@
 use crate::input::{Axis, Input, MouseAxis};
 use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
 use vek::Clamp;
 use winit::keyboard::KeyCode;
 
@@ -23,6 +24,7 @@ pub struct Movement {
     pub rotation: vek::Quaternion<f32>,
     pub proj_matrix: vek::Mat4<f32>,
     pub view_matrix: vek::Mat4<f32>,
+    pub camera_frustum_planes: [vek::Vec4<f32>; 6],
     
     fov: f32,
     target_fov: f32,
@@ -31,6 +33,7 @@ pub struct Movement {
     velocity: vek::Vec3<f32>,
     boost: f32,
     fixed_mode_snapshot_index: Option<usize>,
+    pub update_frustum: bool,
     snapshots: Vec<Snapshot>,
 }
 
@@ -44,8 +47,10 @@ impl Movement {
             //position: vek::Vec3::new(40.5f32, 80f32, 40.5f32),
             //rotation : vek::Quaternion::rotation_y(-130f32.to_radians()),
             position: vek::Vec3::zero(),
+            camera_frustum_planes: Default::default(),
             rotation: vek::Quaternion::identity(),
             fixed_mode_snapshot_index: None,
+            update_frustum: true,
             snapshots,
             ..Default::default()
         }
@@ -100,14 +105,11 @@ impl Movement {
         self.target_fov = self.target_fov.clamp(0.05, 179.5);
         self.fov += (self.target_fov-self.fov).clamp(-100f32, 100f32) * delta * 20f32;
 
-        self.proj_matrix = vek::Mat4::<f32>::perspective_rh_no(horizontal_to_vertical(self.fov, ratio), ratio, 0.5f32, 10000.0f32);
-        //self.proj_matrix = vek::Mat4::<f32>::infinite_perspective_rh(horizontal_to_vertical(self.fov, ratio), ratio, 1.0f32);
+        
         let rot = vek::Mat4::from(self.rotation);
-
         let forward = rot.mul_direction(-vek::Vec3::unit_z());
         let right = rot.mul_direction(vek::Vec3::unit_x());
         let up = rot.mul_direction(vek::Vec3::unit_y());
-        self.view_matrix = vek::Mat4::look_at_rh(self.position, forward + self.position, up);
 
         let velocity = forward * self.local_velocity.y + right * self.local_velocity.x;
         self.velocity = vek::Vec3::lerp(
@@ -140,6 +142,11 @@ impl Movement {
             };
         }
 
+        // toggle frustum updates
+        if input.get_button(KeyCode::KeyN).pressed() {
+            self.update_frustum = !self.update_frustum;
+        }
+
         // iterate over snapshots
         if let Some(ref mut idx) = self.fixed_mode_snapshot_index && input.get_button(KeyCode::KeyO).pressed()
             && !self.snapshots.is_empty() {
@@ -149,6 +156,39 @@ impl Movement {
                 self.rotation = self.snapshots[*idx].rotation;
                 self.fov = self.snapshots[*idx].fov;
             }
+
+            
+        
+        // recalculate projection matrices
+        self.proj_matrix = vek::Mat4::<f32>::perspective_rh_no(horizontal_to_vertical(self.fov.clamp(0.0001f32, 180f32), ratio), ratio, 0.001f32, 1000.0f32);
+        self.view_matrix = vek::Mat4::look_at_rh(self.position, forward + self.position, up);
+
+        // https://github.com/jedjoud10/cflake-engine/blob/3369199f0cfa8b220edc0363a76401b50c83fada/crates/math/src/bounds/frustum.rs#L47
+        if self.update_frustum {
+            let columns = (self.proj_matrix * self.view_matrix).transposed().into_col_arrays();
+            let columns = columns
+                .into_iter()
+                .map(vek::Vec4::from)
+                .collect::<SmallVec<[vek::Vec4<f32>; 4]>>();
+
+            // Magic from https://www.braynzarsoft.net/viewtutorial/q16390-34-aabb-cpu-side-frustum-culling
+            // And also from https://gamedev.stackexchange.com/questions/156743/finding-the-normals-of-the-planes-of-a-view-frustum
+            // YAY https://stackoverflow.com/questions/12836967/extracting-view-frustum-planes-gribb-hartmann-method
+            let left = columns[3] + columns[0];
+            let right = columns[3] - columns[0];
+            let top = columns[3] - columns[1];
+            let bottom = columns[3] + columns[1];
+            let near = columns[3] + columns[2];
+            let far = columns[3] - columns[2];
+            
+            self.camera_frustum_planes = [top, bottom, left, right, near, far].map(|x| {
+                let magnitude = x.xyz().magnitude();
+                let normal = x.xyz().normalized();
+                let distance = x.w / magnitude;
+
+                normal.with_w(distance)
+            })
+        }
     }
     
     pub fn forward(&self) -> vek::Vec3<f32> {

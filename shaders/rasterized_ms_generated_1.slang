@@ -1,0 +1,365 @@
+#language slang 2026
+#include "utils/other.slang"
+#include "utils/pbr.slang"
+#include "utils/bindless.slang"
+#include "utils/mesh_shader_commons.slang"
+#include "utils/culling.slang"
+
+
+float density(uint3 pos, uint3 gid, int3 chunk_offset) {
+    let lights_buffer = storage_buffers_readonly[STORAGE_BUFFER_LIGHTS_BUFFER];
+    let uniforms = storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
+    float3 p = (float3)pos + gid * MESHLET_SIZE + chunk_offset * (int3)CHUNK_SIZE /* + floor(uniforms.position.xyz) */; 
+    
+    /*
+    float warp_scale = 0.2;
+    float3 warp = float3(snoise(p*warp_scale + -2.213 + uniforms.time * 1.5), snoise(p*warp_scale + 4.12 -  uniforms.time * 1.01), snoise(p*warp_scale + 3.123 +  uniforms.time * 1.04));
+
+    float density = p.y - (2 + snoise(p * 0.02 + warp * 0.0) * 32);
+
+    density = max(density, -sphere);
+    
+    //density += 1 - abs(snoise(p * 0.2 + warp));
+    */
+    float sphere = length(p) - 10;
+    
+    return p.y - (1 - abs(snoise(p * 0.01 + uniforms.time * 0.2))) * 20;
+    
+    //return sin(p.x * 0.2) * 10 + p.y;
+}
+
+uint3 index_to_offset(int index, int size) {
+    let x = index % size;
+    let y = (index / size) % size;
+    let z = index / (size*size);
+    return uint3(x,y,z);
+}
+
+int offset_to_index(uint3 offset, int size) {
+    return  offset.x + offset.y * size + offset.z * size * size;
+}
+
+uint3[4] quad_vertex_offsets_for_axis(uint axis) {
+    switch (axis) {
+        case 0: // x
+            return {uint3(0, 0, 0), uint3(0, 1, 0), uint3(0, 0, 1), uint3(0, 1, 1)};
+        case 1: // y
+            return {uint3(0, 0, 0), uint3(1, 0, 0), uint3(0, 0, 1), uint3(1, 0, 1)}; 
+        case 2: // z
+            return {uint3(0, 0, 0), uint3(1, 0, 0), uint3(0, 1, 0), uint3(1, 1, 0)}; 
+        default:
+            return {};
+    }
+    
+    return {};
+}
+
+const static uint3[] EDGE_POSITIONS_0 = {
+    uint3(0, 0, 0),
+    uint3(1, 0, 0),
+    uint3(1, 1, 0),
+    uint3(0, 1, 0),
+    uint3(0, 0, 1),
+    uint3(1, 0, 1),
+    uint3(1, 1, 1),
+    uint3(0, 1, 1),
+    uint3(0, 0, 0),
+    uint3(1, 0, 0),
+    uint3(1, 1, 0),
+    uint3(0, 1, 0),
+};
+
+const static uint3[] EDGE_POSITIONS_1 = {
+    uint3(1, 0, 0),
+    uint3(1, 1, 0),
+    uint3(0, 1, 0),
+    uint3(0, 0, 0),
+    uint3(1, 0, 1),
+    uint3(1, 1, 1),
+    uint3(0, 1, 1),
+    uint3(0, 0, 1),
+    uint3(0, 0, 1),
+    uint3(1, 0, 1),
+    uint3(1, 1, 1),
+    uint3(0, 1, 1),
+};
+
+float unlerp(float x, float a, float b) {
+    return (x - a) / (b - a);
+}
+
+
+const static uint MESHLET_SIZE = 4;
+const static uint CHUNK_SIZE = MESHLET_SIZE * 4;
+
+// 1 element padding
+const static int MESHLET_SIZE_PLUS_ONE = MESHLET_SIZE+1;
+const static int MESHLET_VOLUME_PLUS_ONE = MESHLET_SIZE_PLUS_ONE*MESHLET_SIZE_PLUS_ONE*MESHLET_SIZE_PLUS_ONE;
+
+// 2 element padding
+const static int MESHLET_SIZE_PLUS_TWO = MESHLET_SIZE+2;
+const static int MESHLET_VOLUME_PLUS_TWO = MESHLET_SIZE_PLUS_TWO*MESHLET_SIZE_PLUS_TWO*MESHLET_SIZE_PLUS_TWO;
+
+// used for the mesh shader
+groupshared float[MESHLET_VOLUME_PLUS_TWO] cached_density;
+groupshared bool[MESHLET_VOLUME_PLUS_TWO] cached_is_set;
+groupshared uint[MESHLET_VOLUME_PLUS_ONE] lookup;
+groupshared Atomic<uint> vertex_count;
+groupshared Atomic<uint> triangle_count;
+
+struct TaskShaderPayload {
+    uint8_t[64] visible_meshlets;
+    int3 offset_from_task_shader;
+    int3 task_shader_gid;
+    int scale;
+}
+
+// used for the task shader
+groupshared TaskShaderPayload payload;
+groupshared Atomic<uint> visible_meshlets;
+
+// https://medium.com/@williscool/task-and-mesh-shaders-a-practical-guide-vulkan-and-slang-25baebe6388e
+[shader("task")]
+[numthreads(64, 1, 1)]
+void task_main(uint3 id : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID, uniform int3 chunk_offset_cs, uniform uint lod) {
+    let uniforms = storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
+
+    // chunk offset is from the groups of the task shader
+    int3 group_offset = (int3)gid + chunk_offset_cs * 8;
+    float3 chunk_offset_ws = (float3)CHUNK_SIZE * group_offset; 
+    float3 chunk_center = (float3)CHUNK_SIZE * group_offset + (float3)CHUNK_SIZE * 0.5; 
+
+    /*
+    // calculate LOD level based on distance to center of triangle
+    float3 aabb_min = (float3)chunk_offset * CHUNK_SIZE;
+    float3 aabb_max = (float3)chunk_offset * CHUNK_SIZE + (float3)CHUNK_SIZE;
+
+    float3 aabb_corners[8];
+    aabb_corners[0] = float3(aabb_min.x, aabb_min.y, aabb_min.z);
+    aabb_corners[1] = float3(aabb_max.x, aabb_min.y, aabb_min.z);
+    aabb_corners[2] = float3(aabb_min.x, aabb_max.y, aabb_min.z);
+    aabb_corners[3] = float3(aabb_max.x, aabb_max.y, aabb_min.z);
+    aabb_corners[4] = float3(aabb_min.x, aabb_min.y, aabb_max.z);
+    aabb_corners[5] = float3(aabb_max.x, aabb_min.y, aabb_max.z);
+    aabb_corners[6] = float3(aabb_min.x, aabb_max.y, aabb_max.z);
+    aabb_corners[7] = float3(aabb_max.x, aabb_max.y, aabb_max.z);
+
+    float2 ndc_min = float2(1e9, 1e9);
+    float2 ndc_max = float2(-1e9, -1e9);
+    for (int i = 0; i < 8; i++) {
+        float4 c = mul(float4(aabb_corners[i], 1.0), uniforms.view_projection_matrix);
+        float2 ndc = c.xy / c.w;
+        ndc_min = min(ndc_min, ndc);
+        ndc_max = max(ndc_max, ndc);
+    }
+
+    float2 size_ndc = ndc_max - ndc_min;
+    float screen_heuristic = 40.0 - length(size_ndc) * 10.0;
+
+
+    // this must be the same for the entire task shader group!
+    int lod = floor(clamp(log2(screen_heuristic), 0, 2));
+    */
+
+
+    // this must be the same for the entire task shader group!
+    // int lod2 = floor(clamp(distance(chunk_center, uniforms.position.xyz) / 100, 0, 2));
+    // int scale = 1 << lod2;
+    int scale = 1;
+
+    if (gtid.x == 0) {
+        payload = TaskShaderPayload({});
+        payload.scale = scale;
+        payload.offset_from_task_shader = group_offset;
+        payload.task_shader_gid = gid;
+        visible_meshlets = 0;
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    int meshlet = gtid.x;
+
+    uint3 meshlet_gid = index_to_offset(meshlet, 4);
+
+    float sphere_radius = CHUNK_SIZE;
+
+    // toggle debug frustum culling
+    if (uniforms.toggles_bitmask & 1 == 1) {
+        sphere_radius = 0.1;
+    }
+
+    float3 meshlet_center = (float3)meshlet_gid * MESHLET_SIZE + chunk_offset_ws + (float3)(MESHLET_SIZE / 2) * scale; 
+
+    bool meshlet_visible = true;   
+
+    /*
+    if (abs(density(meshlet_center, meshlet_gid, group_offset)) > (CHUNK_SIZE*2)) {
+        meshlet_visible = false;
+    }
+    */
+
+    if (!frustum_cull_sphere_is_visible(meshlet_center, box_aabb_half_extent_to_sphere_radius(MESHLET_SIZE))) {
+        meshlet_visible = false;
+    }
+
+    if (meshlet_visible) {
+        uint index = visible_meshlets.increment(MemoryOrder.Relaxed);
+        payload.visible_meshlets[index] = (uint8_t)meshlet;
+    }
+    
+
+    GroupMemoryBarrierWithGroupSync();
+
+    if (gtid.x == 0) {
+        DispatchMesh(visible_meshlets.load(MemoryOrder.Relaxed), 1, 1, payload);
+    }
+}
+
+// https://medium.com/@williscool/task-and-mesh-shaders-a-practical-guide-vulkan-and-slang-25baebe6388e
+[shader("mesh")]
+[outputtopology("triangle")]
+[numthreads(6, 6, 6)]
+void mesh_main(out vertices VertexOutput vertices[128], out indices uint3 triangles[256], uint3 gtid : SV_GroupThreadID, uint3 packed_gid : SV_GroupID, payload TaskShaderPayload payload) {
+    let uniforms = storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
+    
+    // initialize group shared memory
+    if (all(gtid == 0)) {
+        lookup = {};
+        vertex_count = 0;
+        triangle_count = 0;
+    }
+
+    int3 chunk_offset = payload.offset_from_task_shader;
+    
+    // group ID is "packed" from the task shader
+    // we need to unpack and do remapping to the original 3D meshlet group ID
+    uint3 gid = index_to_offset(payload.visible_meshlets[packed_gid.x], 4);
+
+    // port of https://github.com/jedjoud10/vulkan-toy-project/blob/main/src/voxel/meshes.rs
+    // generate vertices
+    uint3 cell = gtid;
+
+    // cache density function and booleans
+    float cell_density = density(cell * payload.scale, gid, chunk_offset);
+    bool cell_set = cell_density < 0;
+    cached_is_set[offset_to_index(cell, MESHLET_SIZE_PLUS_TWO)] = cell_set;
+    cached_density[offset_to_index(cell, MESHLET_SIZE_PLUS_TWO)] = cell_density;
+    
+    GroupMemoryBarrierWithGroupSync();
+    
+    // create single vertex per thread
+    if (all(gtid < MESHLET_SIZE_PLUS_ONE)) {
+        float3 inside_cell_offset_avg = 0;
+        int count = 0;
+
+        for (int edge = 0; edge < 12; edge++) {
+            uint3 p1_offsetted = EDGE_POSITIONS_0[edge];
+            uint3 p2_offsetted = EDGE_POSITIONS_1[edge];
+
+            uint p1_offsetted_index = offset_to_index(cell + p1_offsetted, MESHLET_SIZE_PLUS_TWO);
+            uint p2_offsetted_index = offset_to_index(cell + p2_offsetted, MESHLET_SIZE_PLUS_TWO);
+            
+            float d1 = cached_density[p1_offsetted_index];
+            float d2 = cached_density[p2_offsetted_index];
+            
+            if (d1 < 0 ^ d2 < 0) {
+                float factor = unlerp(0, d1, d2);
+                inside_cell_offset_avg += lerp(p1_offsetted, p2_offsetted, factor);
+                count++;
+            }
+        }
+
+        let vertex_index = vertex_count.increment(MemoryOrder.Relaxed);
+        lookup[offset_to_index(cell, MESHLET_SIZE_PLUS_ONE)] = vertex_index;
+
+        float3 cell_offset = cell + (inside_cell_offset_avg / count);
+        cell_offset = cell + 0.5;
+
+        float3 loaded_vertex = cell_offset * payload.scale /* + floor(uniforms.position.xyz) */ + gid * MESHLET_SIZE + (int3)CHUNK_SIZE * chunk_offset;
+
+
+        float3 colour = 0;
+        if (is_bit_set(uniforms.toggles_bitmask, 2)) {
+            colour = hash33(payload.task_shader_gid);
+        } else {
+            colour = hash33((int3)gid + chunk_offset + payload.scale);
+        }
+
+        vertices[vertex_index] = transform_vertex(loaded_vertex, colour);
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    // create triangles (up to 3 quads) per thread 
+    if (all(gtid < MESHLET_SIZE_PLUS_ONE)) {
+        // generate triangles    
+        // TODO: optimize this by only visiting the edges that were previously handled in the vertex stage (pass a 3 bit bitmask for example)
+        for (int axis = 0; axis < 3; axis++) {
+            if (cell[axis] == MESHLET_SIZE) {
+                continue;
+            }        
+
+            uint3 next_cell = cell;
+            next_cell[axis] += 1;
+            
+            if (cell_set != cached_is_set[offset_to_index(next_cell, MESHLET_SIZE_PLUS_TWO)]) {
+                let dir = cell_set ^ (axis == 1);
+
+                /*
+                float3 normal = 0;
+                
+                if (cell_set) {
+                    normal[axis] = 1;
+                } else {
+                    normal[axis] = -1;
+                }
+
+                float3 view = normalize(uniforms.position.xyz - (cell + 0.5 + gid * MESHLET_SIZE + (int3)CHUNK_SIZE * chunk_offset));
+                
+                // TODO: perhaps we can do some backface culling here???
+                if (dot(view, normal) < 0.0) {
+                    continue;
+                }
+                */
+
+                uint4 quad_vertex_indices = 676767;
+                uint3[4] vertex_offsets = quad_vertex_offsets_for_axis(axis);
+            
+                for (int index = 0; index < 4; index++) {
+                    let target = vertex_offsets[index] + next_cell - 1;
+                
+                    if (all(target >= 0 & target < MESHLET_SIZE_PLUS_ONE)) {
+                        let vertex_offset = offset_to_index(target, MESHLET_SIZE_PLUS_ONE);
+                        let vertex_index = lookup[vertex_offset];
+                        quad_vertex_indices[index] = vertex_index;
+                    }
+                }
+            
+                if (any(quad_vertex_indices == 676767)) {
+                    continue;
+                }
+            
+                //const static uint[6] INDEX_QUAD_ORDER = {0, 1, 2, 2, 1, 3};
+                //const static uint[6] INDEX_OPPOSITE_QUAD_ORDER = {1, 0, 2, 1, 2, 3};
+
+                let triangle_index = triangle_count.add(2, MemoryOrder.Relaxed);
+                if (dir) {
+                    triangles[triangle_index] = uint3(quad_vertex_indices.x, quad_vertex_indices.y, quad_vertex_indices.z);
+                    triangles[triangle_index+1] = uint3(quad_vertex_indices.z, quad_vertex_indices.y, quad_vertex_indices.w);
+                } else {
+                    triangles[triangle_index] = uint3(quad_vertex_indices.y, quad_vertex_indices.x, quad_vertex_indices.z);
+                    triangles[triangle_index+1] = uint3(quad_vertex_indices.y, quad_vertex_indices.z, quad_vertex_indices.w);
+                }
+            }
+        }
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    SetMeshOutputCounts(vertex_count.load(MemoryOrder.Relaxed), triangle_count.load(MemoryOrder.Relaxed));
+}
+
+[shader("fragment")]
+float4 frag_main(VertexOutput in_vert) : SV_Target {
+    return shared_frag_shading(in_vert);
+}

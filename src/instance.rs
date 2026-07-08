@@ -25,7 +25,7 @@ pub unsafe fn create_instance(
     debug_stuff: bool,
 ) -> ash::Instance {
     let app_info = vk::ApplicationInfo::default()
-        .application_name(c"Vulkan Voxel Raytracer")
+        .application_name(c"Vulkan Experiments")
         .api_version(vk::API_VERSION_1_3)
         .application_version(0)
         .engine_version(0)
@@ -48,7 +48,11 @@ pub unsafe fn create_instance(
         validation_ptrs.extend(DEBUG_INSTANCE_VALIDATION_LAYERS
             .iter()
             .map(|cstr| cstr.as_ptr()));
-        enabled_validation_features.push(vk::ValidationFeatureEnableEXT::DEBUG_PRINTF);
+        enabled_validation_features.extend([
+            vk::ValidationFeatureEnableEXT::DEBUG_PRINTF,
+            vk::ValidationFeatureEnableEXT::SYNCHRONIZATION_VALIDATION,
+            vk::ValidationFeatureEnableEXT::BEST_PRACTICES
+        ]);
     }
 
     let mut validation_features = ash::vk::ValidationFeaturesEXT::default()

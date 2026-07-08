@@ -1,6 +1,8 @@
-use std::ffi::{CStr, CString};
 use ash::vk;
 
+// for some reason using 2 gives the least amount of microstuttering???
+// idfk...
+pub const SWAPCHAIN_IMAGES: usize = 3;
 
 pub unsafe fn create_swapchain(
     instance: &ash::Instance,
@@ -10,15 +12,14 @@ pub unsafe fn create_swapchain(
     device: &ash::Device,
     extent: vk::Extent2D,
     binder: &Option<ash::ext::debug_utils::Device>,
+    last_swapchain: Option<vk::SwapchainKHR>,
 ) -> (
     ash::khr::swapchain::Device,
     vk::SwapchainKHR,
     Vec<vk::Image>,
     Vec<vk::ImageView>,
     vk::Format,
-) {
-    let num_swapchain_images = super::per_frame_data::FRAMES_IN_FLIGHT as u32;
-    
+) {    
     let present_modes: Vec<vk::PresentModeKHR> = surface_loader
         .get_physical_device_surface_present_modes(physical_device, surface_khr)
         .unwrap();
@@ -31,15 +32,10 @@ pub unsafe fn create_swapchain(
     log::debug!("surface formats {:?}", surface_formats);
     
     let swapchain_format = surface_formats[0].format;
-    let _present = present_modes
-        .iter()
-        .copied()
-        .find(|&x| x == vk::PresentModeKHR::IMMEDIATE || x == vk::PresentModeKHR::MAILBOX)
-        .unwrap();
     
     let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
         .surface(surface_khr)
-        .min_image_count(num_swapchain_images)
+        .min_image_count(SWAPCHAIN_IMAGES as u32)
         .image_format(swapchain_format)
         .image_color_space(vk::ColorSpaceKHR::SRGB_NONLINEAR)
         .image_extent(extent)
@@ -53,7 +49,7 @@ pub unsafe fn create_swapchain(
         )
         .clipped(true)
         .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
-        .old_swapchain(vk::SwapchainKHR::null())
+        .old_swapchain(last_swapchain.unwrap_or(vk::SwapchainKHR::null()))
         .present_mode(vk::PresentModeKHR::IMMEDIATE);
 
     let swapchain_loader = ash::khr::swapchain::Device::new(instance, device);

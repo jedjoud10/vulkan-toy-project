@@ -17,14 +17,14 @@ pub unsafe fn create_debug_messenger_create_info() -> vk::DebugUtilsMessengerCre
         .pfn_user_callback(Some(debug_callback))
 }
 
-pub unsafe fn set_object_name<T: ash::vk::Handle, S: AsRef<str>>(obj: T, binder: &Option<ash::ext::debug_utils::Device>, name: S) {
-    if let Some(binder) = binder {
+pub unsafe fn set_object_name<T: ash::vk::Handle, S: AsRef<str>>(obj: T, debug_marker: &DebugMarker, name: S) {
+    if let Some(debug_marker) = debug_marker {
         let string = CString::from_str(name.as_ref()).unwrap();
 
         let marker = vk::DebugUtilsObjectNameInfoEXT::default()
             .object_handle(obj)
             .object_name(string.as_c_str());
-        binder.set_debug_utils_object_name(&marker).unwrap();
+        debug_marker.set_debug_utils_object_name(&marker).unwrap();
     }
 }
 
@@ -44,6 +44,8 @@ pub unsafe fn create_debug_messenger(
         (debug_utils, messenger)
     })
 }
+
+pub type DebugMarker = Option<ash::ext::debug_utils::Device>;
 
 pub unsafe fn create_debug_marker(
     instance: &ash::Instance,

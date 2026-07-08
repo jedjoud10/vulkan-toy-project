@@ -28,6 +28,7 @@ pub(super) unsafe fn get_physical_device_score(
             .unwrap()
     );
 
+    // TODO: fix this and match up with logical device feature set
     let mut device_features_12 = vk::PhysicalDeviceVulkan12Features::default();
     let mut device_features_13 = vk::PhysicalDeviceVulkan13Features::default();
     

@@ -1,26 +1,38 @@
 use ash::vk;
-use gpu_allocator::vulkan::Allocation;
-use rand::RngExt;
-use rand::SeedableRng;
+use bytemuck::Pod;
+use bytemuck::Zeroable;
+use bytemuck::bytes_of;
+use bytemuck::cast_slice;
+use bytesize::ByteSize;
+use rayon::iter::IntoParallelIterator;
+use rayon::iter::ParallelIterator;
+use smallvec::SmallVec;
 use crate::input::Button;
 use crate::input::Input;
+use crate::material::Material;
+use crate::model;
+use crate::model::GpuModelMetadata;
 use crate::movement::Movement;
+use crate::per_frame_data;
+use crate::ray_tracing;
 use crate::samplers;
+use crate::tesselation;
+use crate::voxel;
 use winit::event::MouseButton;
 use std::collections::HashMap;
 use std::ops::ControlFlow;
+use std::time::Duration;
+use std::time::Instant;
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::KeyCode;
 use winit::raw_window_handle::HasDisplayHandle;
 use winit::window::Window;
 use crate::statistics::Statistics;
-use crate::asset;
 
 use crate::swapchain;
 use crate::ticker;
 use crate::pipeline;
 use crate::skybox;
-use crate::voxel;
 use crate::buffer;
 use crate::instance;
 use crate::physical_device;
@@ -28,7 +40,100 @@ use crate::device;
 use crate::debug;
 use crate::others;
 use crate::per_frame_data::PerFrameData;
-use crate::constant_data::ConstantData;
+use crate::render_targets_data::RenderTargetsData;
+
+const COMPUTE_POST_PROCESS_SPV: &'static str = "compute_post_process.spv";
+const BLOOM_UPSAMPLE_ENTRY_POINT: &'static str = "bloom_upsample";
+const BLOOM_DOWNSAMPLE_ENTRY_POINT: &'static str = "bloom_downsample";
+const WRITE_SWAPCHAIN_IMAGE_ENTRY_POINT: &'static str = "write_swapchain_image";
+const COMPUTE_SKY_SPV: &str = "compute_sky.spv";
+const WRITE_CLOUDS_ENTRY_POINT: &str = "write_clouds";
+const WRITE_SKYBOX_ENTRY_POINT: &str = "write_skybox";
+const BLUR_AMBIENT_SKYBOX_ENTRY_POINT: &str = "blur_skybox_ambient";
+
+const VOXELIZE_SURFACE_ENTRY_POINT: &str = "voxelize_surface";
+const CALCULATE_DENSITY_ENTRY_POINT: &str = "calculate_density";
+
+const RASTERIZED_SPV: &str = "rasterized.spv";
+const RASTERIZED_CHUNK_SPV: &str = "rasterized_chunk.spv";
+const COMPUTE_SURFACE_SPV: &str = "compute_surface.spv";
+const RASTERIZED_MS_PASSTHROUGH_SPV: &str = "rasterized_ms_passthrough.spv";
+const RASTERIZED_MS_TESSELALTION_SPV: &str = "rasterized_ms_tesselation.spv";
+const RASTERIZED_MS_GENERATED_1_SPV: &str = "rasterized_ms_generated_1.spv";
+const RASTERIZED_MS_GENERATED_GRASS_SPV: &str = "rasterized_ms_generated_grass.spv";
+const RASTERIZED_BACKGROUND_SPV: &str = "rasterized_background.spv";
+
+const NUM_LIGHTS: usize = 1;
+const SUN_SHADOW_RAY_ENABLED: bool = true;
+const EXTRA_LIGHTS_ENABLED: bool = false;
+const EXTRA_LIGHTS_SHADOW_RAY_ENABLED: bool = true;
+const VERY_SHINY_REFLECTIVE_SURFACES: bool = true;
+const DEBUG_TEXT_BUFFER_SIZE_BYTES: usize = 1024;
+const GPU_MODEL_METADATA_BUFFER_MAX_ELEMENT_COUNT: usize = 1024;
+        
+
+const VERTEX_ATTRIBUTE_DESCRIPTIONS: &'static [vk::VertexInputAttributeDescription] = &[vk::VertexInputAttributeDescription {
+    binding: 0,
+    format: vk::Format::R32G32B32_SFLOAT,
+    location: 0,
+    offset: 0
+}, vk::VertexInputAttributeDescription {
+    binding: 1,
+    format: vk::Format::R32G32B32_SFLOAT,
+    location: 1,
+    offset: 0
+}, vk::VertexInputAttributeDescription {
+    binding: 2,
+    format: vk::Format::R32G32_SFLOAT,
+    location: 2,
+    offset: 0
+}];
+const VERTEX_BINDING_DESCRIPTIONS: &'static [vk::VertexInputBindingDescription] = &[vk::VertexInputBindingDescription {
+    binding: 0,
+    stride: size_of::<vek::Vec3<f32>>() as u32,
+    input_rate: vk::VertexInputRate::VERTEX,
+}, vk::VertexInputBindingDescription {
+    binding: 1,
+    stride: size_of::<vek::Vec3<f32>>() as u32,
+    input_rate: vk::VertexInputRate::VERTEX,
+}, vk::VertexInputBindingDescription {
+    binding: 2,
+    stride: size_of::<vek::Vec2<f32>>() as u32,
+    input_rate: vk::VertexInputRate::VERTEX,
+}];
+
+
+
+const VERTEX_ATTRIBUTE_DESCRIPTIONS_CHUNK: &'static [vk::VertexInputAttributeDescription] = &[vk::VertexInputAttributeDescription {
+    binding: 0,
+    format: vk::Format::R32G32B32_SFLOAT,
+    location: 0,
+    offset: 0
+}];
+const VERTEX_BINDING_DESCRIPTIONS_CHUNK: &'static [vk::VertexInputBindingDescription] = &[vk::VertexInputBindingDescription {
+    binding: 0,
+    stride: 4 * 3 as u32,
+    input_rate: vk::VertexInputRate::VERTEX,
+}];
+
+pub struct GraphicsContext<'a> {
+    pub device: &'a ash::Device,
+    pub pool: vk::CommandPool,
+    pub queue: vk::Queue,
+    pub queue_family_index: u32,
+    pub mesh_shader_device: &'a ash::ext::mesh_shader::Device,
+    pub extended_dynamic_state3_device: &'a ash::ext::extended_dynamic_state3::Device,
+    pub acceleration_structure_device: &'a ash::khr::acceleration_structure::Device,
+    pub host_image_copy_device: &'a ash::ext::host_image_copy::Device,
+
+    // TODO: hide this behind mutex or rwlock so that we can share GraphicsContext across threads safely
+    pub allocator: &'a mut gpu_allocator::vulkan::Allocator,
+    pub debug_marker: &'a debug::DebugMarker,
+    pub main_descriptor_set_layout: vk::DescriptorSetLayout,
+    pub main_pipeline_layout: vk::PipelineLayout,
+    pub descriptor_pool: vk::DescriptorPool,
+}
+
 
 pub struct InternalApp {
     // entry, physical device, logical device
@@ -43,6 +148,9 @@ pub struct InternalApp {
         vk::DebugUtilsMessengerEXT
     )>,
     debug_marker: Option<ash::ext::debug_utils::Device>,
+
+    // materials
+    materials: Vec<Material>,
     
     // surface & swapchain
     surface_loader: ash::khr::surface::Instance,
@@ -61,58 +169,64 @@ pub struct InternalApp {
     pool: vk::CommandPool,
     
     // pipelines
-    render_compute_pipeline: pipeline::RenderPipeline,
-    sky_compute_pipeline: pipeline::SkyPipeline,
-    post_process_compute_pipeline: pipeline::PostProcessPipeline,
-    voxel_compute_pipeline: pipeline::VoxelPipeline,
-    rasterization_pipeline: pipeline::RasterizationRenderPipeline,
-    rasterization_background_pipeline: pipeline::RasterizationBackgroundPipeline,
-    
-    
+    graphics_pipelines: HashMap<&'static str, pipeline::GenericGraphicsPipeline>,
+    compute_pipelines: HashMap<&'static str, pipeline::GenericComputePipeline>,
+
+    // extra devices
+    mesh_shader_device: ash::ext::mesh_shader::Device,
+    extended_dynamic_state3_device: ash::ext::extended_dynamic_state3::Device,
+    acceleration_structure_device: ash::khr::acceleration_structure::Device,
+    host_image_copy_device: ash::ext::host_image_copy::Device,
+    // TODO: when using ash rewrite; use KHR_copy_memory_indirect since it was promoted from NV_copy_memory_indirect
+
     // descriptors & frames in flight
-    frames_in_flight: Vec<PerFrameData>,
+    main_descriptor_set_layout: vk::DescriptorSetLayout,
+    main_pipeline_layout: vk::PipelineLayout,
+    frames_in_flight: SmallVec<[PerFrameData; per_frame_data::FRAMES_IN_FLIGHT]>,
+    render_finished_semaphores: SmallVec<[vk::Semaphore; swapchain::SWAPCHAIN_IMAGES]>,
     descriptor_pool: vk::DescriptorPool,
-    const_descriptor_sets: ConstantData,
-    
-    // sparse stuff
-    svo: voxel::SparseVoxelOctree,
-    svt: voxel::SparseVoxelTexture,
-    meshed: voxel::VoxelMeshBuffers,
-        
+    render_targets_data: RenderTargetsData,
+            
     // important too
     allocator: gpu_allocator::vulkan::Allocator,
     
     // other GPU stuff
-    query_pool: vk::QueryPool,
+    multiple_chunks: voxel::MultipleChunks,
+    models: Vec<model::Model>,
+    models_buffer: buffer::Buffer,
+    tlas: ray_tracing::TopLevelAccelerationStructure,
+    static_instances: Vec<vk::AccelerationStructureInstanceKHR>,
+    dynamic_instances: Vec<vk::AccelerationStructureInstanceKHR>,
+    
     timestamp_period: f32,
     skybox: skybox::Skybox,
     lights_buffer: buffer::Buffer,
     lights: Vec<vek::Vec4<f32>>,
     samplers: samplers::Samplers,
-    
+    tesselation_buffer: buffer::Buffer,
+    uniform_buffer: buffer::Buffer,
+
+    // debug settings
+    debug_type: u32,
+    wireframe: bool,
+    toggles_bitmask: u32,
+    debug_text_buffer: buffer::Buffer,
+
     // other CPU stuff
     pub was_resized: bool,
     pub window: Window,
     pub input: Input,    
+    last_frame_cpu_cmd_record_duration: Duration,
     movement: Movement,
     frame_count: u64,
     ticker: ticker::Ticker,
     sun: vek::Vec3<f32>,
-    debug_type: u32,
     args: crate::Args,
     stats: Statistics,
 }
 
 impl InternalApp {
     pub unsafe fn new(event_loop: &ActiveEventLoop, args: crate::Args) -> Self {
-        let mut assets = HashMap::<&str, &[u32]>::new();
-        asset!("raytracer.spv", assets);
-        asset!("sky_compute.spv", assets);
-        asset!("post_process_compute.spv", assets);
-        asset!("voxel_interesting_compute.spv", assets);
-        asset!("rasterized.spv", assets);
-        asset!("sky_background.spv", assets);
-
         let window = event_loop
             .create_window(Window::default_attributes())
             .unwrap();
@@ -128,9 +242,16 @@ impl InternalApp {
         let raw_display_handle = window.display_handle().unwrap().as_raw();
         let entry = ash::Entry::load().unwrap();
 
-        let instance = instance::create_instance(&entry, raw_display_handle, args.enable_debug_stuff);
+        #[cfg(debug_assertions)]
+        let running_cfg_debug_assertions = true;
+
+        #[cfg(not(debug_assertions))]
+        let running_cfg_debug_assertions = false;
+
+        let debug_stuff = args.enable_debug_stuff || running_cfg_debug_assertions;
+        let instance = instance::create_instance(&entry, raw_display_handle, debug_stuff);
         log::info!("created instance");
-        let debug_messenger = debug::create_debug_messenger(&entry, &instance, args.enable_debug_stuff).inspect(|_x| {
+        let debug_messenger = debug::create_debug_messenger(&entry, &instance, debug_stuff).inspect(|_x| {
             log::info!("created debug utils messenger");
         });
 
@@ -174,9 +295,14 @@ impl InternalApp {
         );
         log::info!("created device and fetched main queue");
 
+        let mesh_shader_device = ash::ext::mesh_shader::Device::new(&instance, &device);
+        let extended_dynamic_state3_device = ash::ext::extended_dynamic_state3::Device::new(&instance, &device);
+        let acceleration_structure_device = ash::khr::acceleration_structure::Device::new(&instance, &device);
+        let host_image_copy_device = ash::ext::host_image_copy::Device::new(&instance, &device);
+
         let debug_marker = debug_messenger.is_some().then(|| {
             let device = debug::create_debug_marker(&instance, &device);
-            log::info!("created debug marker object names binder");
+            log::info!("created debug marker object");
             device
         });
 
@@ -186,11 +312,11 @@ impl InternalApp {
                 device: device.clone(),
                 physical_device,
                 debug_settings: gpu_allocator::AllocatorDebugSettings {
-                    log_leaks_on_shutdown: false,
+                    log_leaks_on_shutdown: running_cfg_debug_assertions,
                     log_frees: false,
                     ..Default::default()
                 },
-                buffer_device_address: false,
+                buffer_device_address: true,
                 allocation_sizes: gpu_allocator::AllocationSizes::default(),
             })
             .unwrap();
@@ -222,95 +348,208 @@ impl InternalApp {
             &device,
             extent,
             &debug_marker,
+            None,
         );
         log::info!("created swapchain with {} images", swapchain_images.len());
 
-        // swapchain::transfer_rt_images(&device, queue_family_index, &rt_images, pool, queue);
-        // log::info!("transferred layout of render texture images");
+        let (descriptor_pool, main_descriptor_set_layout) = others::create_descriptor_pool_and_bindless_descriptor_set(&device, &debug_marker);
 
-        let descriptor_pool = others::create_descriptor_pool(&device);
-        log::info!("created descriptor pool");
+        let main_pipeline_layout = pipeline::create_bindless_pipeline_layout(&device, &debug_marker, main_descriptor_set_layout);
+        log::info!("created bindless pipeline layout");
 
-        let spec_constants = pipeline::RenderPipelineSpecConstants {
-            shadow_samples: args.shadow_samples,
-            max_ray_iterations: args.max_ray_iterations,
-            round_normals: if args.round_normals { 1 } else { 0 },
-            ambient_occlusion: if args.ambient_occlusion { 1 } else { 0 }, 
-            wavy_reflections: if args.wavy_reflections { 1 } else { 0 }, 
-            pixelated_shadows: if args.pixelated_shadows { 1 } else { 0 }, 
-            group_size: 2u32.pow(args.group_size_exp),
-        };
-        let render_compute_pipeline = pipeline::create_render_compute_pipeline(assets["raytracer.spv"], &device, &debug_marker, spec_constants);
-        log::info!("created render compute pipeline");
+        let mut graphics_pipelines = HashMap::<&'static str, pipeline::GenericGraphicsPipeline>::new();
+        let mut compute_pipelines = HashMap::<&'static str, pipeline::GenericComputePipeline>::new();
 
-        let sky_compute_pipeline = pipeline::create_sky_pipeline(assets["sky_compute.spv"], &device, &debug_marker);
-        log::info!("created sky compute pipeline");
+        let rasterization_base_spec_constants = [
+            SUN_SHADOW_RAY_ENABLED as u32, 
+            EXTRA_LIGHTS_ENABLED as u32,
+            EXTRA_LIGHTS_SHADOW_RAY_ENABLED as u32,
+            VERY_SHINY_REFLECTIVE_SURFACES as u32,
+            NUM_LIGHTS as u32, 
+        ];
 
-        let post_process_compute_pipeline = pipeline::create_post_process_pipeline(assets["post_process_compute.spv"], &device, &debug_marker, &args);
-        log::info!("created post process compute pipeline");
+        let settings = [pipeline::PipelineCreateSettings {
+            pipeline_debug_name: "post process compute pipeline",
+            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &[WRITE_SWAPCHAIN_IMAGE_ENTRY_POINT, BLOOM_DOWNSAMPLE_ENTRY_POINT, BLOOM_UPSAMPLE_ENTRY_POINT] },
+            spec_constants: Some(&[args.downscale_factor]),
+            spv_file_name: COMPUTE_POST_PROCESS_SPV,
+        }, pipeline::PipelineCreateSettings {
+            pipeline_debug_name: "sky compute pipeline",
+            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &[WRITE_SKYBOX_ENTRY_POINT, WRITE_CLOUDS_ENTRY_POINT, BLUR_AMBIENT_SKYBOX_ENTRY_POINT] },
+            spec_constants: Some(&[skybox::SKYBOX_RESOLUTION, skybox::CLOUDS_RESOLUTION, skybox::AMBIENT_SKYBOX_RESOLUTION]),
+            spv_file_name: COMPUTE_SKY_SPV,
+        }, pipeline::PipelineCreateSettings {
+            pipeline_debug_name: "main render pipeline",
+            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::GraphicsMeshShader { face_culling: true, task_shader: false },
+            spec_constants: None,
+            spv_file_name: RASTERIZED_MS_PASSTHROUGH_SPV,
+        }, pipeline::PipelineCreateSettings {
+            pipeline_debug_name: "tesselation render pipeline",
+            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::GraphicsMeshShader { face_culling: true, task_shader: true },
+            spec_constants: None,
+            spv_file_name: RASTERIZED_MS_TESSELALTION_SPV,
+        }, pipeline::PipelineCreateSettings {
+            pipeline_debug_name: "background sky pipeline",
+            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Graphics { face_culling: false, vertex_input: vk::PipelineVertexInputStateCreateInfo::default() },
+            spec_constants: None,
+            spv_file_name: RASTERIZED_BACKGROUND_SPV,
+        }, pipeline::PipelineCreateSettings {
+            pipeline_debug_name: "generated render pipeline",
+            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::GraphicsMeshShader { face_culling: true, task_shader: true },
+            spec_constants: None,
+            spv_file_name: RASTERIZED_MS_GENERATED_1_SPV,
+        }, pipeline::PipelineCreateSettings {
+            pipeline_debug_name: "grass render pipeline",
+            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::GraphicsMeshShader { face_culling: false, task_shader: true },
+            spec_constants: Some(&rasterization_base_spec_constants),
+            spv_file_name: RASTERIZED_MS_GENERATED_GRASS_SPV,
+        }, pipeline::PipelineCreateSettings {
+            pipeline_debug_name: "rasterized render pipeline",
+            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Graphics {
+                face_culling: true,
+                vertex_input: vk::PipelineVertexInputStateCreateInfo::default().vertex_attribute_descriptions(VERTEX_ATTRIBUTE_DESCRIPTIONS).vertex_binding_descriptions(VERTEX_BINDING_DESCRIPTIONS),
+            },
+            spec_constants: Some(&rasterization_base_spec_constants),
+            spv_file_name: RASTERIZED_SPV,
+        }, pipeline::PipelineCreateSettings {
+            pipeline_debug_name: "rasterized chunk render pipeline",
+            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Graphics {
+                face_culling: true,
+                vertex_input: vk::PipelineVertexInputStateCreateInfo::default().vertex_attribute_descriptions(VERTEX_ATTRIBUTE_DESCRIPTIONS_CHUNK).vertex_binding_descriptions(VERTEX_BINDING_DESCRIPTIONS_CHUNK),
+            },
+            spec_constants: Some(&rasterization_base_spec_constants),
+            spv_file_name: RASTERIZED_CHUNK_SPV,
+        }, pipeline::PipelineCreateSettings {
+            pipeline_debug_name: "compute surface shader",
+            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &[CALCULATE_DENSITY_ENTRY_POINT, VOXELIZE_SURFACE_ENTRY_POINT] },
+            spec_constants: None,
+            spv_file_name: COMPUTE_SURFACE_SPV,
+        }];
 
-        let voxel_compute_pipeline = pipeline::create_voxel_pipeline(assets["voxel_interesting_compute.spv"], &device, &debug_marker);
-        log::info!("created voxel compute pipeline");
+        // compile the pipelines in parallel
+        // ouug shii :eyes:
+        log::info!("creating pipelines...");
+        let generic_pipelines = settings.into_par_iter().map(|setting| {
+            let spv_file_name = setting.spv_file_name;
+            let raw_bytes = others::load_compiled_shader(spv_file_name).unwrap();
 
-        let rasterization_pipeline = pipeline::create_render_rasterization_pipeline(assets["rasterized.spv"], &device, &debug_marker);
-        log::info!("created main render rasterization pipeline");
+            
+            let len = raw_bytes.len();
+            assert!(len.is_multiple_of(4));
 
-        let rasterization_background_pipeline = pipeline::create_sky_rasterization_pipeline(assets["sky_background.spv"], &device, &debug_marker);
-        log::info!("created main render rasterization pipeline");
+            // align to word sizes
+            // previous assertion upholds that the number of bytes is a multiple of word size
+            let mut vec = vec![0u32; len / 4];
+            let dst_slice = bytemuck::cast_slice_mut::<u32, u8>(vec.as_mut_slice());
+            dst_slice.copy_from_slice(&raw_bytes);
 
-        let (svo, svt, meshed) = voxel::create_sparse_structures(
-            &device,
-            &mut allocator,
-            &debug_marker,
-            queue,
-            pool,
-            queue_family_index,
-            args.force_regenerate,
-        );
-        log::info!("created sparse voxel structures");
+            let raw_words = &vec;
+            let pipeline = pipeline::create_generic_pipeline(raw_words, &device, &debug_marker, main_pipeline_layout, setting);
+            (spv_file_name, pipeline)
+        }).collect::<Vec<_>>();
+
+        for (spv_file_name, pipeline) in generic_pipelines {
+            match pipeline {
+                pipeline::GenericPipeline::Graphics(generic_graphics_pipeline) => { graphics_pipelines.insert(spv_file_name, generic_graphics_pipeline); },
+                pipeline::GenericPipeline::Compute(generic_compute_pipeline) => { compute_pipelines.insert(spv_file_name, generic_compute_pipeline); },
+            }
+        }
 
         let samplers = samplers::Samplers::create_samplers(&device);
         log::info!("created samplers");        
 
-        let skybox = skybox::create_skybox(
-            &device,
-            &mut allocator,
-            &debug_marker,
-            queue,
+        let mut ctx = GraphicsContext {
+            device: &device,
             pool,
-            queue_family_index
-        );
+            queue,
+            queue_family_index,
+            mesh_shader_device: &mesh_shader_device,
+            extended_dynamic_state3_device: &extended_dynamic_state3_device,
+            acceleration_structure_device: &acceleration_structure_device,
+            host_image_copy_device: &host_image_copy_device,
+            allocator: &mut allocator,
+            debug_marker: &debug_marker,
+            main_descriptor_set_layout,
+            main_pipeline_layout,
+            descriptor_pool,
+        };
+
+        let skybox = skybox::create_skybox(&mut ctx);
         log::info!("created skybox");
 
-        let frames_in_flight = (0..crate::per_frame_data::FRAMES_IN_FLIGHT).into_iter().map(|_| {
-            PerFrameData::create_per_frame_data(&device, pool, descriptor_pool, &post_process_compute_pipeline, &rasterization_pipeline, &rasterization_background_pipeline, &mut allocator, &debug_marker)
-        }).collect::<Vec<_>>();
+        let frames_in_flight = (0..per_frame_data::FRAMES_IN_FLIGHT).into_iter().map(|_| {
+            PerFrameData::create_per_frame_data(&mut ctx)
+        }).collect::<SmallVec<[PerFrameData; per_frame_data::FRAMES_IN_FLIGHT]>>();
         log::info!("created frames in flight structures");
 
-        const NUM_LIGHTS: usize = 100;
-
-        let lights_buffer = buffer::create_buffer(&device, &mut allocator, size_of::<vek::Vec4<f32>>() * NUM_LIGHTS, &debug_marker, "lights buffer", vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
+        let lights_buffer = buffer::create_buffer(&mut ctx, size_of::<vek::Vec4<f32>>() * NUM_LIGHTS, "lights buffer", vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
         let mut lights = Vec::<vek::Vec4<f32>>::new();
 
         for _i in 0..NUM_LIGHTS {
-            let x = rand::random_range((voxel::TOTAL_SIZE as f32 / 2.0f32 - 10f32)..(voxel::TOTAL_SIZE as f32 / 2.0f32 + 10f32));
-            let y = rand::random_range(0f32..(voxel::TOTAL_SIZE as f32));
-            let z = rand::random_range((voxel::TOTAL_SIZE as f32 / 2.0f32 - 10f32)..(voxel::TOTAL_SIZE as f32 / 2.0f32 + 10f32));
+            let x = rand::random_range(-10f32..10f32);
+            let y = rand::random_range(-10f32..10f32);
+            let z = rand::random_range(-10f32..10f32);
             lights.push(vek::Vec4::new(x,y,z, 1.0));
         }
 
-        buffer::write_to_buffer(&device, pool, queue, lights_buffer.buffer, &mut allocator, bytemuck::cast_slice(lights.as_slice()));
+        buffer::write_to_buffer(&mut ctx, lights_buffer.buffer, bytemuck::cast_slice(lights.as_slice()));
         log::info!("created lights buffer");
 
-        let mut const_descriptor_sets = ConstantData::create_constant_descriptor_sets(&device, descriptor_pool, &render_compute_pipeline, &sky_compute_pipeline, &post_process_compute_pipeline, &voxel_compute_pipeline, &rasterization_background_pipeline, &rasterization_pipeline, &samplers, &skybox, &svt, &svo, &lights_buffer);
-        const_descriptor_sets.recreate_rt_images_and_image_views_and_update_descriptor_sets(&device, swapchain_format, &mut allocator, queue_family_index, extent, &debug_marker, descriptor_pool, &samplers, &post_process_compute_pipeline, args.downscale_factor);
-        crate::constant_data::transfer_layout_for_images(&device, queue_family_index, &const_descriptor_sets, pool, queue);
+        let mut render_targets_data = RenderTargetsData::create_constant_descriptor_sets();
+        render_targets_data.recreate_rt_images_and_image_views_and_update_descriptor_sets(&mut ctx, extent, args.downscale_factor);
         log::info!("created constant descriptor sets");
 
-        let query_pool = others::create_query_pool(&device);
         let timestamp_period = physical_device_properties.properties.limits.timestamp_period;
 
+        let multiple_chunks = voxel::MultipleChunks::create(&mut ctx);
+        
+        let cmd = others::begin_recording(&mut ctx);
+        let mut writer = buffer::begin_buffer_writer(&mut ctx);
+
+        let models = vec![
+            model::Model::new(vek::Vec3::new(0f32, 20f32, 0f32), "sphere.obj", &mut ctx, 0, cmd, &mut writer),
+            model::Model::new(vek::Vec3::new(10f32, 20f32, 0f32), "not_so_sphere.obj", &mut ctx, 1, cmd, &mut writer),
+            model::Model::new(vek::Vec3::new(-10f32, 20f32, 0f32), "modular_industrial_pipes_01_1k.obj", &mut ctx, 2, cmd, &mut writer),
+            model::Model::new(vek::Vec3::new(-30f32, 20f32, 0f32), "namaqualand_boulder_02_1k.obj", &mut ctx, 0, cmd, &mut writer),
+            model::Model::new(vek::Vec3::new(-40f32, 20f32, 0f32), "ingot_mesh.obj", &mut ctx, 1, cmd, &mut writer),
+            model::Model::new(vek::Vec3::new(-50f32, 20f32, 0f32), "dust_mesh_a.obj", &mut ctx, 2, cmd, &mut writer),     
+            model::Model::new(vek::Vec3::new(0f32, 18f32, 0f32), "rough_plane.obj", &mut ctx, 0, cmd, &mut writer),         
+            model::Model::new(vek::Vec3::new(0f32, 30f32, 0f32), "space_thing.obj", &mut ctx, 0, cmd, &mut writer),       
+        ];
+
+        others::end_recording_and_submit(&mut ctx, cmd);
+        buffer::end_buffer_writer(&mut ctx, writer);
+
+        let tlas = ray_tracing::pre_create_tlas(&mut ctx);
+
+        let tesselation_buffer = tesselation::precompute_tesselation_buffer(&mut ctx);
+
+        let debug_text_buffer = buffer::create_buffer(&mut ctx, DEBUG_TEXT_BUFFER_SIZE_BYTES, "debug text", vk::BufferUsageFlags::STORAGE_BUFFER);
+
+        let render_finished_semaphores: SmallVec<[vk::Semaphore; swapchain::SWAPCHAIN_IMAGES]> = (0..swapchain::SWAPCHAIN_IMAGES).into_iter().map(|_| {
+            device.create_semaphore(&Default::default(), None).unwrap()
+        }).collect::<SmallVec<[vk::Semaphore; swapchain::SWAPCHAIN_IMAGES]>>();
+
+        let uniform_buffer = buffer::create_buffer(
+            &mut ctx,
+            size_of::<pipeline::PerFrameUniformData>(),
+            "per frame uniform buffer",
+            vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST
+        );
+
+        let materials = vec![
+            Material::new(&mut ctx, "metal/metal_0077"),
+            Material::new(&mut ctx, "ground/ground_0029"),
+            Material::new(&mut ctx, "metal_2/metal_0066"),
+            Material::new(&mut ctx, "ground_2/ground_0019"),
+        ];
+
+        let models_buffer = buffer::create_buffer(&mut ctx, size_of::<GpuModelMetadata>() * GPU_MODEL_METADATA_BUFFER_MAX_ELEMENT_COUNT, "models metadata buffer", vk::BufferUsageFlags::empty());
+
         Self {
+            models_buffer,
+            multiple_chunks,
+            last_frame_cpu_cmd_record_duration: Default::default(),
             frame_count: 0,
             input: Default::default(),
             movement: Movement::new(),
@@ -329,17 +568,11 @@ impl InternalApp {
             swapchain,
             queue_family_index,
             queue,
-            const_descriptor_sets,
             pool,
-            render_compute_pipeline,
-            sky_compute_pipeline,
-            rasterization_pipeline,
+            render_targets_data,
             descriptor_pool,
-            query_pool,
             timestamp_period,
             allocator,
-            svo,
-            svt,
             skybox,
             was_resized: false,
             frames_in_flight,
@@ -349,23 +582,58 @@ impl InternalApp {
             stats: Default::default(),
             args,
             lights,
-            post_process_compute_pipeline,
-            voxel_compute_pipeline,
             samplers,
             swapchain_images,
             swapchain_image_views,
-            meshed,
-            rasterization_background_pipeline,
+            main_descriptor_set_layout,
+            main_pipeline_layout,
+            mesh_shader_device,
+            extended_dynamic_state3_device,
+            tesselation_buffer,
+            graphics_pipelines,
+            compute_pipelines,
+            wireframe: false,
+            toggles_bitmask: 0,
+            debug_text_buffer,
+            render_finished_semaphores,
+            uniform_buffer,
+            acceleration_structure_device,
+            models,
+            static_instances: Vec::new(),
+            dynamic_instances: Vec::new(),
+            tlas,
+            materials,
+            host_image_copy_device,
         }
     }
 
     pub unsafe fn click(&mut self, add: bool) {
-        let position = (self.movement.forward() * 5.0f32 + self.movement.position).floor().as_::<u32>();
+        let position = self.movement.forward() * 5.0f32 + self.movement.position;
 
-        /*
-        self.svo.set(position, add);
-        self.svo.rebuild(&self.device, self.pool, self.queue, &mut self.allocator);
-        */
+        let mut ctx = GraphicsContext {
+            device: &self.device,
+            pool: self.pool,
+            queue: self.queue,
+            queue_family_index: self.queue_family_index,
+            mesh_shader_device: &self.mesh_shader_device,
+            extended_dynamic_state3_device: &self.extended_dynamic_state3_device,
+            acceleration_structure_device: &self.acceleration_structure_device,
+            host_image_copy_device: &self.host_image_copy_device,
+            allocator: &mut self.allocator,
+            debug_marker: &self.debug_marker,
+            main_descriptor_set_layout: self.main_descriptor_set_layout,
+            main_pipeline_layout: self.main_pipeline_layout,
+            descriptor_pool: self.descriptor_pool,
+        };
+
+        if add {
+            let cmd = others::begin_recording(&mut ctx);
+            let mut writer = buffer::begin_buffer_writer(&mut ctx);
+            let new_model = model::Model::new(position, "sphere.obj", &mut ctx, (self.models.len() % self.materials.len()) as u32, cmd, &mut writer);
+            self.models.push(new_model);
+            others::end_recording_and_submit(&mut ctx, cmd);
+            buffer::end_buffer_writer(&mut ctx, writer);
+        }
     }
 
     pub unsafe fn recreate_swapchain(&mut self) {
@@ -373,17 +641,12 @@ impl InternalApp {
         self.was_resized = false;
         self.device.device_wait_idle().unwrap();
 
-        self.swapchain_loader
-            .destroy_swapchain(self.swapchain, None);
-        for swapchain_image_view in self.swapchain_image_views.iter() {
-            self.device.destroy_image_view(*swapchain_image_view, None);
-        }
-
         let width = self.window.inner_size().width;
         let height = self.window.inner_size().height;
         
         let extent = vk::Extent2D { width, height };
 
+        // recreate swapchain (pass in old swapchain as well) 
         let (swapchain_loader, swapchain, swapchain_images, swapchain_image_views, swapchain_format) = swapchain::create_swapchain(
             &self.instance,
             &self.surface_loader,
@@ -392,7 +655,15 @@ impl InternalApp {
             &self.device,
             extent,
             &self.debug_marker,
+            Some(self.swapchain)
         );
+
+        // destroy old swapchain and image views...
+        self.swapchain_loader
+            .destroy_swapchain(self.swapchain, None);
+        for swapchain_image_view in self.swapchain_image_views.iter() {
+            self.device.destroy_image_view(*swapchain_image_view, None);
+        }
 
         self.swapchain_loader = swapchain_loader;
         self.swapchain_format = swapchain_format;
@@ -400,17 +671,35 @@ impl InternalApp {
         self.swapchain_image_views = swapchain_image_views;
         self.swapchain = swapchain;
 
-        self.const_descriptor_sets.destroy_rt_images_and_image_views(&self.device, self.descriptor_pool, &mut self.allocator);
-        self.const_descriptor_sets.recreate_rt_images_and_image_views_and_update_descriptor_sets(&self.device, swapchain_format, &mut self.allocator, self.queue_family_index, extent, &self.debug_marker, self.descriptor_pool, &self.samplers, &self.post_process_compute_pipeline, self.args.downscale_factor);
-        crate::constant_data::transfer_layout_for_images(&self.device, self.queue_family_index, &self.const_descriptor_sets, self.pool, self.queue);
-                
+        self.render_targets_data.destroy_rt_images_and_image_views(&self.device, &mut self.allocator);
+
+        let mut ctx = GraphicsContext {
+            device: &self.device,
+            pool: self.pool,
+            queue: self.queue,
+            queue_family_index: self.queue_family_index,
+            mesh_shader_device: &self.mesh_shader_device,
+            extended_dynamic_state3_device: &self.extended_dynamic_state3_device,
+            acceleration_structure_device: &self.acceleration_structure_device,
+            host_image_copy_device: &self.host_image_copy_device,
+            allocator: &mut self.allocator,
+            debug_marker: &self.debug_marker,
+            main_descriptor_set_layout: self.main_descriptor_set_layout,
+            descriptor_pool: self.descriptor_pool,
+            main_pipeline_layout: self.main_pipeline_layout,
+        };
+
+        self.render_targets_data.recreate_rt_images_and_image_views_and_update_descriptor_sets(&mut ctx, extent, self.args.downscale_factor);
+
+
         for frame in self.frames_in_flight.iter_mut() {
             self.device.destroy_semaphore(frame.present_complete_semaphore, None);
-            self.device.destroy_semaphore(frame.render_finished_semaphore, None);
+            frame.present_complete_semaphore = self.device.create_semaphore(&Default::default(), None).unwrap();
+        }
 
-            let create_info = vk::SemaphoreCreateInfo::default();
-            frame.render_finished_semaphore = self.device.create_semaphore(&create_info, None).unwrap();
-            frame.present_complete_semaphore = self.device.create_semaphore(&create_info, None).unwrap();
+        for render_finished_semaphore in self.render_finished_semaphores.iter_mut() {
+            self.device.destroy_semaphore(*render_finished_semaphore, None);
+            *render_finished_semaphore = self.device.create_semaphore(&Default::default(), None).unwrap();
         }
 
 
@@ -443,10 +732,22 @@ impl InternalApp {
             self.stats.start_benchmarking(self.frame_count);
         }
         if self.input.get_button(Button::Keyboard(KeyCode::KeyH)).pressed() {
-            self.debug_type = (self.debug_type as i32 + 1).rem_euclid(6) as u32;
+            self.debug_type = (self.debug_type as i32 + 1).rem_euclid(8) as u32;
         }
         if self.input.get_button(Button::Keyboard(KeyCode::KeyG)).pressed() {
-            self.debug_type = (self.debug_type as i32 - 1).rem_euclid(6) as u32;
+            self.debug_type = (self.debug_type as i32 - 1).rem_euclid(8) as u32;
+        }
+        if self.input.get_button(Button::Keyboard(KeyCode::KeyT)).pressed() {
+            self.wireframe = !self.wireframe; 
+        }
+        if self.input.get_button(Button::Keyboard(KeyCode::Digit1)).pressed() {
+            self.toggles_bitmask ^= 1;
+        }
+        if self.input.get_button(Button::Keyboard(KeyCode::Digit2)).pressed() {
+            self.toggles_bitmask ^= 2;
+        }
+        if self.input.get_button(Button::Keyboard(KeyCode::Digit3)).pressed() {
+            self.toggles_bitmask ^= 4;
         }
         if self.input.get_button(Button::Keyboard(KeyCode::KeyJ)).pressed() {
             let report = self.allocator.generate_report();
@@ -463,100 +764,66 @@ impl InternalApp {
     }
 
     pub unsafe fn render(&mut self, delta: f32, elapsed: f32) {
-        //let frame_in_flight_index = 0;
         let frame_in_flight_index = self.frame_count % (self.frames_in_flight.len() as u64);
-        let constant_descriptor_sets = &self.const_descriptor_sets;
-        let PerFrameData {
+        let render_targets = &self.render_targets_data;
+        let &mut PerFrameData {
             present_complete_semaphore,
             end_fence,
             cmd,
-            per_frame_descriptor_sets,
-            uniform_buffer,
+            main_descriptor_set,
+            query_pool,
+            pipeline_statistics_query_pool,
+            ref mut scratch_buffer,
             ..
-        } = &self.frames_in_flight[frame_in_flight_index as usize];
+        } = &mut self.frames_in_flight[frame_in_flight_index as usize];
 
-        let cmd = *cmd;
-        let present_complete_semaphores = [*present_complete_semaphore];
-        let end_fence = *end_fence;
 
+        let present_complete_semaphores = [present_complete_semaphore];
+
+        let pre_wait_for_fence = Instant::now();
         if let Err(err) = self.device.wait_for_fences(&[end_fence], true, u64::MAX) {
             log::error!("wait on fence err: {:?}", err);
-            //return;
+            // return;
         } else {
-            let mut timestamps = [0u64; 2];
-            let okay = self.device.get_query_pool_results(self.query_pool, 0, &mut timestamps, vk::QueryResultFlags::TYPE_64 | vk::QueryResultFlags::WAIT).is_ok();
-            if okay {
-                let delta_in_ms = ((timestamps[1].saturating_sub(timestamps[0])) as f64 * self.timestamp_period as f64) / 1000000.0f64;
-                self.stats.push_query_timings(delta_in_ms);
+            // wait for a few frames so that the queries get populated
+            if self.frame_count > per_frame_data::FRAMES_IN_FLIGHT as u64 {
+                // try to fetch timestamp queries
+                let mut timestamps = [0u64; 2];
+                let okay = self.device.get_query_pool_results(query_pool, 0, &mut timestamps, vk::QueryResultFlags::TYPE_64 | vk::QueryResultFlags::WAIT).is_ok();
+                if okay {
+                    let delta_in_ms = ((timestamps[1].saturating_sub(timestamps[0])) as f64 * self.timestamp_period as f64) / 1000000.0f64;
+                    self.stats.push_query_timings(delta_in_ms);
+                }
             }
+
+
+            /*
+            // try to fetch pipeline statistics queriy
+            let mut data = [0u64; 1];
+            let okay = self.device.get_query_pool_results(self.pipeline_statistics_query_pool, 0, &mut data, vk::QueryResultFlags::TYPE_64).is_ok();
+            if okay {
+                dbg!(data);
+            }
+            */
         }
+        let post_wait_for_fence = Instant::now();
 
-        let mut rng = rand::rngs::SmallRng::seed_from_u64(421);
-
-        for (i, light) in self.lights.iter_mut().enumerate() { 
-            let axis = vek::Vec3::new(rng.random_range(-1f32..1f32), rng.random_range(-1f32..1f32), rng.random_range(-1f32..1f32));
-            
-            let disk_matrix = vek::Mat4::rotation_3d(elapsed, axis);
-
-            let target_position = self.movement.position + disk_matrix.mul_point(vek::Vec3::unit_x()) * 5.0f32;
-
-            let tmp = vek::Lerp::lerp(light.xyz(), target_position, 3.5 * delta);
-            *light = vek::Vec4::from_point(tmp);
-        }
-
+        let pre_acquire_swapchain = Instant::now();
         let (acquired_swapchain_image_index, suboptimal) = self
             .swapchain_loader
             .acquire_next_image(
                 self.swapchain,
                 u64::MAX,
-                *present_complete_semaphore,
+                present_complete_semaphore,
                 vk::Fence::null(),
             )
             .unwrap();
+        let post_acquire_swapchain = Instant::now();
 
         let swapchain_image = self.swapchain_images[acquired_swapchain_image_index as usize]; // then compose onto this...
         let swapchain_image_view = self.swapchain_image_views[acquired_swapchain_image_index as usize];
 
-        //log::debug!("frame in flight index: {frame_in_flight_index}, acquire swapchain image index: {acquired_swapchain_image_index}");
-
-        let descriptor_swapchain_image_view_info = vk::DescriptorImageInfo::default()
-            .image_view(swapchain_image_view)
-            .image_layout(vk::ImageLayout::GENERAL)
-            .sampler(vk::Sampler::null());
-
-        // rt image for compositor (write only)
-        let composition_compute_descriptor_image_infos_1 = [descriptor_swapchain_image_view_info];
-        let composition_compute_image_descriptor_write_1 = vk::WriteDescriptorSet::default()
-            .descriptor_count(1)
-            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-            .dst_binding(0)
-            .dst_set(per_frame_descriptor_sets.compositor_per_frame)
-            .image_info(&composition_compute_descriptor_image_infos_1);
-
-
-        let descriptor_uniform_buffer_info = vk::DescriptorBufferInfo::default()
-            .buffer(uniform_buffer.buffer)
-            .offset(0)
-            .range(vk::WHOLE_SIZE);
-        let render_rasterization_per_frame_buffer_infos = [descriptor_uniform_buffer_info];
-        let render_rasterization_descriptor_write = vk::WriteDescriptorSet::default()
-            .descriptor_count(1)
-            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-            .dst_binding(0)
-            .dst_set(per_frame_descriptor_sets.rasterizer_per_frame)
-            .buffer_info(&render_rasterization_per_frame_buffer_infos);
-
-        let background_rasterization_per_frame_buffer_infos = [descriptor_uniform_buffer_info];
-        let background_rasterization_descriptor_write = vk::WriteDescriptorSet::default()
-            .descriptor_count(1)
-            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-            .dst_binding(0)
-            .dst_set(per_frame_descriptor_sets.background_rasterizer_per_frame)
-            .buffer_info(&background_rasterization_per_frame_buffer_infos);
-
-        // update per frame descriptor sets
-        self.device.update_descriptor_sets(&[composition_compute_image_descriptor_write_1, render_rasterization_descriptor_write, background_rasterization_descriptor_write], &[]);
-
+        
         if suboptimal || self.was_resized {
             log::debug!("suboptimal: {suboptimal}");
             log::debug!("was resized: {}", self.was_resized);
@@ -567,8 +834,148 @@ impl InternalApp {
         }
 
         self.device.reset_fences(&[end_fence]).unwrap();
+        let render_finished_semaphore = [self.render_finished_semaphores[acquired_swapchain_image_index as usize]];
 
-        let render_finished_semaphore = [self.frames_in_flight[acquired_swapchain_image_index as usize].render_finished_semaphore];
+        // create bindless descriptor write for storage images        
+        let swapchain_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
+            .image_view(swapchain_image_view)
+            .image_layout(vk::ImageLayout::GENERAL);
+        let rendered_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
+            .image_view(render_targets.rendered_image_view)
+            .image_layout(vk::ImageLayout::GENERAL);
+        let skybox_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
+            .image_view(self.skybox.skybox_array_image_view)
+            .image_layout(vk::ImageLayout::GENERAL);
+        let ambient_skybox_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
+            .image_view(self.skybox.ambient_skybox_array_image_view)
+            .image_layout(vk::ImageLayout::GENERAL);
+        let clouds_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
+            .image_view(self.skybox.clouds_image_view)
+            .image_layout(vk::ImageLayout::GENERAL);
+        let mut storage_image_infos = vec![swapchain_image_view_descriptor_image_info, rendered_image_view_descriptor_image_info, skybox_image_view_descriptor_image_info, ambient_skybox_image_view_descriptor_image_info, clouds_image_view_descriptor_image_info];
+        
+        // add bloom storage image views
+        for bloom_storage_image_view in render_targets.bloom_mip_image_views.iter() {
+            storage_image_infos.push(vk::DescriptorImageInfo::default()
+                .image_view(*bloom_storage_image_view)
+                .image_layout(vk::ImageLayout::GENERAL)
+            );
+        }
+        
+        let storage_image_write = vk::WriteDescriptorSet::default()
+            .descriptor_count(storage_image_infos.len() as u32)
+            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+            .dst_binding(0)
+            .dst_array_element(0)
+            .dst_set(main_descriptor_set)
+            .image_info(&storage_image_infos);      
+
+        // create bindless descriptor write for storage buffers
+        let mut storage_buffer_infos = vec![
+            vk::DescriptorBufferInfo::default()
+                .buffer(self.uniform_buffer.buffer)
+                .offset(0)
+                .range(vk::WHOLE_SIZE),
+            vk::DescriptorBufferInfo::default()
+                .buffer(self.tesselation_buffer.buffer)
+                .offset(0)
+                .range(vk::WHOLE_SIZE),
+            vk::DescriptorBufferInfo::default()
+                .buffer(self.lights_buffer.buffer)
+                .offset(0)
+                .range(vk::WHOLE_SIZE),
+            vk::DescriptorBufferInfo::default()
+                .buffer(self.debug_text_buffer.buffer)
+                .offset(0)
+                .range(vk::WHOLE_SIZE),
+            vk::DescriptorBufferInfo::default()
+                .buffer(self.models_buffer.buffer)
+                .offset(0)
+                .range(vk::WHOLE_SIZE),
+        ];
+
+        // add models' backing storage buffers
+        for model in self.models.iter_mut() {
+            model.add_per_frame_backing_storage_buffers(&mut storage_buffer_infos);
+        }
+
+        let storage_buffer_write = vk::WriteDescriptorSet::default()
+            .descriptor_count(storage_buffer_infos.len() as u32)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .dst_binding(1)
+            .dst_set(main_descriptor_set)
+            .buffer_info(&storage_buffer_infos);
+
+        // create bindless descriptor write for image samplers
+        let skybox_sampled_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
+            .image_view(self.skybox.skybox_image_view)
+            .image_layout(vk::ImageLayout::GENERAL);
+        let ambient_skybox_sampled_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
+            .image_view(self.skybox.ambient_skybox_image_view)
+            .image_layout(vk::ImageLayout::GENERAL);
+        let clouds_sampled_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
+            .image_view(self.skybox.clouds_image_view)
+            .image_layout(vk::ImageLayout::GENERAL);
+        let rendered_sampled_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
+            .image_view(render_targets.rendered_image_view)
+            .image_layout(vk::ImageLayout::GENERAL);
+        let entire_bloom_sampled_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
+            .image_view(render_targets.entire_bloom_image_view)
+            .image_layout(vk::ImageLayout::GENERAL);
+        let mut sampled_image_infos = vec![skybox_sampled_image_view_descriptor_image_info, ambient_skybox_sampled_image_view_descriptor_image_info, clouds_sampled_image_view_descriptor_image_info, rendered_sampled_image_view_descriptor_image_info, entire_bloom_sampled_image_view_descriptor_image_info];
+
+        // add bloom sampled image views
+        for bloom_sampled_image_view in render_targets.bloom_mip_image_views.iter() {
+            sampled_image_infos.push(vk::DescriptorImageInfo::default()
+                .image_view(*bloom_sampled_image_view)
+                .image_layout(vk::ImageLayout::GENERAL)
+            );
+        }
+
+        // add material sampled image views
+        for material in self.materials.iter_mut() {
+            material.add_per_frame_sampled_images(&mut sampled_image_infos);
+        }
+
+        let sampled_image_write = vk::WriteDescriptorSet::default()
+            .descriptor_count(sampled_image_infos.len() as u32)
+            .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+            .dst_binding(2)
+            .dst_set(main_descriptor_set)
+            .image_info(&sampled_image_infos);
+
+        let samplers = [
+            vk::DescriptorImageInfo::default()
+                .sampler(self.samplers.nearest),
+            vk::DescriptorImageInfo::default()
+                .sampler(self.samplers.linear)
+        ];
+        let sampler_states_write = vk::WriteDescriptorSet::default()
+            .descriptor_count(samplers.len() as u32)
+            .descriptor_type(vk::DescriptorType::SAMPLER)
+            .dst_binding(3)
+            .dst_set(main_descriptor_set)
+            .image_info(&samplers);
+
+        let tlases = [self.tlas.data.acceleration_structure];
+        let mut acceleration_structure_write_tmp = vk::WriteDescriptorSetAccelerationStructureKHR::default()
+            .acceleration_structures(&tlases);
+
+        let acceleration_structure_write = vk::WriteDescriptorSet::default()
+            .descriptor_count(1)
+            .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+            .dst_set(main_descriptor_set)
+            .dst_binding(4)
+            .push_next(&mut acceleration_structure_write_tmp);
+
+        self.device.update_descriptor_sets(&[storage_image_write, storage_buffer_write, sampled_image_write, sampler_states_write, acceleration_structure_write], &[]);
+
+        // TODO: ideally, these would:
+        // 1. be dynamically allocated using some sort of per-frame arena with indexing
+        // 2. be passed to the shader either using a uniform buffer (since these are constant anyways)
+        const BLOOM_MIPS_STORAGE_IMAGE_START_IDX: u32 = 5; // bloom needs to be last since it is dynamically allocated (can have a dynamic number of bloom mips, depending on screen res)
+        const RENDERED_SAMPLER_IMAGE_IDX: u32 = 3;
+        const BLOOM_MIPS_SAMPLED_IMAGE_START_IDX: u32 = 5; // bloom needs to be last since it is dynamically allocated (can have a dynamic number of bloom mips, depending on screen res)
 
         let cmd_buffer_begin_info = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
@@ -576,275 +983,216 @@ impl InternalApp {
         self.device
             .begin_command_buffer(cmd, &cmd_buffer_begin_info)
             .unwrap();
-        self.device.cmd_reset_query_pool(cmd, self.query_pool, 0, 2);
+        let cpu_cmd_record_start = Instant::now();
+        self.device.cmd_reset_query_pool(cmd, query_pool, 0, 2);
+        self.device.cmd_reset_query_pool(cmd, pipeline_statistics_query_pool, 0, 1);
+        self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, query_pool, 0);
+        scratch_buffer.begin_of_cmd_recording(&self.device, cmd);
+        
 
-        if !self.svt.sparse_partial_image_chunks.is_empty() {
-            self.device.cmd_bind_descriptor_sets(
-                cmd,
-                vk::PipelineBindPoint::COMPUTE,
-                self.voxel_compute_pipeline.entry_points[0].pipeline_layout,
-                0,
-                &[constant_descriptor_sets.voxel_compute_pipeline_descriptor_set],
-                &[],
-            );
-            self.device.cmd_bind_pipeline(
-                cmd,
-                vk::PipelineBindPoint::COMPUTE,
-                self.voxel_compute_pipeline.entry_points[0].pipeline,
-            );
-        
-            let target_chunk_idfk = &self.svt.sparse_partial_image_chunks[self.frame_count as usize % self.svt.sparse_partial_image_chunks.len()];
-            let push_constants = vek::Vec4::<u32>::from_point(target_chunk_idfk.origin);
-            let raw = bytemuck::bytes_of(&push_constants);
-        
-            self.device.cmd_push_constants(
-                cmd,
-                self.voxel_compute_pipeline.entry_points[0].pipeline_layout,
-                vk::ShaderStageFlags::COMPUTE,
-                0,
-                raw,
-            );
-        
-            self.device.cmd_dispatch(cmd, 8, 8, 8);
+        // update lights and its respective buffer
+        self.lights[0] = (vek::Vec3::lerp(self.lights[0].xyz(), self.movement.forward() * 5f32 + self.movement.position, 10f32 * delta)).with_w(0f32);
+        self.device.cmd_update_buffer(cmd, self.lights_buffer.buffer, 0, cast_slice(self.lights.as_slice()));
+
+        // update model positions
+        // TODO: ideally should be moved to tick
+        for model in self.models.iter_mut() {
+            model.update(elapsed, &self.movement);
         }
 
-        //self.sun = vek::Vec3::new((elapsed * 0.1f32).sin(), (elapsed * 0.05).sin(), (elapsed * 0.1f32).cos()).normalized();
+        // update dynamic instances for TLAS
+        self.dynamic_instances.clear();
+        let mut models_metadata_buffer_write =  Vec::<GpuModelMetadata>::new();
+        for model in self.models.iter() {
+            self.dynamic_instances.push(model.instance);
+            models_metadata_buffer_write.push(GpuModelMetadata {
+                material_base_index: self.materials[model.material_index as usize].base_index,
+                storage_buffers_base_index: model.base_index,
+            });
+        }
+
+        for chunk in self.multiple_chunks.chunks.iter() {
+            self.dynamic_instances.push(chunk.instance);
+            models_metadata_buffer_write.push(GpuModelMetadata {
+                material_base_index: self.materials[0].base_index,
+                storage_buffers_base_index: 0,
+            });
+        }
+
+
+        // update models metadata buffer
+        self.device.cmd_update_buffer(cmd, self.models_buffer.buffer, 0, cast_slice(models_metadata_buffer_write.as_slice()));
+
+
 
         let subresource_range = vk::ImageSubresourceRange::default()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
             .level_count(1)
             .layer_count(1);
 
-        let lights_buffer_barrier = vk::BufferMemoryBarrier2::default()
-            .buffer(self.lights_buffer.buffer)
-            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
-            .dst_access_mask(vk::AccessFlags2::MEMORY_WRITE)
-            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(self.queue_family_index)
-            .size(vk::WHOLE_SIZE);
-        let uniform_buffer_barrier = vk::BufferMemoryBarrier2::default()
-            .buffer(uniform_buffer.buffer)
-            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
-            .dst_access_mask(vk::AccessFlags2::MEMORY_WRITE)
-            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(self.queue_family_index)
-            .size(vk::WHOLE_SIZE);
-        let svt_image_barrier = vk::ImageMemoryBarrier2::default()
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
-            .dst_access_mask(vk::AccessFlags2::SHADER_READ)
-            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(self.queue_family_index)
-            .image(self.svt.sparse_image)
-            .subresource_range(subresource_range);
-        let image_memory_barriers = [svt_image_barrier];
-        let buffer_memory_barriers = [lights_buffer_barrier, uniform_buffer_barrier];
-        let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers).buffer_memory_barriers(&buffer_memory_barriers);
-        self.device.cmd_pipeline_barrier2(cmd, &dep);
+        let mut text = String::new();
+        text += &format!("CPU delta: {:.2}ms\n", delta*1000f32);
+        text += &format!("CPU command buffer record duration: {:.2}ms\n", self.last_frame_cpu_cmd_record_duration.as_micros() as f32 / 1000.0f32);
+        text += &format!("CPU fence wait duration: {:.2}ms\n", (post_wait_for_fence - pre_wait_for_fence).as_micros() as f32 / 1000.0f32);
+        text += &format!("CPU fence acquire swapchain duration: {:.2}ms\n", (post_acquire_swapchain - pre_acquire_swapchain).as_micros() as f32 / 1000.0f32);
+        text += &format!("GPU main frame: {:.2}ms\n", self.stats.get_average_in_ms());
+        text += &format!("pos: {:.2}\n", self.movement.position);
+        text += &format!("debug type: {}\n", self.debug_type);
+        text += &format!("toggles bitmask: {:#032b}\n", self.toggles_bitmask);
+        text += &format!("wireframe: {}\n", self.wireframe);
+        text += &format!("updating frustum: {}\n", self.movement.update_frustum);
 
+        let report = self.allocator.generate_report();
+        let reserved_bytes = ByteSize::b(report.total_reserved_bytes).display().iec();
+        let allocated_bytes = ByteSize::b(report.total_reserved_bytes).display().iec();
+        text += &format!("reserved bytes: {}\n", reserved_bytes);
+        text += &format!("allocated bytes: {}\n", allocated_bytes);
         
+        
+        #[derive(Clone, Copy, Pod, Zeroable)]
+        #[repr(C)]
+        struct DebugTextLineHeader {
+            start_byte_offset: u32,
+            char_count: u32,
+        }
+        
+        // write total number of lines
+        let total_num_lines = text.lines().count() as u32;
+        let mut bytes = bytemuck::bytes_of(&total_num_lines).to_vec();
+
+        // write headers for each line
+        let mut prefix_sum_chars_only = 0u32;
+        for line in text.lines() {
+            // calculate the total size in bytes prior to the actual text data
+            let mut total_size_prior = total_num_lines * size_of::<DebugTextLineHeader>() as u32;
+
+            // plus also the u32 to indicate the line count
+            total_size_prior += size_of::<u32>() as u32;
+
+            let header_for_line = DebugTextLineHeader {
+                start_byte_offset: total_size_prior + prefix_sum_chars_only, 
+                char_count: line.as_bytes().len() as u32,
+            };
+            
+            bytes.extend_from_slice(bytemuck::bytes_of(&header_for_line));
+            prefix_sum_chars_only += line.as_bytes().len() as u32;
+        }
+
+        for line in text.lines() {
+            bytes.extend_from_slice(line.as_bytes());
+        }
+
+        // wtf
+        bytes.resize(bytes.len().div_ceil(4) * 4, 0);
+        self.device.cmd_update_buffer(cmd, self.debug_text_buffer.buffer, 0, &bytes);
+
+        // bind the descriptor set for subsequent pipelines
+        self.device.cmd_bind_descriptor_sets(
+            cmd,
+            vk::PipelineBindPoint::COMPUTE,
+            self.main_pipeline_layout,
+            0,
+            &[main_descriptor_set],
+            &[],
+        );
+        self.device.cmd_bind_descriptor_sets(
+            cmd,
+            vk::PipelineBindPoint::GRAPHICS,
+            self.main_pipeline_layout,
+            0,
+            &[main_descriptor_set],
+            &[],
+        );
 
         let size = self.window.inner_size();
         let window_size_no_downscale = vek::Vec2::<u32>::new(size.width, size.height);
         let size = vek::Vec2::<u32>::new(size.width, size.height) / self.args.downscale_factor;
 
-        let group_size = 2u32.pow(self.args.group_size_exp);
         let size_f32 = size.map(|x| x as f32);
 
-        let matrix = self.movement.proj_matrix.inverted() * self.movement.view_matrix;
-
-        let push_constants = pipeline::PushConstants {
-            screen_resolution: size_f32,
-            _padding: Default::default(),
-            matrix,
-            position: self.movement.position.with_w(0f32),
-            sun: self.sun.normalized().with_w(0f32),
-            debug_type: self.debug_type,
-            time: elapsed,
-        };
-
-        let raw = bytemuck::bytes_of(&push_constants);
-
         
+
         let uniform_per_frame_data = pipeline::PerFrameUniformData {
             view_matrix: self.movement.view_matrix,
             projection_matrix: self.movement.proj_matrix,
+            view_projection_matrix: self.movement.proj_matrix * self.movement.view_matrix,
             inv_view_matrix: self.movement.view_matrix.inverted(),
             inv_projection_matrix: self.movement.proj_matrix.inverted(),
             screen_resolution: size_f32,
             position: self.movement.position.with_w(0f32),
+            forward: self.movement.forward().with_w(0f32),
+            
             sun: self.sun.normalized().with_w(0f32),
+            camera_frustum_planes: self.movement.camera_frustum_planes,
             debug_type: self.debug_type,
             time: elapsed,
+            toggles_bitmask: self.toggles_bitmask,
 
             _padding: Default::default(),
         };
 
-        self.device.cmd_update_buffer(cmd, uniform_buffer.buffer, 0, bytemuck::bytes_of(&uniform_per_frame_data));
-        
-        self.device.cmd_update_buffer(cmd, self.lights_buffer.buffer, 0, bytemuck::cast_slice(&self.lights));
-
-        if self.debug_type == 0 {
-            let rendered_image_barrier = vk::ImageMemoryBarrier2::default()
-                .old_layout(vk::ImageLayout::UNDEFINED)
-                .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .src_access_mask(vk::AccessFlags2::NONE)
-                .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
-                .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-                .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-                .src_queue_family_index(self.queue_family_index)
-                .dst_queue_family_index(self.queue_family_index)
-                .image(constant_descriptor_sets.rendered_image)
-                .subresource_range(subresource_range);
-            let image_memory_barriers = [rendered_image_barrier];
-            let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
-            self.device.cmd_pipeline_barrier2(cmd, &dep);
-
-            let render_area = vk::Rect2D::default()
-                .offset(vk::Offset2D::default())
-                .extent(vk::Extent2D::default().width(size.x).height(size.y));
-            let color_attachment = vk::RenderingAttachmentInfo::default()
-                .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0f32; 4] } })
-                .load_op(vk::AttachmentLoadOp::DONT_CARE)
-                .store_op(vk::AttachmentStoreOp::STORE)
-                .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .image_view(self.const_descriptor_sets.rendered_image_view);
-            let depth_attachment = vk::RenderingAttachmentInfo::default()
-                .clear_value(vk::ClearValue { depth_stencil: vk::ClearDepthStencilValue { depth: 1f32, stencil: 0 } })
-                .load_op(vk::AttachmentLoadOp::CLEAR)
-                .store_op(vk::AttachmentStoreOp::DONT_CARE)
-                .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
-                .image_view(self.const_descriptor_sets.rendered_depth_image_image_view);
-            let color_attachments = [color_attachment];
-            let rendering_info = vk::RenderingInfo::default()
-                .color_attachments(&color_attachments)
-                .depth_attachment(&depth_attachment)
-                .layer_count(1)
-                .render_area(render_area)
-                .view_mask(0);
-
-            let viewport = vk::Viewport::default().height(size.y as f32).width(size.x as f32).x(0f32).y(0f32).min_depth(0f32).max_depth(1f32);
-            self.device.cmd_set_viewport(cmd, 0, &[viewport]);
-            self.device.cmd_set_scissor(cmd, 0, &[render_area]);
-            
-            self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::ALL_GRAPHICS, self.query_pool, 0);
-            self.device.cmd_begin_rendering(cmd, &rendering_info);
+        self.device.cmd_update_buffer(cmd, self.uniform_buffer.buffer, 0, bytemuck::bytes_of(&uniform_per_frame_data));
 
 
-            // render background skybox and clouds
-            self.device.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::GRAPHICS, self.rasterization_background_pipeline.pipeline_layout, 0, &[per_frame_descriptor_sets.background_rasterizer_per_frame, constant_descriptor_sets.sky_rasterization_render_pipeline_descriptor_set], &[]);
-            self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.rasterization_background_pipeline.pipeline);
-            self.device.cmd_draw(cmd, 6, 1, 0, 0);
-
-            // render chunk meshes stuff
-            self.device.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::GRAPHICS, self.rasterization_pipeline.pipeline_layout, 0, &[per_frame_descriptor_sets.rasterizer_per_frame, constant_descriptor_sets.main_render_rasterization_render_pipeline_descriptor_set], &[]);
-            self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.rasterization_pipeline.pipeline);
-            self.device.cmd_bind_vertex_buffers(cmd, 0, &[self.meshed.vertex_buffer.buffer], &[0]);
-            self.device.cmd_bind_index_buffer(cmd, self.meshed.index_buffer.buffer, 0, vk::IndexType::UINT32);
-            for single_chunk in self.meshed.chunks.iter() {
-                self.device.cmd_draw_indexed(cmd, single_chunk.index_count as u32, 1, single_chunk.first_index as u32, single_chunk.vertex_start_offset as i32, 0);
-            }
-
-            self.device.cmd_end_rendering(cmd);
-            self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::ALL_GRAPHICS, self.query_pool, 1);
-
-            let rendered_image_barrier = vk::ImageMemoryBarrier2::default()
-                .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .new_layout(vk::ImageLayout::GENERAL)
-                .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
-                .dst_access_mask(vk::AccessFlags2::MEMORY_READ)
-                .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-                .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-                .src_queue_family_index(self.queue_family_index)
-                .dst_queue_family_index(self.queue_family_index)
-                .image(constant_descriptor_sets.rendered_image)
-                .subresource_range(subresource_range);
-            let image_memory_barriers = [rendered_image_barrier];
-            let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
-            self.device.cmd_pipeline_barrier2(cmd, &dep);
-        } else {
-            self.device.cmd_bind_descriptor_sets(
-                cmd,
-                vk::PipelineBindPoint::COMPUTE,
-                self.render_compute_pipeline.entry_points[0].pipeline_layout,
-                0,
-                &[constant_descriptor_sets.main_render, constant_descriptor_sets.render_compute_pipeline_descriptor_set],
-                &[],
-            );
-            self.device.cmd_bind_pipeline(
-                cmd,
-                vk::PipelineBindPoint::COMPUTE,
-                self.render_compute_pipeline.entry_points[0].pipeline,
-            );
-
-            self.device.cmd_push_constants(
-                cmd,
-                self.render_compute_pipeline.entry_points[0].pipeline_layout,
-                vk::ShaderStageFlags::COMPUTE,
-                0,
-                raw,
-            );
-
-            self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::COMPUTE_SHADER, self.query_pool, 0);
-            self.device.cmd_dispatch(cmd, size.x.div_ceil(group_size), size.y.div_ceil(group_size), 1);
-            self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::COMPUTE_SHADER, self.query_pool, 1);
-        } 
-
-        self.device.cmd_bind_descriptor_sets(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.sky_compute_pipeline.entry_points[0].pipeline_layout,
-            0,
-            &[constant_descriptor_sets.sky_compute_pipeline_descriptor_set],
-            &[],
-        );
-        self.device.cmd_bind_pipeline(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.sky_compute_pipeline.entry_points[0].pipeline,
-        );
-
-        let push_constants = pipeline::SkyComputePushConstants {
-            sun: self.sun.normalized().with_w(elapsed),
-        };
-        self.device.cmd_push_constants(cmd, self.sky_compute_pipeline.entry_points[0].pipeline_layout, vk::ShaderStageFlags::COMPUTE, 0, bytemuck::bytes_of(&push_constants));
-        self.device.cmd_dispatch(cmd, skybox::CLOUDS_RESOLUTION.div_ceil(8), skybox::CLOUDS_RESOLUTION.div_ceil(8), 1);
-
-        self.device.cmd_bind_descriptor_sets(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.sky_compute_pipeline.entry_points[1].pipeline_layout,
-            0,
-            &[constant_descriptor_sets.sky_compute_pipeline_descriptor_set],
-            &[],
-        );
-        self.device.cmd_bind_pipeline(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.sky_compute_pipeline.entry_points[1].pipeline,
-        );
-
-        self.device.cmd_push_constants(cmd, self.sky_compute_pipeline.entry_points[1].pipeline_layout, vk::ShaderStageFlags::COMPUTE, 0, bytemuck::bytes_of(&push_constants));
-        self.device.cmd_dispatch(cmd, skybox::SKYBOX_RESOLUTION.div_ceil(8), skybox::SKYBOX_RESOLUTION.div_ceil(8), 6);
-        
-        let src_shader_write_to_shader_read = vk::ImageMemoryBarrier2::default()
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
-            .dst_access_mask(vk::AccessFlags2::SHADER_STORAGE_READ)
-            .src_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
-            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+        let uniform_buffer_barrier = vk::BufferMemoryBarrier2::default()
+            .buffer(self.uniform_buffer.buffer)
+            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)
-            .image(constant_descriptor_sets.rendered_image)
-            .subresource_range(subresource_range);
+            .size(vk::WHOLE_SIZE);
+        let debug_text_buffer_barrier = vk::BufferMemoryBarrier2::default()
+            .buffer(self.debug_text_buffer.buffer)
+            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .size(vk::WHOLE_SIZE);
+        let lights_buffer_barrier = vk::BufferMemoryBarrier2::default()
+            .buffer(self.lights_buffer.buffer)
+            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .size(vk::WHOLE_SIZE);
+        let materials_buffer_barrier = vk::BufferMemoryBarrier2::default()
+            .buffer(self.models_buffer.buffer)
+            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .size(vk::WHOLE_SIZE);
+        let buffer_memory_barriers = [uniform_buffer_barrier, debug_text_buffer_barrier, lights_buffer_barrier, materials_buffer_barrier];
+        let dep = vk::DependencyInfo::default().buffer_memory_barriers(&buffer_memory_barriers);
+        self.device.cmd_pipeline_barrier2(cmd, &dep);
+
+        
+
+
+        self.device.cmd_bind_pipeline(
+            cmd,
+            vk::PipelineBindPoint::COMPUTE,
+            self.compute_pipelines[COMPUTE_SKY_SPV][WRITE_CLOUDS_ENTRY_POINT],
+        );
+
+        self.device.cmd_dispatch(cmd, skybox::CLOUDS_RESOLUTION.div_ceil(8), skybox::CLOUDS_RESOLUTION.div_ceil(8), 1);
+
+        self.device.cmd_bind_pipeline(
+            cmd,
+            vk::PipelineBindPoint::COMPUTE,
+            self.compute_pipelines[COMPUTE_SKY_SPV][WRITE_SKYBOX_ENTRY_POINT]
+        );
+
+        self.device.cmd_dispatch(cmd, skybox::SKYBOX_RESOLUTION.div_ceil(8), skybox::SKYBOX_RESOLUTION.div_ceil(8), 6);
+
         let skybox_subresource_range = vk::ImageSubresourceRange::default()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
             .level_count(1)
@@ -875,41 +1223,278 @@ impl InternalApp {
             .dst_queue_family_index(self.queue_family_index)
             .image(self.skybox.clouds_image)
             .subresource_range(clouds_subresource_range);
-        let image_memory_barriers = [src_shader_write_to_shader_read, skybox_image_barrier, clouds_image_barrier];
+        let image_memory_barriers = [skybox_image_barrier, clouds_image_barrier];
         let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
-        let full_passes_bloom = vk::ImageMemoryBarrier2::default()
+        self.device.cmd_bind_pipeline(
+            cmd,
+            vk::PipelineBindPoint::COMPUTE,
+            self.compute_pipelines[COMPUTE_SKY_SPV][BLUR_AMBIENT_SKYBOX_ENTRY_POINT]
+        );
+
+        self.device.cmd_dispatch(cmd, skybox::AMBIENT_SKYBOX_RESOLUTION, skybox::AMBIENT_SKYBOX_RESOLUTION, 6);
+
+        // rebuild TLAS
+        ray_tracing::rebuild_tlas(
+            &self.static_instances,
+            &self.dynamic_instances,
+            &self.tlas,
+            cmd,
+            &self.acceleration_structure_device,
+            &self.device,
+            self.queue_family_index,
+            scratch_buffer
+        );
+        
+        
+        let skybox_subresource_range = vk::ImageSubresourceRange::default()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .level_count(1)
+            .layer_count(6);
+        let clouds_subresource_range = vk::ImageSubresourceRange::default()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .level_count(1)
+            .layer_count(1);
+        let skybox_image_barrier = vk::ImageMemoryBarrier2::default()
             .old_layout(vk::ImageLayout::GENERAL)
             .new_layout(vk::ImageLayout::GENERAL)
-            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
-            .dst_access_mask(vk::AccessFlags2::SHADER_WRITE | vk::AccessFlags2::SHADER_READ)
-            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .image(self.skybox.skybox_image)
+            .subresource_range(skybox_subresource_range);
+        let clouds_image_barrier = vk::ImageMemoryBarrier2::default()
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .image(self.skybox.clouds_image)
+            .subresource_range(clouds_subresource_range);
+        let ambient_clouds_image_barrier = vk::ImageMemoryBarrier2::default()
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .image(self.skybox.ambient_skybox_image)
+            .subresource_range(clouds_subresource_range);
+        let rendered_image_barrier = vk::ImageMemoryBarrier2::default()
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .src_access_mask(vk::AccessFlags2::NONE)
+            .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+            .src_stage_mask(vk::PipelineStageFlags2::NONE)
+            .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .image(render_targets.rendered_image)
+            .subresource_range(subresource_range);
+        let depth_image_barrier = vk::ImageMemoryBarrier2::default()
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+            .src_access_mask(vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE)
+            .dst_access_mask(vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE)
+            .src_stage_mask(vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS)
+            .dst_stage_mask(vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .image(render_targets.rendered_depth_image)
+            .subresource_range(vk::ImageSubresourceRange::default()
+                .aspect_mask(vk::ImageAspectFlags::DEPTH)
+                .level_count(1)
+                .layer_count(1));
+        let image_memory_barriers = [skybox_image_barrier, clouds_image_barrier, rendered_image_barrier, ambient_clouds_image_barrier, depth_image_barrier];
+        let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
+        self.device.cmd_pipeline_barrier2(cmd, &dep);
+
+        let render_area = vk::Rect2D::default()
+            .offset(vk::Offset2D::default())
+            .extent(vk::Extent2D::default().width(size.x).height(size.y));
+        let color_attachment = vk::RenderingAttachmentInfo::default()
+            .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0f32; 4] } })
+            .load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .image_view(render_targets.rendered_image_view);
+        let depth_attachment = vk::RenderingAttachmentInfo::default()
+            .clear_value(vk::ClearValue { depth_stencil: vk::ClearDepthStencilValue { depth: 1f32, stencil: 0 } })
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+            .image_view(render_targets.rendered_depth_image_image_view);
+        let color_attachments = [color_attachment];
+        let rendering_info = vk::RenderingInfo::default()
+            .color_attachments(&color_attachments)
+            .depth_attachment(&depth_attachment)
+            .layer_count(1)
+            .render_area(render_area)
+            .view_mask(0);
+
+        
+        self.device.cmd_begin_query(cmd, pipeline_statistics_query_pool, 0, vk::QueryControlFlags::empty());
+
+        let viewport = vk::Viewport::default().height(size.y as f32).width(size.x as f32).x(0f32).y(0f32).min_depth(0f32).max_depth(1f32);
+        self.device.cmd_set_viewport(cmd, 0, &[viewport]);
+        self.device.cmd_set_scissor(cmd, 0, &[render_area]);
+        
+        self.device.cmd_begin_rendering(cmd, &rendering_info);
+
+        // render background skybox and clouds
+        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_BACKGROUND_SPV]);
+        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, vk::PolygonMode::FILL);
+        self.device.cmd_draw(cmd, 6, 1, 0, 0);
+
+        /*
+        // render objs using mesh shaders (passthrough) 
+        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_PASSTHROUGH_SPV]);
+        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
+        let triangle_count = self.index_count / 3;
+        self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytemuck::bytes_of(&triangle_count));
+        self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  triangle_count.div_ceil(32), 1, 1);
+        */
+
+        // render objs (tesselated)
+        /*
+        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_TESSELALTION_SPV]);
+        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
+        let triangle_count = self.index_count / 3;
+        self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  triangle_count, 1, 1);
+        */
+
+        // render other objs
+        /*
+        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_GENERATED_1_SPV]);
+        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
+        for x in -1..1i32 {
+            for y in -0..1i32 {
+                for z in -1..1i32 {
+                    #[derive(Clone, Copy, Pod, Zeroable)]
+                    #[repr(C)]
+                    struct PushConstantsStuff {
+                        chunk_offset: vek::Vec3::<i32>,
+                        lod: u32,
+                    }
+                    
+                    let chunk_offset = vek::Vec3::<i32>::new(x, y, z);
+                    /*
+                    int3 group_offset = (int3)gid + chunk_offset_cs * 8;
+                    float3 chunk_offset_ws = (float3)CHUNK_SIZE * group_offset; 
+                    float3 chunk_center = (float3)CHUNK_SIZE * group_offset + (float3)CHUNK_SIZE * 0.5; 
+                    let lod = floor(clamp(distance(chunk_center, uniforms.position.xyz) / 100, 0, 2));
+                    */
+                    let lod = 0;
+                    let pc = PushConstantsStuff {
+                        chunk_offset,
+                        lod,
+                    };
+                    self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytemuck::bytes_of(&pc));
+                    self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  8, 8, 8);
+                }
+            }
+        }
+        */
+
+        /*
+        // render grass
+        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_GENERATED_GRASS_SPV]);
+        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
+        self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  16, 16, 1);
+        */
+
+        // render chunks
+        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_CHUNK_SPV]);
+        let material_base_index = self.materials[1].base_index;
+        self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytes_of(&material_base_index));
+        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
+        for chunk in self.multiple_chunks.chunks.iter() {
+            self.device.cmd_bind_vertex_buffers(cmd, 0, &[chunk.vertex_buffer.buffer], &[0]);
+            self.device.cmd_bind_index_buffer(cmd, chunk.index_buffer.buffer, 0, vk::IndexType::UINT32);
+            self.device.cmd_draw_indexed(cmd, chunk.index_count, 1, 0, 0, 0);
+        }
+
+        // render models
+        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_SPV]);
+        for (i, model) in self.models.iter().enumerate() {
+            self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
+            model.render(cmd, &self.device, self.main_pipeline_layout, &self.materials);
+        }        
+
+        self.device.cmd_end_rendering(cmd);
+        self.device.cmd_end_query(cmd, pipeline_statistics_query_pool, 0);
+
+
+        // transition rendered image from color attachment to sampled shader read (for bloom passes)
+        let rendered_image_barrier = vk::ImageMemoryBarrier2::default()
+            .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+            .dst_access_mask(vk::AccessFlags2::MEMORY_READ)
+            .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
             .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)
-            .image(constant_descriptor_sets.bloom_image)
+            .image(render_targets.rendered_image)
+            .subresource_range(subresource_range);
+        let full_passes_bloom = vk::ImageMemoryBarrier2::default()
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .src_access_mask(vk::AccessFlags2::NONE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_WRITE | vk::AccessFlags2::SHADER_READ)
+            .src_stage_mask(vk::PipelineStageFlags2::NONE)
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .image(render_targets.bloom_image)
             .subresource_range(vk::ImageSubresourceRange::default().level_count(vk::REMAINING_MIP_LEVELS).layer_count(1).aspect_mask(vk::ImageAspectFlags::COLOR).base_mip_level(0).base_array_layer(0));
+        let image_memory_barriers = [rendered_image_barrier, full_passes_bloom];
+        let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
+        self.device.cmd_pipeline_barrier2(cmd, &dep);   
+
+
         let image_memory_barriers = [full_passes_bloom];
         let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
+
+        
+        #[derive(Debug, Clone, Copy, Pod, Zeroable)]
+        #[repr(C)]
+        struct BloomPushConstantData {
+            previous_bloom_size: vek::Vec2<f32>,
+            src_sampled_img_idx: u32,
+            dst_storage_img_idx: u32,
+        }
 
         // execute bloom downsample passes
         self.device.cmd_bind_pipeline(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
-            self.post_process_compute_pipeline.entry_points[1].pipeline,
+            self.compute_pipelines[COMPUTE_POST_PROCESS_SPV][BLOOM_DOWNSAMPLE_ENTRY_POINT],
         );
-        for mip in 0..(constant_descriptor_sets.bloom_mip_image_views.len() as u32-1) {
+
+        // there is no need to go down to the largest mip since we will be sampling from a smaller mip anyways
+        let minimum_upsampling_mip = 2; 
+
+        for mip in 0..(render_targets.bloom_mip_image_views.len() as u32-1) {
             // no need to pipeline barrier for the first pass, as we just waited for the render texture image to finish right before this
             if mip > 0 {
                 // wait on previous mip level to be done
                 let previous_mip_level_subresource_range = vk::ImageSubresourceRange::default()
-                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                .base_array_layer(0)
-                .layer_count(1)
-                .base_mip_level(mip)
-                .level_count(1);
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .base_array_layer(0)
+                    .layer_count(1)
+                    .base_mip_level(mip)
+                    .level_count(1);
                 let previous_mip_image_memory_barrier = vk::ImageMemoryBarrier2::default()
                     .old_layout(vk::ImageLayout::GENERAL)
                     .new_layout(vk::ImageLayout::GENERAL)
@@ -919,7 +1504,7 @@ impl InternalApp {
                     .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
                     .src_queue_family_index(self.queue_family_index)
                     .dst_queue_family_index(self.queue_family_index)
-                    .image(constant_descriptor_sets.bloom_image)
+                    .image(render_targets.bloom_image)
                     .subresource_range(previous_mip_level_subresource_range);
                 let barriers = [previous_mip_image_memory_barrier];
                 let dep = vk::DependencyInfo::default().image_memory_barriers(&barriers);
@@ -930,20 +1515,15 @@ impl InternalApp {
             let previous_mip_size = size / (1 << (mip)); // larger mip
             let next_mip_size = size / (1 << (mip+1)); // smaller mip
 
-            
-            
-            self.device.cmd_bind_descriptor_sets(
-                cmd,
-                vk::PipelineBindPoint::COMPUTE,
-                self.post_process_compute_pipeline.entry_points[1].pipeline_layout,
-                0,
-                &[constant_descriptor_sets.compositor_downsample_bloom[mip as usize]],
-                &[],
-            );
-            
-            let downsample_dispatch_push_constants = previous_mip_size.as_::<f32>();
+            let downsample_dispatch_push_constants = BloomPushConstantData {
+                previous_bloom_size: previous_mip_size.as_::<f32>(),
+                src_sampled_img_idx: if mip == 0 { RENDERED_SAMPLER_IMAGE_IDX } else { mip + BLOOM_MIPS_SAMPLED_IMAGE_START_IDX },
+                dst_storage_img_idx: mip + BLOOM_MIPS_STORAGE_IMAGE_START_IDX + 1,
+            };
 
-            self.device.cmd_push_constants(cmd, self.post_process_compute_pipeline.entry_points[1].pipeline_layout, vk::ShaderStageFlags::COMPUTE, 0, bytemuck::bytes_of(&downsample_dispatch_push_constants));
+            //log::info!("{:?}", downsample_dispatch_push_constants);
+
+            self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytemuck::bytes_of(&downsample_dispatch_push_constants));
             self.device.cmd_dispatch(cmd, next_mip_size.x.div_ceil(8), next_mip_size.y.div_ceil(8), 1);
         }
 
@@ -956,7 +1536,7 @@ impl InternalApp {
             .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)
-            .image(constant_descriptor_sets.bloom_image)
+            .image(render_targets.bloom_image)
             .subresource_range(vk::ImageSubresourceRange::default().level_count(vk::REMAINING_MIP_LEVELS).layer_count(1).aspect_mask(vk::ImageAspectFlags::COLOR).base_mip_level(0).base_array_layer(0));
         let image_memory_barriers = [full_passes_bloom];
         let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
@@ -966,15 +1546,12 @@ impl InternalApp {
         self.device.cmd_bind_pipeline(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
-            self.post_process_compute_pipeline.entry_points[2].pipeline,
+            self.compute_pipelines[COMPUTE_POST_PROCESS_SPV][BLOOM_UPSAMPLE_ENTRY_POINT],
         );
 
-        // there is no need to go down to the largest mip since we will be sampling from a smaller mip anyways
-        let minimum_upsampling_mip = 2;
-
-        for mip in (minimum_upsampling_mip..(constant_descriptor_sets.bloom_mip_image_views.len() as u32 - 1)).rev() {
+        for mip in (minimum_upsampling_mip..(render_targets.bloom_mip_image_views.len() as u32 - 1)).rev() {
             // no need to pipeline barrier for the very first pass (we did a full pipeline barrier for the entire bloom image right before this)
-            if mip != constant_descriptor_sets.bloom_mip_image_views.len() as u32 - 2 {
+            if mip != render_targets.bloom_mip_image_views.len() as u32 - 2 {
                 // wait on previous mip level to be done
                 let previous_mip_level_subresource_range = vk::ImageSubresourceRange::default()
                     .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -991,7 +1568,7 @@ impl InternalApp {
                     .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
                     .src_queue_family_index(self.queue_family_index)
                     .dst_queue_family_index(self.queue_family_index)
-                    .image(constant_descriptor_sets.bloom_image)
+                    .image(render_targets.bloom_image)
                     .subresource_range(previous_mip_level_subresource_range);
                 let barriers = [previous_mip_image_memory_barrier];
                 let dep = vk::DependencyInfo::default().image_memory_barriers(&barriers);
@@ -1002,24 +1579,19 @@ impl InternalApp {
             let previous_mip_size = size / (1 << (mip+1)); // smaller mip
             let next_mip_size = size / (1 << (mip)); // larger mip
 
-            
-            
-            self.device.cmd_bind_descriptor_sets(
-                cmd,
-                vk::PipelineBindPoint::COMPUTE,
-                self.post_process_compute_pipeline.entry_points[2].pipeline_layout,
-                0,
-                &[constant_descriptor_sets.compositor_upsample_bloom[mip as usize]],
-                &[],
-            );
-            
-            let upsample_dispatch_push_constants = previous_mip_size.as_::<f32>();
+            let upsample_dispatch_push_constants = BloomPushConstantData {
+                previous_bloom_size: previous_mip_size.as_::<f32>(),
+                src_sampled_img_idx: mip + BLOOM_MIPS_SAMPLED_IMAGE_START_IDX + 1,
+                dst_storage_img_idx: mip + BLOOM_MIPS_STORAGE_IMAGE_START_IDX,
+            };
 
-            self.device.cmd_push_constants(cmd, self.post_process_compute_pipeline.entry_points[2].pipeline_layout, vk::ShaderStageFlags::COMPUTE, 0, bytemuck::bytes_of(&upsample_dispatch_push_constants));
+            //log::info!("{:?}", upsample_dispatch_push_constants);
+
+            self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytemuck::bytes_of(&upsample_dispatch_push_constants));
             self.device.cmd_dispatch(cmd, next_mip_size.x.div_ceil(8), next_mip_size.y.div_ceil(8), 1);
         }
 
-        let last_pass_bloom = vk::ImageMemoryBarrier2::default()
+        let entire_bloom_image = vk::ImageMemoryBarrier2::default()
             .old_layout(vk::ImageLayout::GENERAL)
             .new_layout(vk::ImageLayout::GENERAL)
             .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
@@ -1028,7 +1600,7 @@ impl InternalApp {
             .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)
-            .image(constant_descriptor_sets.bloom_image)
+            .image(render_targets.bloom_image)
             .subresource_range(vk::ImageSubresourceRange::default().level_count(vk::REMAINING_MIP_LEVELS).layer_count(1).aspect_mask(vk::ImageAspectFlags::COLOR).base_mip_level(0).base_array_layer(0));
         let swapchain_image_undefined_to_blit_dst_layout_transition = vk::ImageMemoryBarrier2::default()
             .old_layout(vk::ImageLayout::UNDEFINED)
@@ -1041,33 +1613,14 @@ impl InternalApp {
             .dst_queue_family_index(self.queue_family_index)
             .image(swapchain_image)
             .subresource_range(subresource_range);
-        let image_memory_barriers = [last_pass_bloom, swapchain_image_undefined_to_blit_dst_layout_transition];
+        let image_memory_barriers = [entire_bloom_image, swapchain_image_undefined_to_blit_dst_layout_transition];
         let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
-        self.device.cmd_pipeline_barrier2(cmd, &dep);
+        self.device.cmd_pipeline_barrier2(cmd, &dep);     
 
-        // execute composition pass
-        self.device.cmd_bind_descriptor_sets(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.post_process_compute_pipeline.entry_points[0].pipeline_layout,
-            0,
-            //&[per_frame_descriptor_sets.compositor_per_frame, constant_descriptor_sets.compositor_compute_pipeline_descriptor_set],
-            &[constant_descriptor_sets.compositor, per_frame_descriptor_sets.compositor_per_frame],
-            &[],
-        );
         self.device.cmd_bind_pipeline(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
-            self.post_process_compute_pipeline.entry_points[0].pipeline,
-        );
-
-        // TODO: remove duplicate push constants by saving to uniform buffer type shift
-        self.device.cmd_push_constants(
-            cmd,
-            self.post_process_compute_pipeline.entry_points[0].pipeline_layout,
-            vk::ShaderStageFlags::COMPUTE,
-            0,
-            raw,
+            self.compute_pipelines[COMPUTE_POST_PROCESS_SPV][WRITE_SWAPCHAIN_IMAGE_ENTRY_POINT],
         );
 
         self.device.cmd_dispatch(cmd, window_size_no_downscale.x.div_ceil(8), window_size_no_downscale.y.div_ceil(8), 1);
@@ -1075,7 +1628,7 @@ impl InternalApp {
         let blit_dst_to_present_layout_transition = vk::ImageMemoryBarrier2::default()
             .old_layout(vk::ImageLayout::GENERAL)
             .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-            .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
             .dst_access_mask(vk::AccessFlags2::NONE)
             .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
             .dst_stage_mask(vk::PipelineStageFlags2::NONE)
@@ -1088,16 +1641,18 @@ impl InternalApp {
         let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
+        self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::BOTTOM_OF_PIPE, query_pool, 1);
         self.device.end_command_buffer(cmd).unwrap();
+        let now = Instant::now();
+        self.last_frame_cpu_cmd_record_duration = now - cpu_cmd_record_start;
 
         let cmds = [cmd];
-        let wait_masks =
-        [vk::PipelineStageFlags::ALL_COMMANDS | vk::PipelineStageFlags::ALL_GRAPHICS | vk::PipelineStageFlags::COMPUTE_SHADER];
+        let wait_masks = [vk::PipelineStageFlags::ALL_COMMANDS | vk::PipelineStageFlags::ALL_GRAPHICS | vk::PipelineStageFlags::COMPUTE_SHADER];
         let submit_info = vk::SubmitInfo::default()
-        .command_buffers(&cmds)
-        .signal_semaphores(&render_finished_semaphore)
-        .wait_dst_stage_mask(&wait_masks)
-        .wait_semaphores(&present_complete_semaphores);
+            .command_buffers(&cmds)
+            .signal_semaphores(&render_finished_semaphore)
+            .wait_dst_stage_mask(&wait_masks)
+            .wait_semaphores(&present_complete_semaphores);
 
         self.device
             .queue_submit(self.queue, &[submit_info], end_fence)
@@ -1110,19 +1665,13 @@ impl InternalApp {
             .image_indices(&indices)
             .wait_semaphores(&render_finished_semaphore);
 
-        let _start = std::time::Instant::now();
         let suboptimal = self.swapchain_loader
             .queue_present(self.queue, &present_info)
             .unwrap();
-        let _end = std::time::Instant::now();
 
 
         self.stats.end_of_frame(self.frame_count);
         self.frame_count += 1;
-
-
-        //log::debug!("CPU thread took: {}us", (_end-_start).as_micros());
-
         if suboptimal {
             self.recreate_swapchain();
         }
@@ -1131,41 +1680,48 @@ impl InternalApp {
     pub unsafe fn destroy(mut self) {
         self.device.device_wait_idle().unwrap();
 
-        self.render_compute_pipeline.destroy(&self.device);
-        log::info!("destroyed render compute pipeline");
+        self.tlas.destroy(&self.acceleration_structure_device, &self.device, &mut self.allocator);
 
-        self.sky_compute_pipeline.destroy(&self.device);
-        log::info!("destroyed sky compute pipeline");
+        for model in self.models {
+            model.destroy(&self.acceleration_structure_device, &self.device, &mut self.allocator);
+        }
+        log::info!("destroyed models");
 
-        self.post_process_compute_pipeline.destroy(&self.device);
-        log::info!("destroyed post process compute pipeline");
+        for material in self.materials {
+            material.destroy(&self.device, &mut self.allocator);
+        }
+        log::info!("destroyed materials");
 
-        self.voxel_compute_pipeline.destroy(&self.device);
-        log::info!("destroyed voxel compute pipeline");
+        self.multiple_chunks.destroy(&self.acceleration_structure_device, &self.device, &mut self.allocator);
+        log::info!("destroyed chunks");
+        
+        self.tesselation_buffer.destroy(&self.device, &mut self.allocator);
+        log::info!("destroyed tesselation buffer");
+        
+        for (_, graphic_pipeline) in self.graphics_pipelines {
+            graphic_pipeline.destroy(&self.device);
+        }
+        log::info!("destroyed graphic pipelines");
 
-        self.rasterization_pipeline.destroy(&self.device);
-        log::info!("destroyed rasterization pipeline");
-
-        self.rasterization_background_pipeline.destroy(&self.device);
-        log::info!("destroyed rasterization background pipeline");
-
-        self.svo.destroy(&self.device, &mut self.allocator);
-        log::info!("destroyed SVO buffers & stuff");
-
-        self.svt.destroy(&self.device, &mut self.allocator);
-        log::info!("destroyed SVT");
-
-        self.meshed.destroy(&self.device, &mut self.allocator);
-        log::info!("destroyed meshed voxel buffers");
-
+        for (_, compute_pipeline) in self.compute_pipelines {
+            compute_pipeline.destroy(&self.device);
+        }
+        log::info!("destroyed compute pipelines");
+                
         self.skybox.destroy(&self.device, &mut self.allocator);
         log::info!("destroyed skybox");
 
         self.lights_buffer.destroy(&self.device, &mut self.allocator);
         log::info!("destroyed lights buffer");
 
-        self.device.destroy_query_pool(self.query_pool, None);
-        log::info!("destroyed query pool");
+        self.models_buffer.destroy(&self.device, &mut self.allocator);
+        log::info!("destroyed models buffer");
+
+        self.uniform_buffer.destroy(&self.device, &mut self.allocator);
+        log::info!("destroyed per frame uniform buffer");    
+        
+        self.debug_text_buffer.destroy(&self.device, &mut self.allocator);
+        log::info!("destroyed debug text buffer");
 
         log::info!("waiting for all frame in flight fences...");
         let fences = self.frames_in_flight.iter().map(|x| x.end_fence).collect::<Vec<_>>();
@@ -1175,8 +1731,11 @@ impl InternalApp {
         for frame in self.frames_in_flight.into_iter() {
             frame.destroy_everything(&self.device, self.pool, &mut self.allocator);
         }
+        for sem in self.render_finished_semaphores {
+            self.device.destroy_semaphore(sem, None);
+        }
 
-        self.const_descriptor_sets.destroy_rt_images_and_image_views(&self.device, self.descriptor_pool, &mut self.allocator);
+        self.render_targets_data.destroy_rt_images_and_image_views(&self.device, &mut self.allocator);
         log::info!("destroyed const descriptor sets");
 
         for swapchain_image_view in self.swapchain_image_views {
@@ -1196,8 +1755,15 @@ impl InternalApp {
         self.device.destroy_command_pool(self.pool, None);
         log::info!("destroyed cmd pool");
         
+        self.device.destroy_descriptor_set_layout(self.main_descriptor_set_layout, None);
+        log::info!("destroyed bindless descriptor set layout");
+        
         self.device.destroy_descriptor_pool(self.descriptor_pool, None);
         log::info!("destroyed descriptor pool");
+
+        self.device.destroy_pipeline_layout(self.main_pipeline_layout, None);
+        log::info!("destroyed bindless pipeline layout");
+        
 
         drop(self.allocator);
         self.device.destroy_device(None);

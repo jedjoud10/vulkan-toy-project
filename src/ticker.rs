@@ -10,8 +10,6 @@ impl Ticker {
         self.accumulator += _delta;
 
         // For now we assume we can execute at most one tick per frame
-        // TODO: implement multiple ticks per frame, but this might causes some synhronization difficulties since
-        // we do the update on the GPU
         if self.accumulator > (1f32 / TICKS_PER_SECOND) {
             self.accumulator = 0f32;
             self.count += 1;

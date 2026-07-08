@@ -11,8 +11,6 @@ fn load_module(session: &Session, file_name: &str, compiled_shader_folder_path: 
     // we might need to implement our own dependency parser so that we can avoid feeding it to sland immediately.
     let module: Module = session.load_module(file_name_with_extension).unwrap();
     
-
-
     if module.entry_point_count() == 0 {
         return;
     }
@@ -33,23 +31,12 @@ fn load_module(session: &Session, file_name: &str, compiled_shader_folder_path: 
     let raw = shader_bytecode.as_slice();
     let length = raw.len();
 
-    let out_dir = env::var("OUT_DIR").unwrap();
-    let mut path = PathBuf::from(out_dir);
+    // write the file to the compiled shaders folder
+    let mut path = PathBuf::from(compiled_shader_folder_path);
     path.push(format!("{file_name}.spv"));
-
     let mut file = File::create(&path).unwrap();
     file.write_all(shader_bytecode.as_slice()).unwrap();
     
-    // also copy the file to the compiled shaders folder
-    {
-        let mut path = PathBuf::from(compiled_shader_folder_path);
-        path.push(format!("{file_name}.spv"));
-        let mut file = File::create(&path).unwrap();
-        file.write_all(shader_bytecode.as_slice()).unwrap();
-    }    
-
-    let path_str = path.to_str().unwrap();
-    println!("cargo:rustc-env={file_name}.spv={path_str}");
     println!("cargo:warning={file_name} compiled to {length} bytes");
 }
 
@@ -72,8 +59,10 @@ fn main() {
     println!("cargo:rerun-if-changed=shaders");
     let global_session = GlobalSession::new().unwrap();
 
+    // TODO: revert optimization level when vulkan-sdk ships with latest slang compiler bugfix for NonUniform indexing
+    // nvm I still get the HWRT blocky group artifacts on my hw. AMD driver issue perhaps? could also be a code issue. I might be missing a NonUniform somewhere
     let session_options = CompilerOptions::default()
-        .optimization(OptimizationLevel::Maximal)
+        .optimization(OptimizationLevel::None)
         .debug_information(DebugInfoLevel::None)
         .obfuscate(false)
         .no_mangle(true)
@@ -84,7 +73,7 @@ fn main() {
     
     let target_desc = TargetDesc::default().format(CompileTarget::Spirv);
     let targets = [target_desc];
-    let search_paths = [c"shaders".as_ptr(), c"shaders/noises".as_ptr()];
+    let search_paths = [c"shaders".as_ptr(), c"shaders/utils".as_ptr(), c"shaders/utils/noises".as_ptr()];
 
     let session_desc = SessionDesc::default()
         .targets(&targets)
@@ -93,7 +82,7 @@ fn main() {
 
     let session = global_session.create_session(&session_desc).unwrap();
 
-    // visit all the files inside the shaders folder and its 
+    // visit all the files inside the shaders/other folders
     let manifest_dir_path = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let mut shaders_path = manifest_dir_path.clone();
     shaders_path.push("shaders");

@@ -1,5 +1,6 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
+
 mod debug;
 mod device;
 mod input;
@@ -8,7 +9,6 @@ mod movement;
 mod physical_device;
 mod pipeline;
 mod swapchain;
-mod voxel;
 mod ticker;
 mod buffer;
 mod statistics;
@@ -16,9 +16,15 @@ mod utils;
 mod renderer;
 mod skybox;
 mod others;
-mod constant_data;
+mod render_targets_data;
 mod per_frame_data;
 mod samplers;
+mod tesselation;
+mod voxel;
+mod model;
+mod ray_tracing;
+mod material;
+mod texture;
 
 use clap::Parser;
 use std::ops::ControlFlow;
@@ -31,48 +37,15 @@ use renderer::InternalApp;
 
 
 #[derive(clap::Parser, Debug)]
-#[command(about = "Vulkan DDA Voxel Raytracer", long_about = None)]
+#[command(about = "Vulkan Experiments", long_about = None)]
 struct Args {
     /// Factor to use to decrease the screen resolution
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=4))]
     downscale_factor: u32,
 
-    /// Number of shadow samples to use. Set to 0 to disable shadows completely. Set to 1 to use hard-shadows.
-    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(0..=16))]
-    shadow_samples: u32,
-
-    /// Maximum number of rays to trace iteratively for reflections / refractions
-    #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u32).range(1..=8))]
-    max_ray_iterations: u32,
-
-    /// Whether or not to use round spherical normals
-    #[arg(long, default_value_t = false)]
-    round_normals: bool,
-
-    /// Whether or not to use ray traced ambient occlusion
-    #[arg(long, default_value_t = false)]
-    ambient_occlusion: bool,
-
-    /// Fun setting to make all mirror reflections wavey lolol
-    #[arg(long, default_value_t = false)]
-    wavy_reflections: bool,
-
-    /// Setting to make all shadows pixelated
-    #[arg(long, default_value_t = false)]
-    pixelated_shadows: bool,
-
     /// Setting to start in fullscreen from the start. This can be toggled in-game using F5
     #[arg(long, default_value_t = false)]
     fullscreen: bool,
-
-    /// Group size exponent used for the main ray-tracing shader. Ex a value of 3 means using 2^3=8, a group size of 8x8
-    /// TODO: find better name for this
-    #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u32).range(1..=5))]
-    group_size_exp: u32,
-
-    /// Use this option to force voxel generator to rebuild terrain, even though there is the cached sparse structure file
-    #[arg(long, default_value_t = false)]
-    force_regenerate: bool,
 
     /// Enable validation layers and debug stuff even when debug_assertions are disabled
     #[arg(long, default_value_t = false)]
