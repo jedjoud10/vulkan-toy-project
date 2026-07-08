@@ -66,8 +66,8 @@ const RASTERIZED_BACKGROUND_SPV: &str = "rasterized_background.spv";
 const NUM_LIGHTS: usize = 1;
 const SUN_SHADOW_RAY_ENABLED: bool = true;
 const EXTRA_LIGHTS_ENABLED: bool = false;
-const EXTRA_LIGHTS_SHADOW_RAY_ENABLED: bool = true;
-const VERY_SHINY_REFLECTIVE_SURFACES: bool = true;
+const EXTRA_LIGHTS_SHADOW_RAY_ENABLED: bool = false;
+const VERY_SHINY_REFLECTIVE_SURFACES: bool = false;
 const DEBUG_TEXT_BUFFER_SIZE_BYTES: usize = 1024;
 const GPU_MODEL_METADATA_BUFFER_MAX_ELEMENT_COUNT: usize = 1024;
         
@@ -503,10 +503,11 @@ impl InternalApp {
 
         let multiple_chunks = voxel::MultipleChunks::create(&mut ctx);
         
-        let cmd = others::begin_recording(&mut ctx);
-        let mut writer = buffer::begin_buffer_writer(&mut ctx);
+        // let cmd = others::begin_recording(&mut ctx);
+        // let mut writer = buffer::begin_buffer_writer(&mut ctx);
 
         let models = vec![
+            /*
             model::Model::new(vek::Vec3::new(0f32, 20f32, 0f32), "sphere.obj", &mut ctx, 0, cmd, &mut writer),
             model::Model::new(vek::Vec3::new(10f32, 20f32, 0f32), "not_so_sphere.obj", &mut ctx, 1, cmd, &mut writer),
             model::Model::new(vek::Vec3::new(-10f32, 20f32, 0f32), "modular_industrial_pipes_01_1k.obj", &mut ctx, 2, cmd, &mut writer),
@@ -515,10 +516,11 @@ impl InternalApp {
             model::Model::new(vek::Vec3::new(-50f32, 20f32, 0f32), "dust_mesh_a.obj", &mut ctx, 2, cmd, &mut writer),     
             model::Model::new(vek::Vec3::new(0f32, 18f32, 0f32), "rough_plane.obj", &mut ctx, 0, cmd, &mut writer),         
             model::Model::new(vek::Vec3::new(0f32, 30f32, 0f32), "space_thing.obj", &mut ctx, 0, cmd, &mut writer),       
+            */
         ];
 
-        others::end_recording_and_submit(&mut ctx, cmd);
-        buffer::end_buffer_writer(&mut ctx, writer);
+        // others::end_recording_and_submit(&mut ctx, cmd);
+        // buffer::end_buffer_writer(&mut ctx, writer);
 
         let tlas = ray_tracing::pre_create_tlas(&mut ctx);
 
@@ -948,7 +950,9 @@ impl InternalApp {
             vk::DescriptorImageInfo::default()
                 .sampler(self.samplers.nearest),
             vk::DescriptorImageInfo::default()
-                .sampler(self.samplers.linear)
+                .sampler(self.samplers.linear_unclamped),
+            vk::DescriptorImageInfo::default()
+                .sampler(self.samplers.linear_clamped)
         ];
         let sampler_states_write = vk::WriteDescriptorSet::default()
             .descriptor_count(samplers.len() as u32)
@@ -999,6 +1003,22 @@ impl InternalApp {
         for model in self.models.iter_mut() {
             model.update(elapsed, &self.movement);
         }
+        let mut ctx = GraphicsContext {
+            device: &self.device,
+            pool: self.pool,
+            queue: self.queue,
+            queue_family_index: self.queue_family_index,
+            mesh_shader_device: &self.mesh_shader_device,
+            extended_dynamic_state3_device: &self.extended_dynamic_state3_device,
+            acceleration_structure_device: &self.acceleration_structure_device,
+            host_image_copy_device: &self.host_image_copy_device,
+            allocator: &mut self.allocator,
+            debug_marker: &self.debug_marker,
+            main_descriptor_set_layout: self.main_descriptor_set_layout,
+            main_pipeline_layout: self.main_pipeline_layout,
+            descriptor_pool: self.descriptor_pool,
+        };
+        self.multiple_chunks.frame(&mut ctx, scratch_buffer, cmd);
 
         // update dynamic instances for TLAS
         self.dynamic_instances.clear();
@@ -1011,7 +1031,7 @@ impl InternalApp {
             });
         }
 
-        for chunk in self.multiple_chunks.chunks.iter() {
+        for (_, chunk) in self.multiple_chunks.chunks.iter() {
             self.dynamic_instances.push(chunk.instance);
             models_metadata_buffer_write.push(GpuModelMetadata {
                 material_base_index: self.materials[0].base_index,
@@ -1021,7 +1041,7 @@ impl InternalApp {
 
 
         // update models metadata buffer
-        self.device.cmd_update_buffer(cmd, self.models_buffer.buffer, 0, cast_slice(models_metadata_buffer_write.as_slice()));
+        //self.device.cmd_update_buffer(cmd, self.models_buffer.buffer, 0, cast_slice(models_metadata_buffer_write.as_slice()));
 
 
 
@@ -1047,6 +1067,12 @@ impl InternalApp {
         let allocated_bytes = ByteSize::b(report.total_reserved_bytes).display().iec();
         text += &format!("reserved bytes: {}\n", reserved_bytes);
         text += &format!("allocated bytes: {}\n", allocated_bytes);
+        text += &format!("total chunks: {}\n", self.multiple_chunks.chunks.len());
+        text += &format!("TLAS static instances: {}\n", self.static_instances.len());
+        text += &format!("TLAS dynamic instances: {}\n", self.dynamic_instances.len());
+        text += &format!("models: {}\n", self.models.len());
+        
+        
         
         
         #[derive(Clone, Copy, Pod, Zeroable)]
@@ -1417,7 +1443,7 @@ impl InternalApp {
         let material_base_index = self.materials[1].base_index;
         self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytes_of(&material_base_index));
         self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
-        for chunk in self.multiple_chunks.chunks.iter() {
+        for chunk in self.multiple_chunks.chunks.values() {
             self.device.cmd_bind_vertex_buffers(cmd, 0, &[chunk.vertex_buffer.buffer], &[0]);
             self.device.cmd_bind_index_buffer(cmd, chunk.index_buffer.buffer, 0, vk::IndexType::UINT32);
             self.device.cmd_draw_indexed(cmd, chunk.index_count, 1, 0, 0, 0);
@@ -1425,7 +1451,7 @@ impl InternalApp {
 
         // render models
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_SPV]);
-        for (i, model) in self.models.iter().enumerate() {
+        for (_, model) in self.models.iter().enumerate() {
             self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
             model.render(cmd, &self.device, self.main_pipeline_layout, &self.materials);
         }        

@@ -171,6 +171,9 @@ pub unsafe fn rebuild_tlas(
     queue_family_index: u32,
     per_frame_scratch_buffer: &mut crate::per_frame_data::ScratchBuffer,
 ) {
+    
+
+
     let instances = static_instances.iter().chain(dynamic_instances.iter()).copied().collect::<Vec<_>>();
     let blases = instances.as_slice();
     
@@ -179,13 +182,12 @@ pub unsafe fn rebuild_tlas(
     let ptr = blases.as_ptr() as *const u8;
     let data = &*slice_from_raw_parts(ptr, bytes);
 
+    if data.is_empty() {
+        return;
+    }
 
-    let written_address = per_frame_scratch_buffer.write_bytes(device, cmd, data, Some(ScratchBufferBarrierInfo {
-        src_stage_mask: vk::PipelineStageFlags2::ALL_COMMANDS,
-        dst_stage_mask: vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR,
-        src_access_mask: vk::AccessFlags2::TRANSFER_WRITE,
-        dst_access_mask: vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR | vk::AccessFlags2::SHADER_READ,
-    }));
+
+    let written_address = per_frame_scratch_buffer.write_bytes_aligned(data);
     
     let instances = vk::AccelerationStructureGeometryInstancesDataKHR::default()
         .array_of_pointers(false)

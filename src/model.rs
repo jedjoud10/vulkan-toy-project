@@ -49,13 +49,13 @@ impl Model {
 
         meshopt::optimize_vertex_cache_in_place(&mut indices, vertex_count);
 
-        let vertex_positions_buffer = buffer::create_buffer_with_2(ctx, cmd, &mut writer, cast_slice(positions.as_slice()), "vertex positions buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
+        let vertex_positions_buffer = buffer::create_buffer_write_with_staging_buffer(ctx, cmd, &mut writer, cast_slice(positions.as_slice()), "vertex positions buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
         
-        let vertex_normals_buffer = buffer::create_buffer_with_2(ctx, cmd, &mut writer, cast_slice(normals.as_slice()), "vertex normals buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
+        let vertex_normals_buffer = buffer::create_buffer_write_with_staging_buffer(ctx, cmd, &mut writer, cast_slice(normals.as_slice()), "vertex normals buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
 
-        let vertex_uvs_buffer = buffer::create_buffer_with_2(ctx, cmd, &mut writer, cast_slice(uvs.as_slice()), "vertex uvs buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
+        let vertex_uvs_buffer = buffer::create_buffer_write_with_staging_buffer(ctx, cmd, &mut writer, cast_slice(uvs.as_slice()), "vertex uvs buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
 
-        let index_buffer = buffer::create_buffer_with_2(ctx, cmd, &mut writer, cast_slice(indices.as_slice()), "index buffer", vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
+        let index_buffer = buffer::create_buffer_write_with_staging_buffer(ctx, cmd, &mut writer, cast_slice(indices.as_slice()), "index buffer", vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
 
         let vertex_buffer_barrier = vk::BufferMemoryBarrier2::default()
             .buffer(vertex_positions_buffer.buffer)

@@ -1,82 +1,131 @@
-use ash::vk;
+use std::{collections::HashMap, sync::{Arc, Mutex, RwLock, atomic::AtomicBool, mpsc::Receiver}, thread::JoinHandle};
+
+use ash::{util::Align, vk};
 use bytemuck::{Pod, Zeroable, cast_slice};
 use gpu_allocator::vulkan::{Allocation, Allocator};
 use noise::NoiseFn;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
-use crate::{buffer, others, ray_tracing, renderer::GraphicsContext};
+use crate::{buffer, others, per_frame_data::ScratchBuffer, ray_tracing, renderer::GraphicsContext};
 
-pub const VERTICES_PER_CHUNK: usize = 1 << 18;
-pub const TRIANGLES_PER_CHUNK: usize = 1 << 18;
 pub const VERTEX_STRIDE: usize = size_of::<vek::Vec3::<f32>>();
 pub const INDEX_STRIDE: usize = size_of::<u32>();
-
-const PADDING: u32 = 2;
-const SIZE: u32 = 64;
 
 pub const CHUNK_SIZE: usize = 64;
 pub const CHUNK_SIZE_WITH_PADDING: usize = 66;
 pub const CHUNK_VOLUME: usize = 66*66*66;
         
 
+struct GeneratedChunk {
+    chunk_offset: vek::Vec3<i32>,
+    vertices: Vec<vek::Vec3<f32>>,
+    indices: Vec<u32>,
+}
+
+struct Shared {
+    queue: crossbeam::queue::SegQueue<vek::Vec3<i32>>,
+    fbm: noise::Fbm::<noise::Perlin>,
+    extra: noise::Fbm::<noise::Billow::<noise::Simplex>>,
+}
+
 pub struct MultipleChunks {
-    pub chunks: Vec<Chunk>,
+    pub chunks: HashMap<vek::Vec3<i32>, Chunk>,
+    threads: Vec<JoinHandle<()>>,
+    receiver: Receiver<GeneratedChunk>,
 }
 
 impl MultipleChunks {
     pub unsafe fn create(
         ctx: &mut GraphicsContext,
     ) -> Self {
-        let chunk_render_distance = 1i32;
-        let mut chunks = Vec::<Chunk>::new();
+        let chunk_render_distance = 4i32;
 
-        let mut fbm = noise::Fbm::<noise::Perlin>::new(0); 
-        fbm.octaves = 6;
-        fbm.frequency = 0.001;
-        
-        let mut extra = noise::Fbm::<noise::Billow::<noise::Simplex>>::new(0); 
-        extra.octaves = 3;
-        extra.frequency = 0.01;
+        let (tx, rx) = std::sync::mpsc::channel::<GeneratedChunk>();
+        let shared = Arc::<Shared>::new(Shared {
+            queue: Default::default(),
+            fbm: {
+                let mut fbm = noise::Fbm::<noise::Perlin>::new(0); 
+                fbm.octaves = 6;
+                fbm.frequency = 0.001;
+                fbm
+            },
+            extra: {
+                let mut extra = noise::Fbm::<noise::Billow::<noise::Simplex>>::new(0); 
+                extra.octaves = 3;
+                extra.frequency = 0.01;
+                extra
+            },
+        });
 
-        
-        let cmd = others::begin_recording(ctx);
-        let mut writer = buffer::begin_buffer_writer(ctx);
+        let threads = (0..4).into_iter().map(|thread_id| {
+            let shared = shared.clone();
+            let tx = tx.clone();
+            let thread = std::thread::spawn(move || {
 
-        let mut chunk_positions = Vec::<vek::Vec3<i32>>::new();
+            
+                loop {                
+                    if let Some(chunk_offset) = shared.queue.pop() {
+                        let mut densities = vec![0f32; CHUNK_VOLUME];
+
+                        log::debug!("TID: {thread_id}. generating densities for chunk {chunk_offset}");
+                        for index in 0..CHUNK_VOLUME  {
+                            let local_position = index_to_offset(index, CHUNK_SIZE_WITH_PADDING).as_::<i32>();
+                            let world_position = local_position + chunk_offset * (CHUNK_SIZE as i32);
+                            let pos = world_position.as_::<f64>();
+                        
+                            let height = shared.fbm.get([pos.x, pos.z]) * 160.0f64;
+                        
+                            let stepped = (height / 10f64).floor() * 10f64;
+                            let diff = ((height - stepped).abs() / 5.0f64) - 0.5;
+                        
+                            let density = pos.y - (stepped + -diff * shared.extra.get([pos.x,pos.z]) * 5.0f64);
+                            densities[index] = density as f32;
+                        }
+                    
+                        log::debug!("TID: {thread_id}. generating mesh for chunk {chunk_offset}");
+                    
+                        let (vertices, indices) = mesh_chunk(densities, chunk_offset);
+                        
+                        if !vertices.is_empty() && !indices.is_empty() {
+                            let result = GeneratedChunk {
+                                chunk_offset,
+                                vertices,
+                                indices,
+                            };
+
+                            if let Err(_) = tx.send(result) {
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+
+            thread
+        }).collect::<Vec<_>>();
+
+
+
         for x in -chunk_render_distance..chunk_render_distance {
-            for y in -1..1 {
+            for y in -1..2 {
                 for z in -chunk_render_distance..chunk_render_distance {
-                    chunk_positions.push(vek::Vec3::new(x,y,z));
+                    shared.queue.push(vek::Vec3::new(x,y,z));
                 }
             }
         }
+        
+        Self {
+            chunks: HashMap::<vek::Vec3<i32>, Chunk>::new(),
+            threads,
+            receiver: rx,
+        }
+    }
 
-        let data = chunk_positions.into_par_iter().map(|chunk_offset| {
-            let mut densities = vec![0f32; CHUNK_VOLUME];
-
-            log::debug!("generating densities for chunk {chunk_offset}");
-            for index in 0..CHUNK_VOLUME  {
-                let local_position = index_to_offset(index, CHUNK_SIZE_WITH_PADDING).as_::<i32>();
-                let world_position = local_position + chunk_offset * (CHUNK_SIZE as i32);
-                let pos = world_position.as_::<f64>();
-            
-                let height = fbm.get([pos.x, pos.z]) * 30.0f64;
-            
-                let stepped = (height / 10f64).floor() * 10f64;
-                let diff = ((height - stepped).abs() / 5.0f64) - 0.5;
-
-                let density = pos.y - (stepped + -diff * extra.get([pos.x,pos.z]) * 5.0f64);
-                densities[index] = density as f32;
-            }
-
-            log::debug!("generating mesh for chunk {chunk_offset}");
-            mesh_chunk(densities, chunk_offset)
-        }).collect::<Vec::<(Vec::<vek::Vec3::<f32>>, Vec::<u32>)>>();
-
-        for (vertices, indices) in data {
+    pub unsafe fn frame(&mut self, ctx: &mut GraphicsContext, scratchy: &mut ScratchBuffer, cmd: vk::CommandBuffer) {
+        for GeneratedChunk { chunk_offset, vertices, indices } in self.receiver.try_iter() {
             if indices.len() > 0 && vertices.len() > 0 {
-                let vertex_buffer = buffer::create_buffer_with_2(ctx, cmd, &mut writer, cast_slice(vertices.as_slice()), "vertex buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
-                let index_buffer = buffer::create_buffer_with_2(ctx, cmd, &mut writer, cast_slice(indices.as_slice()), "index buffer", vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
+                let vertex_buffer = buffer::create_buffer_write_with_scratch_buffer(ctx, cmd, scratchy, cast_slice(vertices.as_slice()), "vertex buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
+                let index_buffer = buffer::create_buffer_write_with_scratch_buffer(ctx, cmd, scratchy, cast_slice(indices.as_slice()), "index buffer", vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
                 
                 let vertex_buffer_barrier = vk::BufferMemoryBarrier2::default()
                     .buffer(vertex_buffer.buffer)
@@ -108,16 +157,16 @@ impl MultipleChunks {
                     cmd,
                     vertices.len(),
                     0,
-                    size_of::<vek::Vec3::<f32>>(),
+                    VERTEX_STRIDE,
                     indices.len(),
                     0,
-                    size_of::<u32>(),
+                    INDEX_STRIDE,
                     &vertex_buffer,
                     &index_buffer,
                     1
                 );
 
-                chunks.push(Chunk {
+                self.chunks.insert(chunk_offset, Chunk {
                     vertex_buffer,
                     index_buffer,
                     blas,
@@ -126,17 +175,10 @@ impl MultipleChunks {
                 });
             }
         }
-        
-        others::end_recording_and_submit(ctx, cmd);
-        buffer::end_buffer_writer(ctx, writer);
-        
-        Self {
-            chunks
-        }
     }
     
     pub unsafe fn destroy(self, acceleration_structure_device: &ash::khr::acceleration_structure::Device, device: &ash::Device, allocator: &mut Allocator) {
-        for chunk in self.chunks {
+        for (_, chunk) in self.chunks {
             chunk.destroy(acceleration_structure_device, device, allocator);
         }
     }

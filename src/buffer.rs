@@ -2,17 +2,17 @@
 use ash::vk;
 use gpu_allocator::vulkan::{Allocation, Allocator};
 
-use crate::renderer::GraphicsContext;
+use crate::{per_frame_data::ScratchBuffer, renderer::GraphicsContext};
 
 // acceleration structure scratch buffer requires alignment to be at least 256
 // of course we can pass a flag to state that we are allocating an acceleration structure scratch buffer
 // but it is easier to simply set this as the min alignment for all buffers
-const MIN_BUFFER_ALIGNMENT: u64 = 256;
+pub const MIN_BUFFER_ALIGNMENT: u64 = 256;
 
 // `write_to_buffer` calls that update more than these amount of bytes will revert to using the staging buffer implementation
-const BUFFER_WRITE_INLINE_MAX_BYTES_THRESHOLD: usize = 65536; // vulkan spec states that data size must be less than this 
+pub const BUFFER_WRITE_INLINE_MAX_BYTES_THRESHOLD: usize = 65536; // vulkan spec states that data size must be less than this 
 
-pub const BUFFER_WRITER_SIZE: usize = 1024*1024*128; // 128 mb
+pub const BUFFER_WRITER_SIZE: usize = 1024*1024*128; // ~128mB
 
 pub struct Buffer {
     pub buffer: vk::Buffer,
@@ -37,12 +37,12 @@ impl Buffer {
     }
 }
 
-
-pub unsafe fn create_buffer(
+pub unsafe fn create_buffer_with_location(
     ctx: &mut GraphicsContext,
     size: usize,
     name: &str,
     flags: vk::BufferUsageFlags,
+    location: gpu_allocator::MemoryLocation
 ) -> Buffer {
     let bytes_formatted = bytesize::ByteSize::b(size as u64);
     log::debug!("creating buffer '{}' ({})", name, bytes_formatted.display().si());
@@ -64,7 +64,7 @@ pub unsafe fn create_buffer(
             requirements,
             linear: true,
             allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
-            location: gpu_allocator::MemoryLocation::GpuOnly,
+            location,
         })
         .unwrap();
 
@@ -86,6 +86,16 @@ pub unsafe fn create_buffer(
 }
 
 
+pub unsafe fn create_buffer(
+    ctx: &mut GraphicsContext,
+    size: usize,
+    name: &str,
+    flags: vk::BufferUsageFlags,
+) -> Buffer {
+    create_buffer_with_location(ctx, size, name, flags, gpu_allocator::MemoryLocation::GpuOnly)
+}
+
+
 pub unsafe fn create_buffer_with(
     ctx: &mut GraphicsContext,
     bytes: &[u8],
@@ -97,7 +107,7 @@ pub unsafe fn create_buffer_with(
     buffer
 }
 
-pub unsafe fn create_buffer_with_2(
+pub unsafe fn create_buffer_write_with_staging_buffer(
     ctx: &mut GraphicsContext,
     cmd: vk::CommandBuffer,
     staging_buffer_writer: &mut BufferWriter,
@@ -122,11 +132,40 @@ pub unsafe fn create_buffer_with_2(
     let copy_staging_buffer_to_buffer = vk::CopyBufferInfo2::default()
         .dst_buffer(buffer.buffer)
         .regions(&regions)
-        .src_buffer(staging_buffer_writer.scratch_buffer);
+        .src_buffer(staging_buffer_writer.buffer);
 
     ctx.device.cmd_copy_buffer2(cmd, &copy_staging_buffer_to_buffer);
 
     staging_buffer_writer.offset += bytes.len();
+
+    buffer
+}
+
+
+pub unsafe fn create_buffer_write_with_scratch_buffer(
+    ctx: &mut GraphicsContext,
+    cmd: vk::CommandBuffer,
+    scratch_buffer: &mut ScratchBuffer,
+    bytes: &[u8],
+    name: &str,
+    flags: vk::BufferUsageFlags,
+) -> Buffer {
+    let buffer = create_buffer(ctx, bytes.len(), name, flags);
+
+    scratch_buffer.write_bytes(bytes);
+
+    let region = vk::BufferCopy2::default()
+        .dst_offset(0)
+        .size(bytes.len() as u64)
+        .src_offset(scratch_buffer.bytes_written as u64 - bytes.len() as u64);
+
+    let regions = [region];
+    let copy_staging_buffer_to_buffer = vk::CopyBufferInfo2::default()
+        .dst_buffer(buffer.buffer)
+        .regions(&regions)
+        .src_buffer(scratch_buffer.buffer);
+
+    ctx.device.cmd_copy_buffer2(cmd, &copy_staging_buffer_to_buffer);
 
     buffer
 }
@@ -250,33 +289,8 @@ pub unsafe fn create_counter_buffer(
     create_buffer(ctx, size_of::<u32>(), name, vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST)
 }
 
-
-/*
-pub unsafe fn create_staging_buffer2<'a>(device: &'a ash::Device, allocator: &'a mut Allocator, bytes: &[u8]) -> TemporaryStagingBuffer<'a> {
-    let (buffer, allocation) = create_staging_buffer(device, allocator, bytes);
-    TemporaryStagingBuffer { buffer, allocation: Some(allocation), device, allocator }
-}
-
-pub struct TemporaryStagingBuffer<'a> {
-    pub buffer: vk::Buffer,
-    pub allocation: Option<Allocation>,
-    pub device: &'a ash::Device,
-    pub allocator: &'a mut Allocator,
-}
-
-impl<'a> Drop for TemporaryStagingBuffer<'a> {
-    fn drop(&mut self) {
-        unsafe {
-            self.device.device_wait_idle().unwrap();
-            self.device.destroy_buffer(self.buffer, None);
-            self.allocator.free(self.allocation.take().unwrap()).unwrap();
-        }
-    }
-}
-*/
-
 pub struct BufferWriter {
-    pub scratch_buffer: vk::Buffer,
+    pub buffer: vk::Buffer,
     pub allocation: Allocation,
     pub offset: usize,
 }
@@ -287,12 +301,12 @@ pub unsafe fn begin_buffer_writer(ctx: &mut GraphicsContext) -> BufferWriter {
         .sharing_mode(vk::SharingMode::EXCLUSIVE)
         .size(BUFFER_WRITER_SIZE as u64);
     
-    let scratch_buffer = ctx.device.create_buffer(&buffer_create_info, None).unwrap();
-    let requirements = ctx.device.get_buffer_memory_requirements(scratch_buffer);
+    let buffer = ctx.device.create_buffer(&buffer_create_info, None).unwrap();
+    let requirements = ctx.device.get_buffer_memory_requirements(buffer);
 
     let allocation = ctx.allocator
         .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
-            name: "scratch buffer allocation",
+            name: "staging buffer allocation",
             requirements,
             linear: true,
             allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
@@ -300,15 +314,15 @@ pub unsafe fn begin_buffer_writer(ctx: &mut GraphicsContext) -> BufferWriter {
         })
         .unwrap();
 
-    crate::debug::set_object_name(scratch_buffer, ctx.debug_marker, "scratch buffer");
+    crate::debug::set_object_name(buffer, ctx.debug_marker, "staging buffer");
     
     let device_memory = allocation.memory();
-    ctx.device.bind_buffer_memory(scratch_buffer, device_memory, allocation.offset()).unwrap();
+    ctx.device.bind_buffer_memory(buffer, device_memory, allocation.offset()).unwrap();
 
-    BufferWriter { scratch_buffer, allocation, offset: 0 }
+    BufferWriter { buffer, allocation, offset: 0 }
 }
 
 pub unsafe fn end_buffer_writer(ctx: &mut GraphicsContext<'_>, writer: BufferWriter) {
     ctx.allocator.free(writer.allocation).unwrap();
-    ctx.device.destroy_buffer(writer.scratch_buffer, None);
+    ctx.device.destroy_buffer(writer.buffer, None);
 }

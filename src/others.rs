@@ -8,7 +8,7 @@ pub const STORAGE_IMAGE_COUNT: u32 = 160;
 pub const STORAGE_BUFFER_COUNT: u32 = 160;
 pub const UNIFORM_BUFFER_COUNT: u32 = 60;
 pub const SAMPLED_IMAGE_COUNT: u32 = 40;
-pub const SAMPLER_COUNT: u32 = 2;
+pub const SAMPLER_COUNT: u32 = 5;
 pub const ACCELERATION_STRUCTURES_COUNT: u32 = 1;
 pub const MAX_DESCRIPTOR_SETS: u32 = crate::per_frame_data::FRAMES_IN_FLIGHT as u32;
 
