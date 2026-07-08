@@ -125,6 +125,8 @@ pub struct GraphicsContext<'a> {
     pub extended_dynamic_state3_device: &'a ash::ext::extended_dynamic_state3::Device,
     pub acceleration_structure_device: &'a ash::khr::acceleration_structure::Device,
     pub host_image_copy_device: &'a ash::ext::host_image_copy::Device,
+
+    // TODO: hide this behind mutex or rwlock so that we can share GraphicsContext across threads safely
     pub allocator: &'a mut gpu_allocator::vulkan::Allocator,
     pub debug_marker: &'a debug::DebugMarker,
     pub main_descriptor_set_layout: vk::DescriptorSetLayout,
@@ -1412,7 +1414,8 @@ impl InternalApp {
 
         // render chunks
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_CHUNK_SPV]);
-        self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytes_of(&1u32));
+        let material_base_index = self.materials[1].base_index;
+        self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytes_of(&material_base_index));
         self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
         for chunk in self.multiple_chunks.chunks.iter() {
             self.device.cmd_bind_vertex_buffers(cmd, 0, &[chunk.vertex_buffer.buffer], &[0]);

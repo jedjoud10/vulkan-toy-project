@@ -216,7 +216,6 @@ impl Input {
 }
 
 // Winit window event since it seems that DeviceEvent::Key is broken on other machines
-// TODO: Report bug
 pub fn window_event(input: &mut Input, ev: &WindowEvent) {
     fn handle_button_input(input: &mut Input, key: Button, state: ElementState) {
         match input.keys.entry(key) {

@@ -1,3 +1,5 @@
+use std::io::Read;
+
 use ash::vk;
 use gpu_allocator::vulkan::{Allocation, Allocator};
 
@@ -23,6 +25,7 @@ pub unsafe fn create_texture(
     bytes: Option<&[u8]>,
     size: u32,
     srgb: bool,
+    mipmapping: bool,
 ) -> Texture {
     log::debug!("creating texture ({size}x{size}) (from bytes: {})", bytes.is_some());
     let GraphicsContext {
@@ -36,6 +39,7 @@ pub unsafe fn create_texture(
 
     let queue_family_indices = [*queue_family_index];
     let format = if srgb { vk::Format::R8G8B8A8_SRGB } else { vk::Format::R8G8B8A8_UNORM };
+    let mip_levels = if mipmapping { size.ilog2() - 1 } else { 1 }.max(1);
 
     let image_create_info = vk::ImageCreateInfo::default()
         .extent(vk::Extent3D {
@@ -46,7 +50,7 @@ pub unsafe fn create_texture(
         .format(format)
         .image_type(vk::ImageType::TYPE_2D)
         .initial_layout(vk::ImageLayout::UNDEFINED)
-        .mip_levels(1)
+        .mip_levels(mip_levels)
         .sharing_mode(vk::SharingMode::EXCLUSIVE)
         .flags(vk::ImageCreateFlags::empty())
         .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::HOST_TRANSFER_EXT)
@@ -74,13 +78,7 @@ pub unsafe fn create_texture(
         .base_array_layer(0)
         .layer_count(1)
         .base_mip_level(0)
-        .level_count(1);
-
-    let image_subresource_layers = vk::ImageSubresourceLayers::default()
-        .aspect_mask(vk::ImageAspectFlags::COLOR)
-        .mip_level(0)
-        .layer_count(1)
-        .base_array_layer(0);
+        .level_count(mip_levels);
 
     let transition = vk::HostImageLayoutTransitionInfoEXT::default()
         .image(image)
@@ -91,19 +89,41 @@ pub unsafe fn create_texture(
     host_image_copy_device.transition_image_layout(&[transition]).unwrap();
 
     if let Some(bytes) = bytes {
-        let region = vk::MemoryToImageCopyEXT::default()
-            .host_pointer(bytes.as_ptr() as *const _)
-            .image_extent(vk::Extent3D::default().height(size).width(size).depth(1))
-            .image_subresource(image_subresource_layers);
-        let regions = [region];
+        let image2 = image::RgbaImage::from_raw(size, size, bytes.to_vec()).unwrap();
+        let mut dynamic_image = image::DynamicImage::ImageRgba8(image2);
+        
+        for mip in 0..mip_levels {
+            log::debug!("generating mip level {mip}");
+            let mip_size = size >> mip;
+            let mip_area = mip_size * mip_size;
+            log::debug!("mip size {mip_size}");
+            log::debug!("mip area {mip_area}");
+            
+            
+            dynamic_image = dynamic_image.resize_exact(mip_size, mip_size, image::imageops::FilterType::Triangle);
 
-        let copy_memory_to_image_info = vk::CopyMemoryToImageInfoEXT::default()
-            .dst_image(image)
-            .dst_image_layout(vk::ImageLayout::GENERAL)
-            .flags(vk::HostImageCopyFlagsEXT::empty())
-            .regions(&regions);
-
-        host_image_copy_device.copy_memory_to_image(&copy_memory_to_image_info).unwrap();
+            let image_subresource_layers = vk::ImageSubresourceLayers::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .mip_level(mip)
+                .layer_count(1)
+                .base_array_layer(0);
+            
+            let bytes = dynamic_image.as_rgba8().unwrap().as_flat_samples().samples;
+            
+            let region = vk::MemoryToImageCopyEXT::default()
+                .host_pointer(bytes.as_ptr() as *const _)
+                .image_extent(vk::Extent3D::default().height(mip_size).width(mip_size).depth(1))
+                .image_subresource(image_subresource_layers);
+            let regions = [region];
+            
+            let copy_memory_to_image_info = vk::CopyMemoryToImageInfoEXT::default()
+                .dst_image(image)
+                .dst_image_layout(vk::ImageLayout::GENERAL)
+                .flags(vk::HostImageCopyFlagsEXT::empty())
+                .regions(&regions);
+            
+            host_image_copy_device.copy_memory_to_image(&copy_memory_to_image_info).unwrap();
+        }
     }
     
 

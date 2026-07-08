@@ -30,7 +30,7 @@ unsafe fn load_image_and_create_texture(
     };
 
     let img = dynamic_image.to_rgba8();
-    create_texture(ctx, Some(img.as_bytes()), size, srgb)
+    create_texture(ctx, Some(img.as_bytes()), size, srgb, true)
 }
 
 fn store_in_channel(
@@ -83,7 +83,7 @@ impl Material {
         }
 
         let img = arm_texture.samples;
-        let arm_texture = create_texture(ctx, Some(&img), size, false);
+        let arm_texture = create_texture(ctx, Some(&img), size, false, true);
 
 
         Self {

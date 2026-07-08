@@ -2,13 +2,6 @@
 #include "utils/pbr.slang"
 #include "utils/triplanar.slang"
 #include "utils/bindless.slang"
-#include "utils/shader.slang"
-
-struct PbrShader : Shader<VertexInput, VertexOutput> {
-    VertexOutput interpolateUsingBarycentrics(VertexInput[3] inputs, float3 bary) {
-        return VertexOutput();
-    }
-}
 
 struct PushConstants {
     float4x4 object_to_world;

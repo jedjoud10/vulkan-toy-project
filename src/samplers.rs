@@ -23,7 +23,10 @@ impl Samplers {
             .min_filter(vk::Filter::NEAREST)
             .address_mode_u(vk::SamplerAddressMode::REPEAT)
             .address_mode_v(vk::SamplerAddressMode::REPEAT)
-            .address_mode_w(vk::SamplerAddressMode::REPEAT);
+            .address_mode_w(vk::SamplerAddressMode::REPEAT)
+            .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
+            .max_lod(100f32)
+            .min_lod(0f32);
 
         let nearest = device.create_sampler(&nearest_create_info, None).unwrap();
 

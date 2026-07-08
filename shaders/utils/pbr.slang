@@ -112,24 +112,34 @@ const uint EXTRA_LIGHTS_NUM = 1;
 
 float hw_trace_shadow_towards_sun(float3 world, float3 normal, float3 sun_direction) {
 	if (SUN_SHADOW_RAY) {
+		RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_CULL_NON_OPAQUE> sq;
+	    let flags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_CULL_NON_OPAQUE;
+
 	    static const float SHADOW_RAY_NORMAL_OFFSET = 0.001;
 	    static const float SHADOW_RAY_TMAX = 1000; 
 	    static const float SHADOW_RAY_TMIN = 0.01; 
+		static const int SAMPLES = 1;
+		static const bool PERTURB = SAMPLES > 1;
+
+		float factor = 0.0;
 	
-	    RayDesc desc;
-	    desc.Origin = world + normal * SHADOW_RAY_NORMAL_OFFSET;
-	    desc.Direction = sun_direction;
-	    desc.TMax = SHADOW_RAY_TMAX;
-	    desc.TMin = SHADOW_RAY_TMIN;
+		for	(int i = 0; i < SAMPLES; i++) {
+			RayDesc desc;
+	    	desc.Origin = world + normal * SHADOW_RAY_NORMAL_OFFSET;
+	    	desc.Direction = normalize(sun_direction + (hash33(i * 400.12324 + world * float3(3.1231, -432.342, 54.343)) - 0.5) * 0.02 * PERTURB);
+	    	desc.TMax = SHADOW_RAY_TMAX;
+	    	desc.TMin = SHADOW_RAY_TMIN;
 
-	    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_CULL_NON_OPAQUE> sq;
-	    let flags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_CULL_NON_OPAQUE;
 
-	    sq.TraceRayInline(acceleration_structures[0], flags, 0xFF, desc);
 
-	    sq.Proceed();
+	    	sq.TraceRayInline(acceleration_structures[0], flags, 0xFF, desc);
 
-	    return (sq.CommittedStatus() == COMMITTED_TRIANGLE_HIT) ? 0.0 : 1.0;
+	    	sq.Proceed();
+
+	    	factor += (sq.CommittedStatus() == COMMITTED_TRIANGLE_HIT) ? 0.0 : 1.0;
+		}
+
+		return factor / (float)SAMPLES;
 	} else {
 	    return 1.0;
 	}
@@ -272,7 +282,9 @@ public float3 lighting3<let K: uint>(
 		for (int l = 0; l < samples; l++) {
 			float3 perturb = (hash33(surface.position * float3(34.2143, -50.54353, 90.2342) + l * 400.523423 + uniforms.time) * 2.0 - 1.0) * surface.arm.roughness;
 			//float3 perturb = 0;
+			
 			float3 ray_dir = reflect(-camera.view, normalize(surface.normal + perturb));
+			// float3 ray_dir = refract(-camera.view, normalize(surface.normal + perturb), 1.15);
 			if (surface.arm.roughness < 0.9) {
 				if (K > 0) {
 					RayQuery<RAY_FLAG_CULL_BACK_FACING_TRIANGLES | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_CULL_NON_OPAQUE | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> sq;

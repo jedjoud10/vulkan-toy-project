@@ -23,20 +23,15 @@ pub unsafe fn create_swapchain(
     let present_modes: Vec<vk::PresentModeKHR> = surface_loader
         .get_physical_device_surface_present_modes(physical_device, surface_khr)
         .unwrap();
-    //log::debug!("present modes {:?}", present_modes);
+    log::debug!("present modes {:?}", present_modes);
     
 
     let surface_formats: Vec<vk::SurfaceFormatKHR> = surface_loader
         .get_physical_device_surface_formats(physical_device, surface_khr)
         .unwrap();
-    //log::debug!("surface formats {:?}", surface_formats);
+    log::debug!("surface formats {:?}", surface_formats);
     
     let swapchain_format = surface_formats[0].format;
-    let _present = present_modes
-        .iter()
-        .copied()
-        .find(|&x| x == vk::PresentModeKHR::IMMEDIATE || x == vk::PresentModeKHR::MAILBOX)
-        .unwrap();
     
     let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
         .surface(surface_khr)
