@@ -2,7 +2,7 @@
 use ash::vk;
 use gpu_allocator::vulkan::{Allocation, Allocator};
 
-use crate::{per_frame_data::ScratchBuffer, renderer::GraphicsContext};
+use crate::renderer::GraphicsContext;
 
 // acceleration structure scratch buffer requires alignment to be at least 256
 // of course we can pass a flag to state that we are allocating an acceleration structure scratch buffer
@@ -12,7 +12,7 @@ pub const MIN_BUFFER_ALIGNMENT: u64 = 256;
 // `write_to_buffer` calls that update more than these amount of bytes will revert to using the staging buffer implementation
 pub const BUFFER_WRITE_INLINE_MAX_BYTES_THRESHOLD: usize = 65536; // vulkan spec states that data size must be less than this 
 
-pub const BUFFER_WRITER_SIZE: usize = 1024*1024*128; // ~128mB
+pub const SCRATCH_BUFFER_SIZE: usize = 1024*1024*128; // ~128mB
 
 pub struct Buffer {
     pub buffer: vk::Buffer,
@@ -107,41 +107,6 @@ pub unsafe fn create_buffer_with(
     buffer
 }
 
-pub unsafe fn create_buffer_write_with_staging_buffer(
-    ctx: &mut GraphicsContext,
-    cmd: vk::CommandBuffer,
-    staging_buffer_writer: &mut BufferWriter,
-    bytes: &[u8],
-    name: &str,
-    flags: vk::BufferUsageFlags,
-) -> Buffer {
-    assert!(staging_buffer_writer.offset + bytes.len() < BUFFER_WRITER_SIZE, "staging buffer write will overflow");
-    let buffer = create_buffer(ctx, bytes.len(), name, flags);
-
-    let start = staging_buffer_writer.offset;
-    let end = staging_buffer_writer.offset + bytes.len();
-    let slice = &mut staging_buffer_writer.allocation.mapped_slice_mut().unwrap()[start..end];
-    slice.copy_from_slice(bytes);
-
-    let region = vk::BufferCopy2::default()
-        .dst_offset(0)
-        .size(bytes.len() as u64)
-        .src_offset(staging_buffer_writer.offset as u64);
-
-    let regions = [region];
-    let copy_staging_buffer_to_buffer = vk::CopyBufferInfo2::default()
-        .dst_buffer(buffer.buffer)
-        .regions(&regions)
-        .src_buffer(staging_buffer_writer.buffer);
-
-    ctx.device.cmd_copy_buffer2(cmd, &copy_staging_buffer_to_buffer);
-
-    staging_buffer_writer.offset += bytes.len();
-
-    buffer
-}
-
-
 pub unsafe fn create_buffer_write_with_scratch_buffer(
     ctx: &mut GraphicsContext,
     cmd: vk::CommandBuffer,
@@ -152,12 +117,12 @@ pub unsafe fn create_buffer_write_with_scratch_buffer(
 ) -> Buffer {
     let buffer = create_buffer(ctx, bytes.len(), name, flags);
 
-    scratch_buffer.write_bytes(bytes);
+    let written = scratch_buffer.write_bytes(bytes);
 
     let region = vk::BufferCopy2::default()
         .dst_offset(0)
         .size(bytes.len() as u64)
-        .src_offset(scratch_buffer.bytes_written as u64 - bytes.len() as u64);
+        .src_offset(written.buffer_offset_start);
 
     let regions = [region];
     let copy_staging_buffer_to_buffer = vk::CopyBufferInfo2::default()
@@ -289,40 +254,130 @@ pub unsafe fn create_counter_buffer(
     create_buffer(ctx, size_of::<u32>(), name, vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST)
 }
 
-pub struct BufferWriter {
+pub unsafe fn begin_buffer_writer(ctx: &mut GraphicsContext) -> ScratchBuffer {
+    ScratchBuffer::new(ctx)
+}
+
+pub unsafe fn end_buffer_writer(ctx: &mut GraphicsContext<'_>, writer: ScratchBuffer) {
+    writer.destroy(ctx.device, ctx.allocator);
+}
+
+pub struct ScratchBuffer {
     pub buffer: vk::Buffer,
     pub allocation: Allocation,
-    pub offset: usize,
+    pub base_address: u64,
+    pub bytes_written: usize,
 }
 
-pub unsafe fn begin_buffer_writer(ctx: &mut GraphicsContext) -> BufferWriter {
-    let buffer_create_info = vk::BufferCreateInfo::default()
-        .usage(vk::BufferUsageFlags::TRANSFER_SRC)
-        .sharing_mode(vk::SharingMode::EXCLUSIVE)
-        .size(BUFFER_WRITER_SIZE as u64);
-    
-    let buffer = ctx.device.create_buffer(&buffer_create_info, None).unwrap();
-    let requirements = ctx.device.get_buffer_memory_requirements(buffer);
+impl ScratchBuffer {
+    pub unsafe fn new(ctx: &mut GraphicsContext) -> Self {
+        let usage = vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
 
-    let allocation = ctx.allocator
-        .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
-            name: "staging buffer allocation",
-            requirements,
-            linear: true,
-            allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
-            location: gpu_allocator::MemoryLocation::CpuToGpu,
-        })
-        .unwrap();
+        let buffer_create_info = vk::BufferCreateInfo::default()
+            .usage(usage)
+            .flags(vk::BufferCreateFlags::DEVICE_ADDRESS_CAPTURE_REPLAY)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .size(SCRATCH_BUFFER_SIZE as u64);
+        
+        let buffer = ctx.device.create_buffer(&buffer_create_info, None).unwrap();
+        
+        let mut requirements = ctx.device.get_buffer_memory_requirements(buffer);
+        requirements.alignment = requirements.alignment.max(MIN_BUFFER_ALIGNMENT); 
 
-    crate::debug::set_object_name(buffer, ctx.debug_marker, "staging buffer");
-    
-    let device_memory = allocation.memory();
-    ctx.device.bind_buffer_memory(buffer, device_memory, allocation.offset()).unwrap();
+        let allocation = ctx.allocator
+            .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
+                name: "scratch buffer allocation",
+                requirements,
+                linear: true,
+                allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
+                location: gpu_allocator::MemoryLocation::CpuToGpu,
+            })
+            .unwrap();
 
-    BufferWriter { buffer, allocation, offset: 0 }
+        crate::debug::set_object_name(buffer, ctx.debug_marker, "scratch buffer");
+        
+        let device_memory = allocation.memory();
+        ctx.device.bind_buffer_memory(buffer, device_memory, allocation.offset()).unwrap();
+
+        let info = vk::BufferDeviceAddressInfo::default()
+            .buffer(buffer);
+        let base_address = ctx.device.get_buffer_device_address(&info);
+
+        ScratchBuffer {
+            buffer,
+            base_address,
+            
+            bytes_written: 0,
+            allocation,
+        }
+    }
+
+    pub unsafe fn destroy(self, device: &ash::Device, allocator: &mut Allocator) {
+        allocator.free(self.allocation).unwrap();
+        device.destroy_buffer(self.buffer, None);
+    }
+
+    pub unsafe fn begin_of_cmd_recording(&mut self, queue_family_index: u32, device: &ash::Device, cmd: vk::CommandBuffer) {
+        self.bytes_written = 0;
+        let barrier = vk::BufferMemoryBarrier2::default()
+            .buffer(self.buffer)
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE | vk::AccessFlags2::MEMORY_READ)
+            .dst_access_mask(vk::AccessFlags2::MEMORY_WRITE | vk::AccessFlags2::MEMORY_READ)
+            .size(vk::WHOLE_SIZE)
+            .offset(0)
+            .src_queue_family_index(queue_family_index)
+            .dst_queue_family_index(queue_family_index);
+        let buffer_memory_barriers = [barrier];
+        let dep = vk::DependencyInfo::default()
+            .buffer_memory_barriers(&buffer_memory_barriers);
+        device.cmd_pipeline_barrier2(cmd, &dep);
+    }
+
+    /// Returns the GPU buffer start address range of the written data  
+    // TODO: make this more type safe by implementing "BufferDeviceAddress" instead of returning a raw u64
+    pub unsafe fn write_bytes(&mut self, bytes: &[u8]) -> WrittenBytes {
+        assert!(bytes.len() > 0);
+        assert!(bytes.len() + self.bytes_written < SCRATCH_BUFFER_SIZE, "scratch buffer overrun. bytes written already: {}    num bytes: {}", self.bytes_written, bytes.len());
+
+        let dst = self.allocation.mapped_slice_mut().unwrap();
+        dst[self.bytes_written..(self.bytes_written + bytes.len())].copy_from_slice(bytes);
+
+        let prev = self.bytes_written;
+        self.bytes_written += bytes.len();
+        
+        WrittenBytes {
+            buffer_device_address_start: self.base_address + prev as u64,
+            buffer_offset_start: prev as u64,
+        }
+    }
+
+    /// Returns the GPU buffer start address range of the written data. This WILL be aligned to 16 bytes for now
+    // TODO: make this more type safe by implementing "BufferDeviceAddress" instead of returning a raw u64
+    pub unsafe fn write_bytes_aligned(&mut self, bytes: &[u8]) -> WrittenBytes {
+        assert!(bytes.len() > 0);
+        assert!(bytes.len() + self.bytes_written < SCRATCH_BUFFER_SIZE, "scratch buffer overrun. bytes written already: {}    num bytes: {}", self.bytes_written, bytes.len());
+
+        // we need this because the TLAS building requires that the output buffer device address is aligned to 16 bytes
+        // easiest way to implement this is to add padding bytes when we need it 
+        pub const ALIGNMENT: usize = 16;
+        let bytes_written_aligned = self.bytes_written.next_multiple_of(ALIGNMENT);
+
+        let dst = self.allocation.mapped_slice_mut().unwrap();
+        dst[bytes_written_aligned..(bytes_written_aligned + bytes.len())].copy_from_slice(bytes);
+
+        let prev = bytes_written_aligned as u64;
+        self.bytes_written = bytes_written_aligned + bytes.len();
+        
+        WrittenBytes {
+            buffer_device_address_start: self.base_address + prev as u64,
+            buffer_offset_start: prev as u64,
+        }
+    }
 }
 
-pub unsafe fn end_buffer_writer(ctx: &mut GraphicsContext<'_>, writer: BufferWriter) {
-    ctx.allocator.free(writer.allocation).unwrap();
-    ctx.device.destroy_buffer(writer.buffer, None);
+pub struct WrittenBytes {
+    pub buffer_device_address_start: u64,
+    pub buffer_offset_start: u64,
 }

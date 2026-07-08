@@ -6,7 +6,7 @@ use gpu_allocator::vulkan::{Allocation, Allocator};
 use noise::NoiseFn;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
-use crate::{buffer, others, per_frame_data::ScratchBuffer, ray_tracing, renderer::GraphicsContext};
+use crate::{buffer, others, ray_tracing, renderer::GraphicsContext};
 
 pub const VERTEX_STRIDE: usize = size_of::<vek::Vec3::<f32>>();
 pub const INDEX_STRIDE: usize = size_of::<u32>();
@@ -30,7 +30,6 @@ struct Shared {
 
 pub struct MultipleChunks {
     pub chunks: HashMap<vek::Vec3<i32>, Chunk>,
-    threads: Vec<JoinHandle<()>>,
     receiver: Receiver<GeneratedChunk>,
 }
 
@@ -57,12 +56,10 @@ impl MultipleChunks {
             },
         });
 
-        let threads = (0..4).into_iter().map(|thread_id| {
+        let _threads = (0..4).into_iter().map(|thread_id| {
             let shared = shared.clone();
             let tx = tx.clone();
             let thread = std::thread::spawn(move || {
-
-            
                 loop {                
                     if let Some(chunk_offset) = shared.queue.pop() {
                         let mut densities = vec![0f32; CHUNK_VOLUME];
@@ -116,12 +113,11 @@ impl MultipleChunks {
         
         Self {
             chunks: HashMap::<vek::Vec3<i32>, Chunk>::new(),
-            threads,
             receiver: rx,
         }
     }
 
-    pub unsafe fn frame(&mut self, ctx: &mut GraphicsContext, scratchy: &mut ScratchBuffer, cmd: vk::CommandBuffer) {
+    pub unsafe fn frame(&mut self, ctx: &mut GraphicsContext, scratchy: &mut buffer::ScratchBuffer, cmd: vk::CommandBuffer) {
         for GeneratedChunk { chunk_offset, vertices, indices } in self.receiver.try_iter() {
             if indices.len() > 0 && vertices.len() > 0 {
                 let vertex_buffer = buffer::create_buffer_write_with_scratch_buffer(ctx, cmd, scratchy, cast_slice(vertices.as_slice()), "vertex buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);

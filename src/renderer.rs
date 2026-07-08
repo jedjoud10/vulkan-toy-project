@@ -991,7 +991,7 @@ impl InternalApp {
         self.device.cmd_reset_query_pool(cmd, query_pool, 0, 2);
         self.device.cmd_reset_query_pool(cmd, pipeline_statistics_query_pool, 0, 1);
         self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, query_pool, 0);
-        scratch_buffer.begin_of_cmd_recording(&self.device, cmd);
+        scratch_buffer.begin_of_cmd_recording(self.queue_family_index, &self.device, cmd);
         
 
         // update lights and its respective buffer

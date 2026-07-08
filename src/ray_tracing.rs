@@ -2,7 +2,7 @@ use std::ptr::slice_from_raw_parts;
 
 use ash::vk;
 use gpu_allocator::vulkan::Allocator;
-use crate::{buffer, per_frame_data::ScratchBufferBarrierInfo, renderer::GraphicsContext};
+use crate::{buffer, renderer::GraphicsContext};
 
 pub struct AccelerationStructureData {
     pub backing_buffer: buffer::Buffer,
@@ -169,11 +169,8 @@ pub unsafe fn rebuild_tlas(
     acceleration_structure_device: &ash::khr::acceleration_structure::Device,
     device: &ash::Device,
     queue_family_index: u32,
-    per_frame_scratch_buffer: &mut crate::per_frame_data::ScratchBuffer,
+    per_frame_scratch_buffer: &mut buffer::ScratchBuffer,
 ) {
-    
-
-
     let instances = static_instances.iter().chain(dynamic_instances.iter()).copied().collect::<Vec<_>>();
     let blases = instances.as_slice();
     
@@ -191,7 +188,7 @@ pub unsafe fn rebuild_tlas(
     
     let instances = vk::AccelerationStructureGeometryInstancesDataKHR::default()
         .array_of_pointers(false)
-        .data(vk::DeviceOrHostAddressConstKHR { device_address: written_address });
+        .data(vk::DeviceOrHostAddressConstKHR { device_address: written_address.buffer_device_address_start });
     let geometry_tmp = vk::AccelerationStructureGeometryDataKHR { instances: instances };
 
     let geometry = vk::AccelerationStructureGeometryKHR::default()
