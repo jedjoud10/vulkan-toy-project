@@ -65,7 +65,7 @@ const RASTERIZED_MS_GENERATED_GRASS_SPV: &str = "rasterized_ms_generated_grass.s
 const RASTERIZED_BACKGROUND_SPV: &str = "rasterized_background.spv";
 
 const NUM_LIGHTS: usize = 1;
-const SUN_SHADOW_RAY_ENABLED: bool = true;
+const SUN_SHADOW_RAY_ENABLED: bool = false;
 const EXTRA_LIGHTS_ENABLED: bool = false;
 const EXTRA_LIGHTS_SHADOW_RAY_ENABLED: bool = false;
 const VERY_SHINY_REFLECTIVE_SURFACES: bool = false;
@@ -209,7 +209,6 @@ pub struct InternalApp {
 
     // debug settings
     debug_type: u32,
-    wireframe: bool,
     toggles_bitmask: u32,
     debug_text_buffer: buffer::Buffer,
 
@@ -599,7 +598,6 @@ impl InternalApp {
             tesselation_buffer,
             graphics_pipelines,
             compute_pipelines,
-            wireframe: false,
             toggles_bitmask: 0,
             debug_text_buffer,
             render_finished_semaphores,
@@ -744,9 +742,6 @@ impl InternalApp {
         if self.input.get_button(Button::Keyboard(KeyCode::KeyG)).pressed() {
             self.debug_type = (self.debug_type as i32 - 1).rem_euclid(8) as u32;
         }
-        if self.input.get_button(Button::Keyboard(KeyCode::KeyT)).pressed() {
-            self.wireframe = !self.wireframe; 
-        }
         if self.input.get_button(Button::Keyboard(KeyCode::Digit1)).pressed() {
             self.toggles_bitmask ^= 1;
         }
@@ -755,6 +750,9 @@ impl InternalApp {
         }
         if self.input.get_button(Button::Keyboard(KeyCode::Digit3)).pressed() {
             self.toggles_bitmask ^= 4;
+        }
+        if self.input.get_button(Button::Keyboard(KeyCode::Digit4)).pressed() {
+            self.toggles_bitmask ^= 8;
         }
         if self.input.get_button(Button::Keyboard(KeyCode::KeyJ)).pressed() {
             let report = self.allocator.generate_report();
@@ -1023,7 +1021,14 @@ impl InternalApp {
             main_pipeline_layout: self.main_pipeline_layout,
             descriptor_pool: self.descriptor_pool,
         };
+
+
+        self.multiple_chunks.stuff(self.movement.position);
         self.multiple_chunks.frame(&mut ctx, scratch_buffer, cmd);
+
+
+
+
 
         // update dynamic instances for TLAS
         self.dynamic_instances.clear();
@@ -1036,7 +1041,7 @@ impl InternalApp {
             });
         }
 
-        for (_, chunk) in self.multiple_chunks.chunks.iter() {
+        for chunk in self.multiple_chunks.chunks.values().filter_map(|x| x.as_ref()) {
             self.dynamic_instances.push(chunk.instance);
             models_metadata_buffer_write.push(GpuModelMetadata {
                 material_base_index: self.materials[0].base_index,
@@ -1064,7 +1069,6 @@ impl InternalApp {
         text += &format!("pos: {:.2}\n", self.movement.position);
         text += &format!("debug type: {}\n", self.debug_type);
         text += &format!("toggles bitmask: {:#032b}\n", self.toggles_bitmask);
-        text += &format!("wireframe: {}\n", self.wireframe);
         text += &format!("updating frustum: {}\n", self.movement.update_frustum);
 
         let report = self.allocator.generate_report();
@@ -1386,6 +1390,9 @@ impl InternalApp {
         self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, vk::PolygonMode::FILL);
         self.device.cmd_draw(cmd, 6, 1, 0, 0);
 
+        
+        let wireframe = crate::utils::is_set(self.toggles_bitmask as u64, 3);
+
         /*
         // render objs using mesh shaders (passthrough) 
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_PASSTHROUGH_SPV]);
@@ -1406,7 +1413,7 @@ impl InternalApp {
         // render other objs
         /*
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_GENERATED_1_SPV]);
-        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
+        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
         for x in -1..1i32 {
             for y in -0..1i32 {
                 for z in -1..1i32 {
@@ -1447,8 +1454,10 @@ impl InternalApp {
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_CHUNK_SPV]);
         let material_base_index = self.materials[1].base_index;
         self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytes_of(&material_base_index));
-        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
-        for chunk in self.multiple_chunks.chunks.values() {
+
+
+        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
+        for chunk in self.multiple_chunks.chunks.values().filter_map(|x| x.as_ref()) {
             self.device.cmd_bind_vertex_buffers(cmd, 0, &[chunk.vertex_buffer.buffer], &[0]);
             self.device.cmd_bind_index_buffer(cmd, chunk.index_buffer.buffer, 0, vk::IndexType::UINT32);
             self.device.cmd_draw_indexed(cmd, chunk.index_count, 1, 0, 0, 0);
@@ -1457,7 +1466,7 @@ impl InternalApp {
         // render models
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_SPV]);
         for (_, model) in self.models.iter().enumerate() {
-            self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
+            self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
             model.render(cmd, &self.device, self.main_pipeline_layout, &self.materials);
         }        
 

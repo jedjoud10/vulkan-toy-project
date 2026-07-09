@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::{Arc, Mutex, RwLock, atomic::AtomicBool, mpsc::Receiver}, thread::JoinHandle};
+use std::{collections::{HashMap, HashSet}, sync::{Arc, Mutex, RwLock, atomic::AtomicBool, mpsc::Receiver}, thread::JoinHandle};
 
 use ash::{util::Align, vk};
 use bytemuck::{Pod, Zeroable, cast_slice};
@@ -11,9 +11,9 @@ use crate::{buffer, others, ray_tracing, renderer::GraphicsContext};
 pub const VERTEX_STRIDE: usize = size_of::<vek::Vec3::<f32>>();
 pub const INDEX_STRIDE: usize = size_of::<u32>();
 
-pub const CHUNK_SIZE: usize = 64;
-pub const CHUNK_SIZE_WITH_PADDING: usize = 66;
-pub const CHUNK_VOLUME: usize = 66*66*66;
+pub const CHUNK_SIZE: usize = 32;
+pub const CHUNK_SIZE_WITH_PADDING: usize = 34;
+pub const CHUNK_VOLUME: usize = CHUNK_SIZE_WITH_PADDING*CHUNK_SIZE_WITH_PADDING*CHUNK_SIZE_WITH_PADDING;
         
 
 struct GeneratedChunk {
@@ -29,7 +29,9 @@ struct Shared {
 }
 
 pub struct MultipleChunks {
-    pub chunks: HashMap<vek::Vec3<i32>, Chunk>,
+    pub destruction: Vec<Chunk>,
+    pub chunks: HashMap<vek::Vec3<i32>, Option<Chunk>>,
+    shared: Arc<Shared>,
     receiver: Receiver<GeneratedChunk>,
 }
 
@@ -37,26 +39,24 @@ impl MultipleChunks {
     pub unsafe fn create(
         ctx: &mut GraphicsContext,
     ) -> Self {
-        let chunk_render_distance = 4i32;
-
         let (tx, rx) = std::sync::mpsc::channel::<GeneratedChunk>();
         let shared = Arc::<Shared>::new(Shared {
             queue: Default::default(),
             fbm: {
                 let mut fbm = noise::Fbm::<noise::Perlin>::new(0); 
-                fbm.octaves = 6;
+                fbm.octaves = 4;
                 fbm.frequency = 0.001;
                 fbm
             },
             extra: {
                 let mut extra = noise::Fbm::<noise::Billow::<noise::Simplex>>::new(0); 
-                extra.octaves = 3;
+                extra.octaves = 2;
                 extra.frequency = 0.01;
                 extra
             },
         });
 
-        let _threads = (0..4).into_iter().map(|thread_id| {
+        let _threads = (0..8).into_iter().map(|thread_id| {
             let shared = shared.clone();
             let tx = tx.clone();
             let thread = std::thread::spawn(move || {
@@ -65,6 +65,8 @@ impl MultipleChunks {
                         let mut densities = vec![0f32; CHUNK_VOLUME];
 
                         log::debug!("TID: {thread_id}. generating densities for chunk {chunk_offset}");
+                        let mut positive = false;
+                        let mut negative = false;
                         for index in 0..CHUNK_VOLUME  {
                             let local_position = index_to_offset(index, CHUNK_SIZE_WITH_PADDING).as_::<i32>();
                             let world_position = local_position + chunk_offset * (CHUNK_SIZE as i32);
@@ -77,21 +79,29 @@ impl MultipleChunks {
                         
                             let density = pos.y - (stepped + -diff * shared.extra.get([pos.x,pos.z]) * 5.0f64);
                             densities[index] = density as f32;
+
+                            positive |= densities[index] >= 0f32;
+                            negative |= densities[index] < 0f32;
+                            
                         }
                     
-                        log::debug!("TID: {thread_id}. generating mesh for chunk {chunk_offset}");
+                        if positive == negative {
+                            log::debug!("TID: {thread_id}. generating mesh for chunk {chunk_offset}");
                     
-                        let (vertices, indices) = mesh_chunk(densities, chunk_offset);
-                        
-                        if !vertices.is_empty() && !indices.is_empty() {
-                            let result = GeneratedChunk {
-                                chunk_offset,
-                                vertices,
-                                indices,
-                            };
+                            let (vertices, indices) = mesh_chunk(densities, chunk_offset);
+                            log::debug!("TID: {thread_id}. vert count: {}. index count: {}", vertices.len(), indices.len());
 
-                            if let Err(_) = tx.send(result) {
-                                break;
+                            if !vertices.is_empty() && !indices.is_empty() {
+                                let result = GeneratedChunk {
+                                    chunk_offset,
+                                    vertices,
+                                    indices,
+                                };
+
+                                if let Err(err) = tx.send(result) {
+                                    log::warn!("Tx Send Error: {err}");
+                                    break;
+                                }
                             }
                         }
                     }
@@ -100,25 +110,54 @@ impl MultipleChunks {
 
             thread
         }).collect::<Vec<_>>();
+        
+        Self {
+            shared,
+            receiver: rx,
+            chunks: Default::default(),
+            destruction: Default::default()
+        }
+    }
 
-
-
+    pub fn stuff(&mut self, position: vek::Vec3<f32>) {
+        let chunk_render_distance = 4i32;
+        
+        let previous = HashSet::<vek::Vec3<i32>>::from_iter(self.chunks.keys().copied()); 
+        let mut current = HashSet::<vek::Vec3<i32>>::new();
+        
         for x in -chunk_render_distance..chunk_render_distance {
             for y in -1..2 {
                 for z in -chunk_render_distance..chunk_render_distance {
-                    shared.queue.push(vek::Vec3::new(x,y,z));
+                    current.insert(vek::Vec3::new(x,y,z) + (position / CHUNK_SIZE as f32).floor().as_::<i32>());
                 }
             }
         }
+
+        for removed in previous.difference(&current) {
+            if let Some(chunk) = self.chunks.remove(removed).unwrap() {
+                self.destruction.push(chunk)
+            }
+
+            //self.chunks.remove(removed).unwrap()
+        }
         
-        Self {
-            chunks: HashMap::<vek::Vec3<i32>, Chunk>::new(),
-            receiver: rx,
+        for added in current.difference(&previous) {
+            self.shared.queue.push(*added);
+            self.chunks.insert(*added, None);
         }
     }
 
     pub unsafe fn frame(&mut self, ctx: &mut GraphicsContext, scratchy: &mut buffer::ScratchBuffer, cmd: vk::CommandBuffer) {
+        for chunk in self.destruction.drain(..) {
+            chunk.destroy(ctx.acceleration_structure_device, ctx.device, ctx.allocator);
+        }
+
+
         for GeneratedChunk { chunk_offset, vertices, indices } in self.receiver.try_iter() {
+            if !self.chunks.contains_key(&chunk_offset) {
+                continue;
+            }
+
             if indices.len() > 0 && vertices.len() > 0 {
                 let vertex_buffer = buffer::create_buffer_write_with_scratch_buffer(ctx, cmd, scratchy, cast_slice(vertices.as_slice()), "vertex buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
                 let index_buffer = buffer::create_buffer_write_with_scratch_buffer(ctx, cmd, scratchy, cast_slice(indices.as_slice()), "index buffer", vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
@@ -162,19 +201,21 @@ impl MultipleChunks {
                     1
                 );
 
-                self.chunks.insert(chunk_offset, Chunk {
+                let chunk = Chunk {
                     vertex_buffer,
                     index_buffer,
                     blas,
                     instance,
                     index_count: indices.len() as u32,
-                });
+                };
+
+                self.chunks.insert(chunk_offset, Some(chunk));
             }
         }
     }
     
     pub unsafe fn destroy(self, acceleration_structure_device: &ash::khr::acceleration_structure::Device, device: &ash::Device, allocator: &mut Allocator) {
-        for (_, chunk) in self.chunks {
+        for chunk in self.chunks.into_iter().filter_map(|(_, b)| b) {
             chunk.destroy(acceleration_structure_device, device, allocator);
         }
     }
