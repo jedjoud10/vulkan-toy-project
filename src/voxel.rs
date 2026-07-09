@@ -120,7 +120,7 @@ impl MultipleChunks {
     }
 
     pub fn stuff(&mut self, position: vek::Vec3<f32>) {
-        let chunk_render_distance = 4i32;
+        let chunk_render_distance = 3i32;
         
         let previous = HashSet::<vek::Vec3<i32>>::from_iter(self.chunks.keys().copied()); 
         let mut current = HashSet::<vek::Vec3<i32>>::new();

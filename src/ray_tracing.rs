@@ -120,7 +120,7 @@ impl TopLevelAccelerationStructure {
     }
 }
 
-pub const TLAS_MAX_INSTANCES: u32 = 1000;
+pub const TLAS_MAX_INSTANCES: u32 = 100000;
 
 pub unsafe fn pre_create_tlas(
     ctx: &mut GraphicsContext,
