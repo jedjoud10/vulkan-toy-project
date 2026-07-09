@@ -22,6 +22,7 @@ impl Default for Statistics {
     }
 }
 
+// TODO: rewrite this to an actual stats performance metric thingy
 impl Statistics {
     pub fn push_query_timings(&mut self, delta_in_ms: f64) {
         self.delta_ms_buffer.rotate_right(1);

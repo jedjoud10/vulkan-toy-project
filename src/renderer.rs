@@ -14,6 +14,7 @@ use crate::model;
 use crate::model::GpuModelMetadata;
 use crate::movement::Movement;
 use crate::per_frame_data;
+use crate::physical_device::PhysicalDeviceAndScore;
 use crate::ray_tracing;
 use crate::samplers;
 use crate::tesselation;
@@ -262,25 +263,28 @@ impl InternalApp {
             .enumerate_physical_devices()
             .unwrap()
             .into_iter()
-            .map(|physical_device| {
-                let score = physical_device::get_physical_device_score(
+            .filter_map(|physical_device| {
+                physical_device::get_physical_device_score(
                     physical_device,
                     &instance,
                     &surface_loader,
                     surface_khr,
-                );
-                (physical_device, score)
+                )
             })
-            .filter_map(|(a, b)| b.map(|val| (a, val)))
-            .collect::<Vec<(vk::PhysicalDevice, u32)>>();
-        physical_device_candidates.sort_by_key(|(_, score)| *score);
+            .collect::<Vec<PhysicalDeviceAndScore>>();
+        physical_device_candidates.sort_by_key(|tmp| tmp.score);
 
         if physical_device_candidates.is_empty() {
             log::error!("no physical device was chosen!");
             panic!();
         }
+        
+        let PhysicalDeviceAndScore {
+            physical_device,
+            intermediates,
+            ..
+        } = physical_device_candidates.pop().unwrap();
 
-        let physical_device = physical_device_candidates.last().unwrap().0;
         let mut physical_device_properties = vk::PhysicalDeviceProperties2::default();
         instance.get_physical_device_properties2(physical_device, &mut physical_device_properties);
         let physical_device_name = physical_device_properties.properties.device_name_as_c_str().unwrap().to_str().unwrap();
@@ -292,6 +296,7 @@ impl InternalApp {
             physical_device,
             &surface_loader,
             surface_khr,
+            intermediates
         );
         log::info!("created device and fetched main queue");
 
