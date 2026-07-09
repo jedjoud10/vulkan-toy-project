@@ -276,7 +276,7 @@ float4 clouds_interesting(float3 ray_dir, float3 ray_pos) {
                 for (int i = 0; i < 64; i++) {
                     float factor = i / 64.0;
                     float2 lerped = lerp(uvs, uvs2, factor);
-                    clouds_colour_opacity += sampled_images[CLOUDS_SAMPLER_IMAGE_IDX].Sample(samplers[LINEAR_SAMPLER_IDX], lerped) / 64.0;
+                    clouds_colour_opacity += sampled_images[CLOUDS_SAMPLER_IMAGE_IDX].Sample(samplers[LINEAR_CLAMPED_SAMPLER_IDX], lerped) / 64.0;
                 }
             }
 
@@ -293,20 +293,20 @@ float4 clouds(float3 ray_dir, float3 ray_pos) {
         let uvs = pos.xy / SCALE + 0.5;
 
         if (all(uvs >= 0 & uvs <= 1)) {
-            clouds_colour_opacity = sampled_images[CLOUDS_SAMPLER_IMAGE_IDX].Sample(samplers[LINEAR_SAMPLER_IDX], uvs);
+            clouds_colour_opacity = sampled_images[CLOUDS_SAMPLER_IMAGE_IDX].Sample(samplers[LINEAR_CLAMPED_SAMPLER_IDX], uvs);
         }
     }
     return clouds_colour_opacity;
 }
 
 float3 get_environment_diffuse(float3 dir) {
-    return sampled_images_cube[AMBIENT_SKYBOX_SAMPLER_IMAGE_IDX].Sample(samplers[LINEAR_SAMPLER_IDX], dir).xyz;
+    return sampled_images_cube[AMBIENT_SKYBOX_SAMPLER_IMAGE_IDX].Sample(samplers[LINEAR_CLAMPED_SAMPLER_IDX], dir).xyz;
 }
 
 
 float3 sample_skybox_and_clouds(float3 ray_pos, float3 ray_dir) {
     float4 clouds_colour_opacity = clouds(ray_dir, ray_pos);
-    float3 sky_colour = sampled_images_cube[SKYBOX_SAMPLER_IMAGE_IDX].Sample(samplers[LINEAR_SAMPLER_IDX], ray_dir).xyz;
+    float3 sky_colour = sampled_images_cube[SKYBOX_SAMPLER_IMAGE_IDX].Sample(samplers[LINEAR_CLAMPED_SAMPLER_IDX], ray_dir).xyz;
     return lerp(sky_colour, clouds_colour_opacity.xyz, clouds_colour_opacity.w);
 }
 

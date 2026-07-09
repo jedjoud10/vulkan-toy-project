@@ -34,6 +34,7 @@ obj-rs = "0.7.0"
 meshopt = "0.6.2"
 include_dir = "0.7.4"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
+crossbeam = "0.8.4"
 
 [build-dependencies]
 shader-slang = { git = "https://github.com/FloatyMonkey/slang-rs.git" }
