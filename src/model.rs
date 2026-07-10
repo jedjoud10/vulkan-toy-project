@@ -29,7 +29,7 @@ pub struct Model {
 }
 
 impl Model {
-    pub unsafe fn new(position: vek::Vec3<f32>, name: &str, ctx: &mut GraphicsContext, material_index: u32, cmd: vk::CommandBuffer, mut writer: &mut buffer::BufferWriter) -> Self {
+    pub unsafe fn new(position: vek::Vec3<f32>, name: &str, ctx: &mut GraphicsContext, material_index: u32, cmd: vk::CommandBuffer, mut writer: &mut buffer::ScratchBuffer) -> Self {
         let obj_model_bytes = others::load_model(name).unwrap();
         let obj = obj::load_obj::<obj::TexturedVertex, &[u8], u32>(&obj_model_bytes).unwrap();
 
@@ -49,13 +49,13 @@ impl Model {
 
         meshopt::optimize_vertex_cache_in_place(&mut indices, vertex_count);
 
-        let vertex_positions_buffer = buffer::create_buffer_with_2(ctx, cmd, &mut writer, cast_slice(positions.as_slice()), "vertex positions buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
+        let vertex_positions_buffer = buffer::create_buffer_write_with_scratch_buffer(ctx, cmd, &mut writer, cast_slice(positions.as_slice()), "vertex positions buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
         
-        let vertex_normals_buffer = buffer::create_buffer_with_2(ctx, cmd, &mut writer, cast_slice(normals.as_slice()), "vertex normals buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
+        let vertex_normals_buffer = buffer::create_buffer_write_with_scratch_buffer(ctx, cmd, &mut writer, cast_slice(normals.as_slice()), "vertex normals buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
 
-        let vertex_uvs_buffer = buffer::create_buffer_with_2(ctx, cmd, &mut writer, cast_slice(uvs.as_slice()), "vertex uvs buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
+        let vertex_uvs_buffer = buffer::create_buffer_write_with_scratch_buffer(ctx, cmd, &mut writer, cast_slice(uvs.as_slice()), "vertex uvs buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
 
-        let index_buffer = buffer::create_buffer_with_2(ctx, cmd, &mut writer, cast_slice(indices.as_slice()), "index buffer", vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
+        let index_buffer = buffer::create_buffer_write_with_scratch_buffer(ctx, cmd, &mut writer, cast_slice(indices.as_slice()), "index buffer", vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
 
         let vertex_buffer_barrier = vk::BufferMemoryBarrier2::default()
             .buffer(vertex_positions_buffer.buffer)

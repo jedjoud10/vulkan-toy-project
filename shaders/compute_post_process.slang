@@ -102,7 +102,7 @@ void write_swapchain_image(uint3 id: SV_DispatchThreadID) {
 
     float3 final_colour = pre_compose[src_coords].xyz;
    
-    SamplerState sampler = samplers[LINEAR_SAMPLER_IDX];
+    SamplerState sampler = samplers[LINEAR_CLAMPED_SAMPLER_IDX];
 
     float bloom_strength = 0.05;
     float3 bloom = entire_bloom_image.SampleLevel(sampler, screen_uvs, 2.0).xyz * bloom_strength;
@@ -141,7 +141,7 @@ static const float MIN_BLOOM_THRESHOLD = 0.3;
 void bloom_downsample(uint3 id: SV_DispatchThreadID, uniform float2 previous_bloom_mip_resolution, uniform uint src_sampled_image_idx, uniform uint dst_storage_image_idx) {
     let previous_bloom_mip = sampled_images[src_sampled_image_idx];
     let next_bloom_mip = storage_images[dst_storage_image_idx];
-    SamplerState sampler = samplers[LINEAR_SAMPLER_IDX];
+    SamplerState sampler = samplers[LINEAR_CLAMPED_SAMPLER_IDX];
     
 
     float4 sum = 0;
@@ -166,7 +166,7 @@ void bloom_downsample(uint3 id: SV_DispatchThreadID, uniform float2 previous_blo
 void bloom_upsample(uint3 id: SV_DispatchThreadID, uniform float2 previous_bloom_mip_resolution, uniform uint src_sampled_image_idx, uniform uint dst_storage_image_idx) {
     let previous_bloom_mip = sampled_images[src_sampled_image_idx];
     let next_bloom_mip = storage_images[dst_storage_image_idx];
-    SamplerState sampler = samplers[LINEAR_SAMPLER_IDX];
+    SamplerState sampler = samplers[LINEAR_CLAMPED_SAMPLER_IDX];
 
     float4 sum = 0;
     for (int x = 0; x < 2; x++) {

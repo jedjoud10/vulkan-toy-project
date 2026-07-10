@@ -2,6 +2,12 @@ use std::ffi::CStr;
 
 use ash::vk;
 
+pub struct PhysicalDeviceAndScore {
+    pub score: u32,
+    pub intermediates: crate::device::Intermediates,
+    pub physical_device: vk::PhysicalDevice
+}
+
 // Check wether or not a physical device is suitable for rendering
 // This checks the minimum requirements that we need to achieve to be able to render
 pub(super) unsafe fn get_physical_device_score(
@@ -9,7 +15,7 @@ pub(super) unsafe fn get_physical_device_score(
     instance: &ash::Instance,
     surface_loader: &ash::khr::surface::Instance,
     surface_khr: vk::SurfaceKHR,
-) -> Option<u32> {
+) -> Option<PhysicalDeviceAndScore> {
     let properties = instance.get_physical_device_properties(physical_device);
     let surface_capabilities: vk::SurfaceCapabilitiesKHR = surface_loader
         .get_physical_device_surface_capabilities(physical_device, surface_khr)
@@ -28,30 +34,16 @@ pub(super) unsafe fn get_physical_device_score(
             .unwrap()
     );
 
-    // TODO: fix this and match up with logical device feature set
-    let mut device_features_12 = vk::PhysicalDeviceVulkan12Features::default();
-    let mut device_features_13 = vk::PhysicalDeviceVulkan13Features::default();
+    let intermediates = if let Some(intermediates) = crate::device::get_physical_device_features_and_check(instance, physical_device) {
+        intermediates
+    } else {
+        return None;
+    };
     
-    let mut physical_device_features = vk::PhysicalDeviceFeatures2::default()
-        .features(vk::PhysicalDeviceFeatures::default())
-        .push_next(&mut device_features_12)
-        .push_next(&mut device_features_13);
-    instance.get_physical_device_features2(physical_device, &mut physical_device_features);
-    let device_features_base = &physical_device_features.features;
-
-    let physical_device_features_supported = 
-        device_features_base.shader_int16 == 1 &&
-        device_features_12.storage_buffer8_bit_access == 1 &&
-        device_features_12.shader_float16 == 1 &&
-        device_features_12.shader_int8 == 1 &&
-        device_features_13.synchronization2 == 1;
 
     let physical_device_limits_supported =
         properties.limits.timestamp_period > 0f32;
-        
-    log::info!("physical device supports features: {physical_device_features_supported}");
-    log::info!("physical device supports limits: {physical_device_limits_supported}");
-
+    
     let mut score = 0;
 
     let min = surface_capabilities.min_image_count;
@@ -78,7 +70,7 @@ pub(super) unsafe fn get_physical_device_score(
         .is_some();
     log::info!("compatible surface: {surface_compatible}");
 
-    if !double_buffering_supported || !present_modes_supported || !surface_compatible || !physical_device_features_supported || !physical_device_limits_supported {
+    if !double_buffering_supported || !present_modes_supported || !surface_compatible || !physical_device_limits_supported {
         return None;
     }
 
@@ -88,5 +80,5 @@ pub(super) unsafe fn get_physical_device_score(
 
     log::info!("physical device score: {:?}", score);
 
-    Some(score)
+    Some(PhysicalDeviceAndScore { score, intermediates, physical_device })
 }

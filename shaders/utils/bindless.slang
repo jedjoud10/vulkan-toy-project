@@ -47,7 +47,8 @@ const static uint CLOUDS_SAMPLER_IMAGE_IDX = 2;
 const static uint ENTIRE_BLOOM_SAMPLED_IMAGE_IDX = 4;
 
 const static uint NEAREST_SAMPLER_IDX = 0;
-const static uint LINEAR_SAMPLER_IDX = 1;
+const static uint LINEAR_UNCAMPLED_SAMPLER_IDX = 1;
+const static uint LINEAR_CLAMPED_SAMPLER_IDX = 2;
 
 
 [[vk::binding(0, 0)]]

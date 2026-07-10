@@ -2,7 +2,7 @@ use std::ptr::slice_from_raw_parts;
 
 use ash::vk;
 use gpu_allocator::vulkan::Allocator;
-use crate::{buffer, per_frame_data::ScratchBufferBarrierInfo, renderer::GraphicsContext};
+use crate::{buffer, renderer::GraphicsContext};
 
 pub struct AccelerationStructureData {
     pub backing_buffer: buffer::Buffer,
@@ -169,7 +169,7 @@ pub unsafe fn rebuild_tlas(
     acceleration_structure_device: &ash::khr::acceleration_structure::Device,
     device: &ash::Device,
     queue_family_index: u32,
-    per_frame_scratch_buffer: &mut crate::per_frame_data::ScratchBuffer,
+    per_frame_scratch_buffer: &mut buffer::ScratchBuffer,
 ) {
     let instances = static_instances.iter().chain(dynamic_instances.iter()).copied().collect::<Vec<_>>();
     let blases = instances.as_slice();
@@ -179,17 +179,16 @@ pub unsafe fn rebuild_tlas(
     let ptr = blases.as_ptr() as *const u8;
     let data = &*slice_from_raw_parts(ptr, bytes);
 
+    if data.is_empty() {
+        return;
+    }
 
-    let written_address = per_frame_scratch_buffer.write_bytes(device, cmd, data, Some(ScratchBufferBarrierInfo {
-        src_stage_mask: vk::PipelineStageFlags2::ALL_COMMANDS,
-        dst_stage_mask: vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR,
-        src_access_mask: vk::AccessFlags2::TRANSFER_WRITE,
-        dst_access_mask: vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR | vk::AccessFlags2::SHADER_READ,
-    }));
+
+    let written_address = per_frame_scratch_buffer.write_bytes_aligned(data);
     
     let instances = vk::AccelerationStructureGeometryInstancesDataKHR::default()
         .array_of_pointers(false)
-        .data(vk::DeviceOrHostAddressConstKHR { device_address: written_address });
+        .data(vk::DeviceOrHostAddressConstKHR { device_address: written_address.buffer_device_address_start });
     let geometry_tmp = vk::AccelerationStructureGeometryDataKHR { instances: instances };
 
     let geometry = vk::AccelerationStructureGeometryKHR::default()
