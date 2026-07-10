@@ -56,7 +56,7 @@ impl MultipleChunks {
             },
         });
 
-        let _threads = (0..4).into_iter().map(|thread_id| {
+        let _threads = (0..0).into_iter().map(|thread_id| {
             let shared = shared.clone();
             let tx = tx.clone();
             let thread = std::thread::spawn(move || {
@@ -106,7 +106,7 @@ impl MultipleChunks {
         for x in -chunk_render_distance..chunk_render_distance {
             for y in -1..2 {
                 for z in -chunk_render_distance..chunk_render_distance {
-                    shared.queue.push(vek::Vec3::new(x,y,z));
+                    //shared.queue.push(vek::Vec3::new(x,y,z));
                 }
             }
         }

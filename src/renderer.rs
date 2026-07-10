@@ -58,6 +58,7 @@ const CALCULATE_DENSITY_ENTRY_POINT: &str = "calculate_density";
 const RASTERIZED_SPV: &str = "rasterized.spv";
 const RASTERIZED_CHUNK_SPV: &str = "rasterized_chunk.spv";
 const COMPUTE_SURFACE_SPV: &str = "compute_surface.spv";
+const COMPUTE_FULLSCREEN_SPV: &str = "fullscreen.spv";
 const RASTERIZED_MS_PASSTHROUGH_SPV: &str = "rasterized_ms_passthrough.spv";
 const RASTERIZED_MS_TESSELALTION_SPV: &str = "rasterized_ms_tesselation.spv";
 const RASTERIZED_MS_GENERATED_1_SPV: &str = "rasterized_ms_generated_1.spv";
@@ -429,6 +430,11 @@ impl InternalApp {
             wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &[CALCULATE_DENSITY_ENTRY_POINT, VOXELIZE_SURFACE_ENTRY_POINT] },
             spec_constants: None,
             spv_file_name: COMPUTE_SURFACE_SPV,
+        }, pipeline::PipelineCreateSettings {
+            pipeline_debug_name: "compute fullscreen shader",
+            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["main"] },
+            spec_constants: None,
+            spv_file_name: COMPUTE_FULLSCREEN_SPV,
         }];
 
         // compile the pipelines in parallel
@@ -1023,8 +1029,9 @@ impl InternalApp {
             main_pipeline_layout: self.main_pipeline_layout,
             descriptor_pool: self.descriptor_pool,
         };
-        self.multiple_chunks.frame(&mut ctx, scratch_buffer, cmd);
+        //self.multiple_chunks.frame(&mut ctx, scratch_buffer, cmd);
 
+        /*
         // update dynamic instances for TLAS
         self.dynamic_instances.clear();
         let mut models_metadata_buffer_write =  Vec::<GpuModelMetadata>::new();
@@ -1043,6 +1050,7 @@ impl InternalApp {
                 storage_buffers_base_index: 0,
             });
         }
+        */
 
 
         // update models metadata buffer
@@ -1266,6 +1274,7 @@ impl InternalApp {
 
         self.device.cmd_dispatch(cmd, skybox::AMBIENT_SKYBOX_RESOLUTION, skybox::AMBIENT_SKYBOX_RESOLUTION, 6);
 
+        /*
         // rebuild TLAS
         ray_tracing::rebuild_tlas(
             &self.static_instances,
@@ -1277,6 +1286,7 @@ impl InternalApp {
             self.queue_family_index,
             scratch_buffer
         );
+        */
         
         
         let skybox_subresource_range = vk::ImageSubresourceRange::default()
@@ -1322,11 +1332,11 @@ impl InternalApp {
             .subresource_range(clouds_subresource_range);
         let rendered_image_barrier = vk::ImageMemoryBarrier2::default()
             .old_layout(vk::ImageLayout::UNDEFINED)
-            .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .new_layout(vk::ImageLayout::GENERAL)
             .src_access_mask(vk::AccessFlags2::NONE)
-            .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_STORAGE_WRITE)
             .src_stage_mask(vk::PipelineStageFlags2::NONE)
-            .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)
             .image(render_targets.rendered_image)
@@ -1349,129 +1359,24 @@ impl InternalApp {
         let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
-        let render_area = vk::Rect2D::default()
-            .offset(vk::Offset2D::default())
-            .extent(vk::Extent2D::default().width(size.x).height(size.y));
-        let color_attachment = vk::RenderingAttachmentInfo::default()
-            .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0f32; 4] } })
-            .load_op(vk::AttachmentLoadOp::DONT_CARE)
-            .store_op(vk::AttachmentStoreOp::STORE)
-            .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-            .image_view(render_targets.rendered_image_view);
-        let depth_attachment = vk::RenderingAttachmentInfo::default()
-            .clear_value(vk::ClearValue { depth_stencil: vk::ClearDepthStencilValue { depth: 1f32, stencil: 0 } })
-            .load_op(vk::AttachmentLoadOp::CLEAR)
-            .store_op(vk::AttachmentStoreOp::DONT_CARE)
-            .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
-            .image_view(render_targets.rendered_depth_image_image_view);
-        let color_attachments = [color_attachment];
-        let rendering_info = vk::RenderingInfo::default()
-            .color_attachments(&color_attachments)
-            .depth_attachment(&depth_attachment)
-            .layer_count(1)
-            .render_area(render_area)
-            .view_mask(0);
-
         
-        self.device.cmd_begin_query(cmd, pipeline_statistics_query_pool, 0, vk::QueryControlFlags::empty());
+        self.device.cmd_bind_pipeline(
+            cmd,
+            vk::PipelineBindPoint::COMPUTE,
+            self.compute_pipelines[COMPUTE_FULLSCREEN_SPV]["main"],
+        );
 
-        let viewport = vk::Viewport::default().height(size.y as f32).width(size.x as f32).x(0f32).y(0f32).min_depth(0f32).max_depth(1f32);
-        self.device.cmd_set_viewport(cmd, 0, &[viewport]);
-        self.device.cmd_set_scissor(cmd, 0, &[render_area]);
-        
-        self.device.cmd_begin_rendering(cmd, &rendering_info);
+        self.device.cmd_dispatch(cmd, size.x.div_ceil(8), size.y.div_ceil(8), 1);
 
-        // render background skybox and clouds
-        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_BACKGROUND_SPV]);
-        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, vk::PolygonMode::FILL);
-        self.device.cmd_draw(cmd, 6, 1, 0, 0);
-
-        /*
-        // render objs using mesh shaders (passthrough) 
-        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_PASSTHROUGH_SPV]);
-        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
-        let triangle_count = self.index_count / 3;
-        self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytemuck::bytes_of(&triangle_count));
-        self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  triangle_count.div_ceil(32), 1, 1);
-        */
-
-        // render objs (tesselated)
-        /*
-        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_TESSELALTION_SPV]);
-        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
-        let triangle_count = self.index_count / 3;
-        self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  triangle_count, 1, 1);
-        */
-
-        // render other objs
-        /*
-        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_GENERATED_1_SPV]);
-        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
-        for x in -1..1i32 {
-            for y in -0..1i32 {
-                for z in -1..1i32 {
-                    #[derive(Clone, Copy, Pod, Zeroable)]
-                    #[repr(C)]
-                    struct PushConstantsStuff {
-                        chunk_offset: vek::Vec3::<i32>,
-                        lod: u32,
-                    }
-                    
-                    let chunk_offset = vek::Vec3::<i32>::new(x, y, z);
-                    /*
-                    int3 group_offset = (int3)gid + chunk_offset_cs * 8;
-                    float3 chunk_offset_ws = (float3)CHUNK_SIZE * group_offset; 
-                    float3 chunk_center = (float3)CHUNK_SIZE * group_offset + (float3)CHUNK_SIZE * 0.5; 
-                    let lod = floor(clamp(distance(chunk_center, uniforms.position.xyz) / 100, 0, 2));
-                    */
-                    let lod = 0;
-                    let pc = PushConstantsStuff {
-                        chunk_offset,
-                        lod,
-                    };
-                    self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytemuck::bytes_of(&pc));
-                    self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  8, 8, 8);
-                }
-            }
-        }
-        */
-
-        /*
-        // render grass
-        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_GENERATED_GRASS_SPV]);
-        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
-        self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  16, 16, 1);
-        */
-
-        // render chunks
-        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_CHUNK_SPV]);
-        let material_base_index = self.materials[1].base_index;
-        self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytes_of(&material_base_index));
-        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
-        for chunk in self.multiple_chunks.chunks.values() {
-            self.device.cmd_bind_vertex_buffers(cmd, 0, &[chunk.vertex_buffer.buffer], &[0]);
-            self.device.cmd_bind_index_buffer(cmd, chunk.index_buffer.buffer, 0, vk::IndexType::UINT32);
-            self.device.cmd_draw_indexed(cmd, chunk.index_count, 1, 0, 0, 0);
-        }
-
-        // render models
-        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_SPV]);
-        for (_, model) in self.models.iter().enumerate() {
-            self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
-            model.render(cmd, &self.device, self.main_pipeline_layout, &self.materials);
-        }        
-
-        self.device.cmd_end_rendering(cmd);
-        self.device.cmd_end_query(cmd, pipeline_statistics_query_pool, 0);
 
 
         // transition rendered image from color attachment to sampled shader read (for bloom passes)
         let rendered_image_barrier = vk::ImageMemoryBarrier2::default()
-            .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .old_layout(vk::ImageLayout::GENERAL)
             .new_layout(vk::ImageLayout::GENERAL)
-            .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+            .src_access_mask(vk::AccessFlags2::SHADER_STORAGE_WRITE)
             .dst_access_mask(vk::AccessFlags2::MEMORY_READ)
-            .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
             .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)

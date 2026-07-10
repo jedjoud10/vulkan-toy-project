@@ -63,7 +63,7 @@ fn main() {
     // nvm I still get the HWRT blocky group artifacts on my hw. AMD driver issue perhaps? could also be a code issue. I might be missing a NonUniform somewhere
     let session_options = CompilerOptions::default()
         .optimization(OptimizationLevel::None)
-        .debug_information(DebugInfoLevel::None)
+        .debug_information(DebugInfoLevel::Minimal)
         .obfuscate(false)
         .no_mangle(true)
         .disable_specialization(false)

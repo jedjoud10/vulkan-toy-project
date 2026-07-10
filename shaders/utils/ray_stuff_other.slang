@@ -518,3 +518,38 @@ float planar_overlap_density_svt(
 
     return sum / total_volume;
 }
+
+struct TestDdaTraceResults {
+    int3 block;
+    float3 position;
+    float3 normal;
+}
+
+Optional<TestDdaTraceResults> test_dda_trace<let MAX_DISTANCE : int>(
+    float3 ray_dir,
+    float3 ray_pos,
+) {
+    half3 inv_dir = 1.0 / abs(ray_dir);
+    int8_t3 dir_sign = (int8_t3)sign(ray_dir);  
+    
+    int16_t3 floored_pos = (int16_t3)floor(ray_pos);
+    float3 side_dist = ((dir_sign * (floored_pos - ray_pos) + dir_sign * 0.5 + 0.5) * inv_dir);
+    bool3 eqs = false;
+    
+    [loop]
+    for (uint i = 0; i < MAX_DISTANCE; i++) {
+        if (snoise((float2)floored_pos.xz * 0.02) * 10.0 > floored_pos.y) {
+            float distance_offset = length(select(eqs, 1.0, 0.0) * (side_dist - inv_dir));
+            uint8_t face = (uint8_t)firstbithigh(eqs.x | eqs.y << 1 | eqs.z << 2);
+            int8_t3 normal = get_face_normal(face, dir_sign);
+            float3 position = ray_pos + distance_offset * ray_dir;
+            return TestDdaTraceResults(floored_pos, position, (float3)normal);
+        }
+
+        eqs = min3(side_dist.x, side_dist.y, side_dist.z) == side_dist;
+        side_dist += select(eqs, inv_dir, 0.0);
+        floored_pos += select(eqs, (int16_t3)dir_sign, int16_t3(0));
+    }
+
+    return none;
+}
