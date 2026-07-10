@@ -160,7 +160,7 @@ impl Movement {
             
         
         // recalculate projection matrices
-        self.proj_matrix = vek::Mat4::<f32>::perspective_rh_no(horizontal_to_vertical(self.fov.clamp(0.0001f32, 180f32), ratio), ratio, 0.001f32, 1000.0f32);
+        self.proj_matrix = vek::Mat4::<f32>::perspective_rh_no(horizontal_to_vertical(self.fov.clamp(0.0001f32, 180f32), ratio), ratio, 0.1f32, 10000.0f32);
         self.view_matrix = vek::Mat4::look_at_rh(self.position, forward + self.position, up);
 
         // https://github.com/jedjoud10/cflake-engine/blob/3369199f0cfa8b220edc0363a76401b50c83fada/crates/math/src/bounds/frustum.rs#L47
