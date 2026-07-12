@@ -1,10 +1,26 @@
+#ifndef RT
+#define RT
+
 #include "other.slang"
 #include "noises.slang"
+#include "bindless.slang"
 
 struct SparseVoxelOctree {
-    StructuredBuffer<uint32_t> indices_buffer;
-    StructuredBuffer<uint64_t> bitmasks_buffer;
-    StructuredBuffer<uint64_t> aabbs_buffer;
+    uint64_t get_aabb(uint32_t index) {
+        return storage_buffers_readonly[STORAGE_BUFFER_SVO_AABB].Load<uint64_t>(index * 8);
+    }
+
+    uint64_t get_bitmask(uint32_t index) {
+        return storage_buffers_readonly[STORAGE_BUFFER_SVO_BITMASK].Load<uint64_t>(index * 8);
+    }
+
+    uint32_t get_index(uint32_t index) {
+        return storage_buffers_readonly[STORAGE_BUFFER_SVO_INDEX].Load<uint32_t>(index * 4);
+    }
+}
+
+SparseVoxelOctree get_bindless_svo() {
+    return SparseVoxelOctree();
 }
 
 struct Statistics {
@@ -124,7 +140,7 @@ DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_DISTANC
     float tmin = 0;
     int face2 = 0;
     if (K < 4) {
-        uint64_t bounds = svo.aabbs_buffer[actual_child_index];  
+        uint64_t bounds = svo.get_aabb(actual_child_index);  
         uint16_t3 aabb_min = (uint16_t3)uint64_t3(bounds, (bounds >> 10), (bounds >> 20)) & 0b1111111111;
         uint16_t3 aabb_max = (uint16_t3)uint64_t3((bounds >> 30), (bounds >> 40), (bounds >> 50)) & 0b1111111111;       
 
@@ -155,7 +171,7 @@ DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_DISTANC
     uint64_t raw = 0;
 
     if (((base_index >> 30) & 1) == 0) {
-        raw = svo.bitmasks_buffer[actual_child_index];
+        raw = svo.get_bitmask(actual_child_index);
         stats.buffer_fetches += 1;
     } else {
         raw = uint64_t.maxValue;
@@ -187,11 +203,10 @@ DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_DISTANC
     
     for (uint8_t i = 0; i < 12; i++) {
         stats.iterations += 1;
-        /*
-        if ((i*voxel_size) > MAX_DISTANCE) {
+        
+        if (distance > MAX_DISTANCE) {
             return DdaTraversalOutput(false); 
         }
-        */
 
         // we know that floored pos is the local coordinate directly anyways
         uint8_t3 local = (uint8_t3)floored_pos;
@@ -222,7 +237,7 @@ DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_DISTANC
                 //    - we can store the starting index for an entire level (depth=0,1,2,3,...) of the tree in a wayyy smaller buffer and use that as an offsetter as well, since we know that child indices are greater than parent indices!
                 // this should allow us to use u16, even though we have an extra buffer fetch, but that one should be cheap because it is depth based (uses `K`, compiler should store that in scalar mem)
                 uint32_t actual_child_index = base_index + child_offset_index;
-                uint32_t new_base_index = svo.indices_buffer[actual_child_index];
+                uint32_t new_base_index = svo.get_index(actual_child_index);
                 stats.buffer_fetches += 1;
 
                 // check if we reached a full node and if we did, we must somehow calculate block position and world position accurately 
@@ -307,6 +322,7 @@ DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_DISTANC
     return DdaTraversalOutput(false);
 }
 
+/*
 float volume_aabb_aabb_overlap(int3 aabb_min, int3 aabb_max, float3 aabb2_center, float aabb2_half_length) {
     float3 aabb_min_2 = aabb2_center - aabb2_half_length;
     float3 aabb_max_2 = aabb2_center + aabb2_half_length;
@@ -339,17 +355,6 @@ bool aabb_aabb_intersection(int3 aabb_min, int3 aabb_max, float3 aabb2_center, f
 bool sphere_aabb_intersection(int3 Bmin, int3 Bmax, float3 C, float r) {
     float dmin = 0;
     float r2 = r*r;
-
-    /*
-    for(int i = 0; i < 3; i++ ) {
-        if( C[i] < Bmin[i] ) {
-            dmin += pow( C[i] - Bmin[i], 2 ); 
-        } else if ( C[i] > Bmax[i] ) {
-            dmin += pow( C[i] - Bmax[i], 2 );
-        }
-    }
-    return dmin <= r2;
-    */ 
 
     float3 a = select(C < Bmin, pow( C - Bmin, 2 ), 0);
     dmin += a.x + a.y + a.z;
@@ -421,6 +426,8 @@ float calculate_aabb_overlap<let K : int>(
 
     return sum;
 }
+*/
+
 DdaTraversalOutput trace_shi<let MAX_DISTANCE: uint>(
     float3 ray_pos,
     float3 ray_dir,
@@ -433,10 +440,14 @@ DdaTraversalOutput trace_shi<let MAX_DISTANCE: uint>(
 
     float3 inv_dir = 1.0 / abs(ray_dir);
     int8_t3 dir_sign = (int8_t3)sign(ray_dir);
+    // printf("%u %u %u", storage_buffers_readonly[STORAGE_BUFFER_SVO_INDEX].Load<uint32_t>(0), storage_buffers_readonly[STORAGE_BUFFER_SVO_BITMASK].Load<uint32_t>(0), storage_buffers_readonly[STORAGE_BUFFER_SVO_AABB].Load<uint32_t>(0));
+    // printf("%u %u %u", storage_buffers_readonly[STORAGE_BUFFER_SVO_INDEX].Load<uint32_t>(0), storage_buffers_readonly[STORAGE_BUFFER_SVO_BITMASK].Load<uint32_t>(0), storage_buffers_readonly[STORAGE_BUFFER_SVO_AABB].Load<uint32_t>(0));
+    
+    
     return dda_trace_recurse<DEPTH - 1, 0, MAX_DISTANCE>(1, 0, ray_dir, ray_pos, inv_dir, dir_sign, 0.0, svo, 0, 0, iter);
 }
 
-
+/*
 float cube_overlap_density_svo(
     float3 cube_pos,
     float cube_half_length,
@@ -518,38 +529,6 @@ float planar_overlap_density_svt(
 
     return sum / total_volume;
 }
+*/
 
-struct TestDdaTraceResults {
-    int3 block;
-    float3 position;
-    float3 normal;
-}
-
-Optional<TestDdaTraceResults> test_dda_trace<let MAX_DISTANCE : int>(
-    float3 ray_dir,
-    float3 ray_pos,
-) {
-    half3 inv_dir = 1.0 / abs(ray_dir);
-    int8_t3 dir_sign = (int8_t3)sign(ray_dir);  
-    
-    int16_t3 floored_pos = (int16_t3)floor(ray_pos);
-    float3 side_dist = ((dir_sign * (floored_pos - ray_pos) + dir_sign * 0.5 + 0.5) * inv_dir);
-    bool3 eqs = false;
-    
-    [loop]
-    for (uint i = 0; i < MAX_DISTANCE; i++) {
-        if (snoise((float2)floored_pos.xz * 0.02) * 10.0 > floored_pos.y) {
-            float distance_offset = length(select(eqs, 1.0, 0.0) * (side_dist - inv_dir));
-            uint8_t face = (uint8_t)firstbithigh(eqs.x | eqs.y << 1 | eqs.z << 2);
-            int8_t3 normal = get_face_normal(face, dir_sign);
-            float3 position = ray_pos + distance_offset * ray_dir;
-            return TestDdaTraceResults(floored_pos, position, (float3)normal);
-        }
-
-        eqs = min3(side_dist.x, side_dist.y, side_dist.z) == side_dist;
-        side_dist += select(eqs, inv_dir, 0.0);
-        floored_pos += select(eqs, (int16_t3)dir_sign, int16_t3(0));
-    }
-
-    return none;
-}
+#endif

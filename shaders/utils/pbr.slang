@@ -109,34 +109,20 @@ const bool VERY_SHINY_REFLECTIVE_SURFACES = false;
 [SpecializationConstant]
 const uint EXTRA_LIGHTS_NUM = 1;
 
-
-float hw_trace_shadow_towards_sun(float3 world, float3 normal, float3 sun_direction) {
+float trace_shadow_towards_sun(float3 world, float3 normal, float3 sun_direction) {
 	if (SUN_SHADOW_RAY) {
-		RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_CULL_NON_OPAQUE> sq;
-	    let flags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_CULL_NON_OPAQUE;
-
-	    static const float SHADOW_RAY_NORMAL_OFFSET = 0.001;
-	    static const float SHADOW_RAY_TMAX = 1000; 
-	    static const float SHADOW_RAY_TMIN = 0.01; 
+		static const float SHADOW_RAY_NORMAL_OFFSET = 0.001;
 		static const int SAMPLES = 1;
 		static const bool PERTURB = SAMPLES > 1;
 
 		float factor = 0.0;
 	
 		for	(int i = 0; i < SAMPLES; i++) {
-			RayDesc desc;
-	    	desc.Origin = world + normal * SHADOW_RAY_NORMAL_OFFSET;
-	    	desc.Direction = normalize(sun_direction + (hash33(i * 400.12324 + world * float3(3.1231, -432.342, 54.343)) - 0.5) * 0.02 * PERTURB);
-	    	desc.TMax = SHADOW_RAY_TMAX;
-	    	desc.TMin = SHADOW_RAY_TMIN;
-
-
-
-	    	sq.TraceRayInline(acceleration_structures[0], flags, 0xFF, desc);
-
-	    	sq.Proceed();
-
-	    	factor += (sq.CommittedStatus() == COMMITTED_TRIANGLE_HIT) ? 0.0 : 1.0;
+			float3 ray_pos = world + normal * SHADOW_RAY_NORMAL_OFFSET;
+	    	float3 ray_dir = normalize(sun_direction + (hash33(i * 400.12324 + world * float3(3.1231, -432.342, 54.343)) - 0.5) * 0.02 * PERTURB);
+	    	Statistics stats = Statistics();
+    		var ray = trace_shi<1024>(ray_pos, ray_dir, get_bindless_svo(), stats);
+			factor += 1-ray.hit;
 		}
 
 		return factor / (float)SAMPLES;
@@ -145,22 +131,15 @@ float hw_trace_shadow_towards_sun(float3 world, float3 normal, float3 sun_direct
 	}
 }
 
-float hw_trace_shadow_light(float3 world, float3 light) {
+float trace_shadow_light(float3 world, float3 light) {
 	if (EXTRA_LIGHTS_SHADOW_RAY) {
-		RayDesc desc;
-    	desc.Origin = world;
-    	desc.Direction = normalize(light-world);
-    	desc.TMax = distance(world, light);
-    	desc.TMin = 0.01;
+		float3 ray_pos = light;
+		float3 ray_dir = normalize(world-light);
 
-    	RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_CULL_NON_OPAQUE> sq;
-    	let flags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_CULL_NON_OPAQUE;
-
-    	sq.TraceRayInline(acceleration_structures[0], flags, 0xFF, desc);
-
-    	sq.Proceed();
-
-    	return (sq.CommittedStatus() == COMMITTED_TRIANGLE_HIT) ? 0.0 : 1.0;
+		Statistics stats = Statistics();
+		var ray = trace_shi<32>(ray_pos, ray_dir, get_bindless_svo(), stats);
+		bool hit = (ray.distance + 0.01) < distance(world, light); 
+		return 1-hit;
 	} else {
 		return 1.0;
 	}
@@ -174,16 +153,17 @@ float3 get_sun_shadow(float3 world, float3 normal, float3 sun_direction) {
 	bool clouds_not_shadowed = shadow > 0.0;
 	bool face_visible = dot(normal, sun_direction) > 0;
 	if (clouds_not_shadowed && face_visible) {
-		shadow *= hw_trace_shadow_towards_sun(world, normal, sun_direction);
+		shadow *= trace_shadow_towards_sun(world, normal, sun_direction);
 	}
 
 	return shadow;
 }
 
 float3 get_light_shadow(float3 world, float3 light) {
-	return hw_trace_shadow_light(world, light);
+	return trace_shadow_light(world, light);
 }
 
+#include "utils/ray_stuff_other.slang"
 
 public float3 radiance_sun(
 	PbrSurfaceData surface,
@@ -198,7 +178,6 @@ public float3 radiance_sun(
 	float n_dot_l = max(dot(sun.direction, surface.normal), 0.0);
 
 	float3 shadow = get_sun_shadow(surface.position, surface.normal, sun.direction); 
-
 	return (kd * surface.albedo / PI + specular) * sun.color * n_dot_l * shadow;
 }
 

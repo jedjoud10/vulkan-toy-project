@@ -19,19 +19,20 @@ void main(uint3 id: SV_DispatchThreadID) {
 
     float3 ray_pos = uniforms.position.xyz;
 
-    Optional<TestDdaTraceResults> res = test_dda_trace<32>(ray_dir, ray_pos);
+    Statistics stats = Statistics();
+    var ray = trace_shi<4096>(ray_pos, ray_dir, get_bindless_svo(), stats);
 
-    //storage_images[RENDERED_STORAGE_IMAGE_IDX].Store(id.xy, res.hasValue);
 
     float3 col = 0.0;
-    if (res.hasValue) {
-        
-        float3 diffuse = sampled_images[1].Sample(samplers[LINEAR_UNCAMPLED_SAMPLER_IDX], res.value.position.xz).xyz;
+    if (ray.hit) {
+        float3 diffuse = 1.0;
+        //float3 diffuse = sampled_images[1].Sample(samplers[LINEAR_UNCAMPLED_SAMPLER_IDX], res.value.position.xz).xyz;
         float3 arm = float3(1.0, 0.5, 0.0);
-        float3 normal = -res.value.normal;
+        float3 normal = get_face_normal(ray.face, sign(ray_dir));
+        float3 position = get_accurate_world_position_with_face2(ray.distance * ray_dir + ray_pos, ray.specific_block_axis_thing, ray.face, sign(ray_dir));
         
         // construct PBR data
-        PbrSurfaceData pbr_surface_data = PbrSurfaceData(res.value.position, diffuse, normal, AoRoughnessMetallic(arm));
+        PbrSurfaceData pbr_surface_data = PbrSurfaceData(position, diffuse, normal, AoRoughnessMetallic(arm));
         CameraData camera_data = CameraData(-ray_dir);
         float3 sun = uniforms.sun.xyz;
         float3 sun_colour = sun_colour(sun.xyz);

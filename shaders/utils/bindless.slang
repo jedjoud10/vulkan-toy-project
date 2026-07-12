@@ -41,6 +41,11 @@ const static uint STORAGE_BUFFER_VERTEX_COUNTER_IDX = -1;
 const static uint STORAGE_BUFFER_INDEX_COUNTER_IDX = -1;
 const static uint STORAGE_BUFFER_MODELS_METADATA_IDX = 4;
 
+const static uint STORAGE_BUFFER_SVO_INDEX = 5;
+const static uint STORAGE_BUFFER_SVO_BITMASK = 6;
+const static uint STORAGE_BUFFER_SVO_AABB = 7;
+
+
 const static uint SKYBOX_SAMPLER_IMAGE_IDX = 0;
 const static uint AMBIENT_SKYBOX_SAMPLER_IMAGE_IDX = 1;
 const static uint CLOUDS_SAMPLER_IMAGE_IDX = 2;

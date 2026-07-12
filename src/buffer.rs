@@ -135,6 +135,30 @@ pub unsafe fn create_buffer_write_with_scratch_buffer(
     buffer
 }
 
+pub unsafe fn write_with_scratch_buffer(
+    ctx: &mut GraphicsContext,
+    cmd: vk::CommandBuffer,
+    scratch_buffer: &mut ScratchBuffer,
+    bytes: &[u8],
+    buffer: vk::Buffer,
+    offset: u64,
+) {
+    let written = scratch_buffer.write_bytes(bytes);
+
+    let region = vk::BufferCopy2::default()
+        .dst_offset(offset)
+        .size(bytes.len() as u64)
+        .src_offset(written.buffer_offset_start);
+
+    let regions = [region];
+    let copy_staging_buffer_to_buffer = vk::CopyBufferInfo2::default()
+        .dst_buffer(buffer)
+        .regions(&regions)
+        .src_buffer(scratch_buffer.buffer);
+
+    ctx.device.cmd_copy_buffer2(cmd, &copy_staging_buffer_to_buffer);
+}
+
 // this either creates a staging buffer write or writes to the buffer through cmd_update_buffer
 // switches between both impls depending on the amount of data to write
 pub unsafe fn write_to_buffer(
@@ -340,6 +364,7 @@ impl ScratchBuffer {
     pub unsafe fn write_bytes(&mut self, bytes: &[u8]) -> WrittenBytes {
         assert!(bytes.len() > 0);
         assert!(bytes.len() + self.bytes_written < SCRATCH_BUFFER_SIZE, "scratch buffer overrun. bytes written already: {}    num bytes: {}", self.bytes_written, bytes.len());
+        log::trace!("scratch buffer write. num bytes: {}, bytes written: {}", bytes.len(), self.bytes_written);
 
         let dst = self.allocation.mapped_slice_mut().unwrap();
         dst[self.bytes_written..(self.bytes_written + bytes.len())].copy_from_slice(bytes);
@@ -358,6 +383,8 @@ impl ScratchBuffer {
     pub unsafe fn write_bytes_aligned(&mut self, bytes: &[u8]) -> WrittenBytes {
         assert!(bytes.len() > 0);
         assert!(bytes.len() + self.bytes_written < SCRATCH_BUFFER_SIZE, "scratch buffer overrun. bytes written already: {}    num bytes: {}", self.bytes_written, bytes.len());
+        log::trace!("scratch buffer write aligned. num bytes: {}, bytes written: {}", bytes.len(), self.bytes_written);
+
 
         // we need this because the TLAS building requires that the output buffer device address is aligned to 16 bytes
         // easiest way to implement this is to add padding bytes when we need it 

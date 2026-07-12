@@ -19,6 +19,7 @@ use crate::ray_tracing;
 use crate::samplers;
 use crate::tesselation;
 use crate::voxel;
+use crate::voxel::SparseVoxelOctree;
 use winit::event::MouseButton;
 use std::collections::HashMap;
 use std::ops::ControlFlow;
@@ -67,8 +68,8 @@ const RASTERIZED_BACKGROUND_SPV: &str = "rasterized_background.spv";
 
 const NUM_LIGHTS: usize = 1;
 const SUN_SHADOW_RAY_ENABLED: bool = true;
-const EXTRA_LIGHTS_ENABLED: bool = false;
-const EXTRA_LIGHTS_SHADOW_RAY_ENABLED: bool = false;
+const EXTRA_LIGHTS_ENABLED: bool = true;
+const EXTRA_LIGHTS_SHADOW_RAY_ENABLED: bool = true;
 const VERY_SHINY_REFLECTIVE_SURFACES: bool = false;
 const DEBUG_TEXT_BUFFER_SIZE_BYTES: usize = 1024;
 const GPU_MODEL_METADATA_BUFFER_MAX_ELEMENT_COUNT: usize = 1024;
@@ -193,7 +194,7 @@ pub struct InternalApp {
     allocator: gpu_allocator::vulkan::Allocator,
     
     // other GPU stuff
-    multiple_chunks: voxel::MultipleChunks,
+    voxels: SparseVoxelOctree,
     models: Vec<model::Model>,
     models_buffer: buffer::Buffer,
     tlas: ray_tracing::TopLevelAccelerationStructure,
@@ -366,7 +367,7 @@ impl InternalApp {
         let mut graphics_pipelines = HashMap::<&'static str, pipeline::GenericGraphicsPipeline>::new();
         let mut compute_pipelines = HashMap::<&'static str, pipeline::GenericComputePipeline>::new();
 
-        let rasterization_base_spec_constants = [
+        let spec_constants = [
             SUN_SHADOW_RAY_ENABLED as u32, 
             EXTRA_LIGHTS_ENABLED as u32,
             EXTRA_LIGHTS_SHADOW_RAY_ENABLED as u32,
@@ -407,7 +408,7 @@ impl InternalApp {
         }, pipeline::PipelineCreateSettings {
             pipeline_debug_name: "grass render pipeline",
             wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::GraphicsMeshShader { face_culling: false, task_shader: true },
-            spec_constants: Some(&rasterization_base_spec_constants),
+            spec_constants: Some(&spec_constants),
             spv_file_name: RASTERIZED_MS_GENERATED_GRASS_SPV,
         }, pipeline::PipelineCreateSettings {
             pipeline_debug_name: "rasterized render pipeline",
@@ -415,7 +416,7 @@ impl InternalApp {
                 face_culling: true,
                 vertex_input: vk::PipelineVertexInputStateCreateInfo::default().vertex_attribute_descriptions(VERTEX_ATTRIBUTE_DESCRIPTIONS).vertex_binding_descriptions(VERTEX_BINDING_DESCRIPTIONS),
             },
-            spec_constants: Some(&rasterization_base_spec_constants),
+            spec_constants: Some(&spec_constants),
             spv_file_name: RASTERIZED_SPV,
         }, pipeline::PipelineCreateSettings {
             pipeline_debug_name: "rasterized chunk render pipeline",
@@ -423,7 +424,7 @@ impl InternalApp {
                 face_culling: true,
                 vertex_input: vk::PipelineVertexInputStateCreateInfo::default().vertex_attribute_descriptions(VERTEX_ATTRIBUTE_DESCRIPTIONS_CHUNK).vertex_binding_descriptions(VERTEX_BINDING_DESCRIPTIONS_CHUNK),
             },
-            spec_constants: Some(&rasterization_base_spec_constants),
+            spec_constants: Some(&spec_constants),
             spv_file_name: RASTERIZED_CHUNK_SPV,
         }, pipeline::PipelineCreateSettings {
             pipeline_debug_name: "compute surface shader",
@@ -433,7 +434,7 @@ impl InternalApp {
         }, pipeline::PipelineCreateSettings {
             pipeline_debug_name: "compute fullscreen shader",
             wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["main"] },
-            spec_constants: None,
+            spec_constants: Some(&spec_constants),
             spv_file_name: COMPUTE_FULLSCREEN_SPV,
         }];
 
@@ -512,10 +513,11 @@ impl InternalApp {
 
         let timestamp_period = physical_device_properties.properties.limits.timestamp_period;
 
-        let multiple_chunks = voxel::MultipleChunks::create(&mut ctx);
         
-        // let cmd = others::begin_recording(&mut ctx);
-        // let mut writer = buffer::begin_buffer_writer(&mut ctx);
+        let cmd = others::begin_recording(&mut ctx);
+        let mut writer = buffer::begin_buffer_writer(&mut ctx);
+
+        let voxels = voxel::create_sparse_structures(&mut ctx, cmd, &mut writer, false);
 
         let models = vec![
             /*
@@ -530,8 +532,8 @@ impl InternalApp {
             */
         ];
 
-        // others::end_recording_and_submit(&mut ctx, cmd);
-        // buffer::end_buffer_writer(&mut ctx, writer);
+        others::end_recording_and_submit(&mut ctx, cmd);
+        buffer::end_buffer_writer(&mut ctx, writer);
 
         let tlas = ray_tracing::pre_create_tlas(&mut ctx);
 
@@ -552,16 +554,16 @@ impl InternalApp {
 
         let materials = vec![
             Material::new(&mut ctx, "metal/metal_0077"),
-            Material::new(&mut ctx, "ground/ground_0029"),
-            Material::new(&mut ctx, "metal_2/metal_0066"),
-            Material::new(&mut ctx, "ground_2/ground_0019"),
+            // Material::new(&mut ctx, "ground/ground_0029"),
+            // Material::new(&mut ctx, "metal_2/metal_0066"),
+            // Material::new(&mut ctx, "ground_2/ground_0019"),
         ];
 
         let models_buffer = buffer::create_buffer(&mut ctx, size_of::<GpuModelMetadata>() * GPU_MODEL_METADATA_BUFFER_MAX_ELEMENT_COUNT, "models metadata buffer", vk::BufferUsageFlags::empty());
 
         Self {
             models_buffer,
-            multiple_chunks,
+            voxels,
             last_frame_cpu_cmd_record_duration: Default::default(),
             frame_count: 0,
             input: Default::default(),
@@ -640,12 +642,6 @@ impl InternalApp {
         };
 
         if add {
-            let cmd = others::begin_recording(&mut ctx);
-            let mut writer = buffer::begin_buffer_writer(&mut ctx);
-            let new_model = model::Model::new(position, "sphere.obj", &mut ctx, (self.models.len() % self.materials.len()) as u32, cmd, &mut writer);
-            self.models.push(new_model);
-            others::end_recording_and_submit(&mut ctx, cmd);
-            buffer::end_buffer_writer(&mut ctx, writer);
         }
     }
 
@@ -905,6 +901,18 @@ impl InternalApp {
                 .buffer(self.models_buffer.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
+            vk::DescriptorBufferInfo::default()
+                .buffer(self.voxels.index_buffer.buffer)
+                .offset(0)
+                .range(vk::WHOLE_SIZE),
+            vk::DescriptorBufferInfo::default()
+                .buffer(self.voxels.bitmask_buffer.buffer)
+                .offset(0)
+                .range(vk::WHOLE_SIZE),
+            vk::DescriptorBufferInfo::default()
+                .buffer(self.voxels.aabb_buffer.buffer)
+                .offset(0)
+                .range(vk::WHOLE_SIZE),
         ];
 
         // add models' backing storage buffers
@@ -1080,7 +1088,6 @@ impl InternalApp {
         let allocated_bytes = ByteSize::b(report.total_reserved_bytes).display().iec();
         text += &format!("reserved bytes: {}\n", reserved_bytes);
         text += &format!("allocated bytes: {}\n", allocated_bytes);
-        text += &format!("total chunks: {}\n", self.multiple_chunks.chunks.len());
         text += &format!("TLAS static instances: {}\n", self.static_instances.len());
         text += &format!("TLAS dynamic instances: {}\n", self.dynamic_instances.len());
         text += &format!("models: {}\n", self.models.len());
@@ -1628,8 +1635,8 @@ impl InternalApp {
         }
         log::info!("destroyed materials");
 
-        self.multiple_chunks.destroy(&self.acceleration_structure_device, &self.device, &mut self.allocator);
-        log::info!("destroyed chunks");
+        self.voxels.destroy(&self.device, &mut self.allocator);
+        log::info!("destroyed sparse voxel octree");
         
         self.tesselation_buffer.destroy(&self.device, &mut self.allocator);
         log::info!("destroyed tesselation buffer");
