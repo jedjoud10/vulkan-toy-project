@@ -26,7 +26,7 @@ pub const CHILDREN_OFFSETS: [vek::Vec3<u32>; 8] = [
 
     
 fn check(target: vek::Vec3<f32>, node: &Node) -> bool {
-    node.center.as_::<f32>().distance(target) < 1.2 * node.size as f32
+    node.center.as_::<f32>().distance(target) < 1.8 * node.size as f32
 }
 
 impl Octree {

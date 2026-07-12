@@ -65,7 +65,7 @@ const RASTERIZED_MS_GENERATED_GRASS_SPV: &str = "rasterized_ms_generated_grass.s
 const RASTERIZED_BACKGROUND_SPV: &str = "rasterized_background.spv";
 
 const NUM_LIGHTS: usize = 1;
-const SUN_SHADOW_RAY_ENABLED: bool = false;
+const SUN_SHADOW_RAY_ENABLED: bool = true;
 const EXTRA_LIGHTS_ENABLED: bool = false;
 const EXTRA_LIGHTS_SHADOW_RAY_ENABLED: bool = false;
 const VERY_SHINY_REFLECTIVE_SURFACES: bool = false;

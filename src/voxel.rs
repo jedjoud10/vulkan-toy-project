@@ -127,6 +127,7 @@ impl MultipleChunks {
     }
 
     pub fn stuff(&mut self, position: vek::Vec3<f32>) {
+        if !self.chunks.is_empty() { return; }
         let OctreeDelta { added, removed } = self.octree.compute(&[position]);
 
 
