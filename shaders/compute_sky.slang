@@ -119,6 +119,7 @@ groupshared Atomic<float> color_g;
 groupshared Atomic<float> color_b;
 
 [shader("compute")]
+
 [numthreads(ANGLE_PHI_STEPS, ANGLE_THETA_STEPS, 1)]
 void blur_skybox_ambient(uint3 id: SV_DispatchThreadID, uint3 gid: SV_GroupID, uint3 gtid: SV_GroupThreadID) {
     if (all(gtid == 0)) {
@@ -147,8 +148,7 @@ void blur_skybox_ambient(uint3 id: SV_DispatchThreadID, uint3 gid: SV_GroupID, u
         right = vec3(1, 0, 0);
     }
 
-    const float PI = 3.14159265359;
-    
+    const float PI = 3.14159265359;    
 
     // https://learnopengl.com/PBR/IBL/Diffuse-irradiance
     float phi = (gtid.x / (float)ANGLE_PHI_STEPS) * 2.0 * PI;

@@ -38,6 +38,10 @@ VertexOutput vert_main(VertexInput input) {
 float4 frag_main(VertexOutput in_vert, uniform uint material_base_texture_index) : SV_Target {
     let uniforms = load_per_frame_uniforms();
 
+    if ((uniforms.toggles_bitmask & 8) == 8) {
+        return 1.0;
+    }
+
     float3 dp1 = ddx(in_vert.world_pos);
     float3 dp2 = ddy(in_vert.world_pos);
     float3 normal = normalize(cross(dp1, dp2));            
@@ -45,13 +49,13 @@ float4 frag_main(VertexOutput in_vert, uniform uint material_base_texture_index)
     float3 view = -normalize(in_vert.world_pos - uniforms.position.xyz);  
 
     
-    float3 diffuse = sample_triplanar(material_base_texture_index, world, normal);
-    float3 arm = sample_triplanar(material_base_texture_index+1, world, normal);
+    //float3 diffuse = sample_triplanar(material_base_texture_index, world, normal);
+    //float3 arm = sample_triplanar(material_base_texture_index+1, world, normal);
     normal = normalize(sample_triplanar_normal(material_base_texture_index+2, world, normal));
     
 
-    //float3 diffuse = 0.5 * in_vert.colour;
-    //float3 arm = float3(1.0, 0.8, 0);
+    float3 diffuse = in_vert.colour;
+    float3 arm = float3(1.0, 0.8, 0);
     
     
 
