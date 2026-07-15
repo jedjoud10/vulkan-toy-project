@@ -110,16 +110,17 @@ void write_skybox(uint3 id: SV_DispatchThreadID, uint3 gid: SV_GroupID) {
     (storage_images_array[SKYBOX_STORAGE_IMAGE_IDX]).Store(id, float4(sky_colour, 0));
 }
 
+
+const static int ANGLE_PHI_STEPS = 32;
+const static int ANGLE_THETA_STEPS = 32;
+
 groupshared Atomic<float> color_r;
 groupshared Atomic<float> color_g;
 groupshared Atomic<float> color_b;
 
-static const int PHI_STEPS = 32;
-static const int THETA_STEPS = 32;
-
-
 [shader("compute")]
-[numthreads(PHI_STEPS, THETA_STEPS, 1)]
+
+[numthreads(ANGLE_PHI_STEPS, ANGLE_THETA_STEPS, 1)]
 void blur_skybox_ambient(uint3 id: SV_DispatchThreadID, uint3 gid: SV_GroupID, uint3 gtid: SV_GroupThreadID) {
     if (all(gtid == 0)) {
         color_r = 0;
@@ -130,12 +131,11 @@ void blur_skybox_ambient(uint3 id: SV_DispatchThreadID, uint3 gid: SV_GroupID, u
     GroupMemoryBarrierWithGroupSync();
 
     float2 uv = ((gid.xy / (float)AMBIENT_SKYBOX_RESOLUTION) * 2.0 - 1.0);
-
     let uniform_thing = storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
     float3 sun = uniform_thing.sun.xyz;
     float time = uniform_thing.time;
 
-    float3 ray_dir = uv_coords_to_ray_dir(uv, gid.z);
+    float3 ray_dir = uv_coords_to_ray_dir(uv, id.z);
 
     float3 irradiance = float3(0.0);
     float3 up = float3(0.0, 1.0, 0.0);
@@ -148,17 +148,11 @@ void blur_skybox_ambient(uint3 id: SV_DispatchThreadID, uint3 gid: SV_GroupID, u
         right = vec3(1, 0, 0);
     }
 
-    const float PI = 3.14159265359;
-    float sample_delta = 0.125;
-    float samples = 0.0;
-
-    const float ANGLE_PHI_STEPS = (float)PHI_STEPS;
-    const float ANGLE_THETA_STEPS = (float)THETA_STEPS;
-    
+    const float PI = 3.14159265359;    
 
     // https://learnopengl.com/PBR/IBL/Diffuse-irradiance
-    float phi = (gtid.x / ANGLE_PHI_STEPS) * 2.0 * PI;
-    float theta = (gtid.y / ANGLE_THETA_STEPS) * 0.5 * PI;
+    float phi = (gtid.x / (float)ANGLE_PHI_STEPS) * 2.0 * PI;
+    float theta = (gtid.y / (float)ANGLE_THETA_STEPS) * 0.5 * PI;
     float3 sampled_tangent = float3(sin(theta) * cos(phi),  sin(theta) * sin(phi), cos(theta));
     float3 sampled_dir = sampled_tangent.x * right + sampled_tangent.y * up + sampled_tangent.z * ray_dir; 
 
@@ -170,25 +164,29 @@ void blur_skybox_ambient(uint3 id: SV_DispatchThreadID, uint3 gid: SV_GroupID, u
     GroupMemoryBarrierWithGroupSync();
 
     // Return the irradiance diffuse lighting
-    float3 color = PI * (float3(color_r.load(MemoryOrder.Relaxed), color_g.load(MemoryOrder.Relaxed), color_b.load(MemoryOrder.Relaxed))) / (ANGLE_PHI_STEPS*ANGLE_THETA_STEPS);
-    (storage_images_array[AMBIENT_SKYBOX_STORAGE_IMAGE_IDX]).Store(gid.xyz, float4(color, 0));
+    if (all(gtid == 0)) {
+        float3 color = PI * (float3(color_r.load(MemoryOrder.Relaxed), color_g.load(MemoryOrder.Relaxed), color_b.load(MemoryOrder.Relaxed))) / (float)(ANGLE_PHI_STEPS*ANGLE_THETA_STEPS);
+        (storage_images_array[AMBIENT_SKYBOX_STORAGE_IMAGE_IDX]).Store(gid.xyz, float4(color, 0));
+    }
 
     /*
     // https://learnopengl.com/PBR/IBL/Diffuse-irradiance
     [loop]
-    for(float phi = 0.0; phi < 2.0 * PI; phi += sample_delta) {
+    for(int phi_iter = 0; phi_iter < ANGLE_PHI_STEPS; phi_iter++) {
         [loop]
-        for(float theta = 0.0; theta < 0.5 * PI; theta += sample_delta) {
+        for(int theta_iter = 0; theta_iter < ANGLE_THETA_STEPS; theta_iter++) {
+            float phi = ((float)phi_iter / (float)ANGLE_PHI_STEPS) * 2.0 * PI;
+            float theta = ((float)theta_iter / (float)ANGLE_THETA_STEPS) * 0.5 * PI;
+
             float3 sampled_tangent = float3(sin(theta) * cos(phi),  sin(theta) * sin(phi), cos(theta));
             float3 sampled_dir = sampled_tangent.x * right + sampled_tangent.y * up + sampled_tangent.z * ray_dir; 
 
             irradiance += sample_skybox_and_clouds(0, normalize(sampled_dir));
-            samples += 1.0;
         }
     }
 
     // Return the irradiance diffuse lighting
-    float3 color = PI * irradiance * (1.0 / samples);
+    float3 color = PI * irradiance / (float)(ANGLE_PHI_STEPS*ANGLE_THETA_STEPS);
     (storage_images_array[AMBIENT_SKYBOX_STORAGE_IMAGE_IDX]).Store(id, float4(color, 0));
     */
 }

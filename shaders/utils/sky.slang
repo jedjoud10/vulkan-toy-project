@@ -259,6 +259,7 @@ Optional<float2> ray_plane_intersect_for_clouds(float3 ray_dir, float3 ray_pos, 
 const static float HEIGHT_1 = 800;
 const static float HEIGHT_2 = 900;
 const static float SCALE = 8000;
+const static int STEPS = 8;
 
 float4 clouds_interesting(float3 ray_dir, float3 ray_pos) {
 
@@ -273,10 +274,11 @@ float4 clouds_interesting(float3 ray_dir, float3 ray_pos) {
             let depth = distance(p1, p2);
 
             if (all(uvs >= 0 & uvs <= 1 & uvs2 >= 0 & uvs2 <= 1)) {
-                for (int i = 0; i < 64; i++) {
-                    float factor = i / 64.0;
+                
+                for (int i = 0; i < STEPS; i++) {
+                    float factor = i / (float)STEPS;
                     float2 lerped = lerp(uvs, uvs2, factor);
-                    clouds_colour_opacity += sampled_images[CLOUDS_SAMPLER_IMAGE_IDX].Sample(samplers[LINEAR_CLAMPED_SAMPLER_IDX], lerped) / 64.0;
+                    clouds_colour_opacity += sampled_images[CLOUDS_SAMPLER_IMAGE_IDX].Sample(samplers[LINEAR_CLAMPED_SAMPLER_IDX], lerped) / (float)STEPS;
                 }
             }
 

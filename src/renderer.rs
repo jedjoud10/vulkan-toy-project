@@ -507,11 +507,10 @@ impl InternalApp {
 
         let multiple_chunks = voxel::MultipleChunks::create(&mut ctx);
         
-        // let cmd = others::begin_recording(&mut ctx);
-        // let mut writer = buffer::begin_buffer_writer(&mut ctx);
+        let cmd = others::begin_recording(&mut ctx);
+        let mut writer = buffer::begin_buffer_writer(&mut ctx);
 
         let models = vec![
-            /*
             model::Model::new(vek::Vec3::new(0f32, 20f32, 0f32), "sphere.obj", &mut ctx, 0, cmd, &mut writer),
             model::Model::new(vek::Vec3::new(10f32, 20f32, 0f32), "not_so_sphere.obj", &mut ctx, 1, cmd, &mut writer),
             model::Model::new(vek::Vec3::new(-10f32, 20f32, 0f32), "modular_industrial_pipes_01_1k.obj", &mut ctx, 2, cmd, &mut writer),
@@ -519,12 +518,11 @@ impl InternalApp {
             model::Model::new(vek::Vec3::new(-40f32, 20f32, 0f32), "ingot_mesh.obj", &mut ctx, 1, cmd, &mut writer),
             model::Model::new(vek::Vec3::new(-50f32, 20f32, 0f32), "dust_mesh_a.obj", &mut ctx, 2, cmd, &mut writer),     
             model::Model::new(vek::Vec3::new(0f32, 18f32, 0f32), "rough_plane.obj", &mut ctx, 0, cmd, &mut writer),         
-            model::Model::new(vek::Vec3::new(0f32, 30f32, 0f32), "space_thing.obj", &mut ctx, 0, cmd, &mut writer),       
-            */
+            model::Model::new(vek::Vec3::new(0f32, 30f32, 0f32), "space_thing.obj", &mut ctx, 0, cmd, &mut writer),     
         ];
 
-        // others::end_recording_and_submit(&mut ctx, cmd);
-        // buffer::end_buffer_writer(&mut ctx, writer);
+        others::end_recording_and_submit(&mut ctx, cmd);
+        buffer::end_buffer_writer(&mut ctx, writer);
 
         let tlas = ray_tracing::pre_create_tlas(&mut ctx);
 
@@ -1269,6 +1267,7 @@ impl InternalApp {
         );
 
         self.device.cmd_dispatch(cmd, skybox::AMBIENT_SKYBOX_RESOLUTION, skybox::AMBIENT_SKYBOX_RESOLUTION, 6);
+        // self.device.cmd_dispatch(cmd, skybox::AMBIENT_SKYBOX_RESOLUTION.div_ceil(8), skybox::AMBIENT_SKYBOX_RESOLUTION.div_ceil(8), 6);
 
         // rebuild TLAS
         ray_tracing::rebuild_tlas(
