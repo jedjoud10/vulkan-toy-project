@@ -50,7 +50,7 @@ struct Args {
 
     /// Enable validation layers and debug stuff even when debug_assertions are disabled
     #[arg(long, default_value_t = false)]
-    enable_debug_stuff: bool,
+    validate: bool,
 }
 
 struct App {
