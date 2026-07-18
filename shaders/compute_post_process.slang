@@ -47,15 +47,21 @@ void render_debug_font_raw(uint2 id, inout float3 color, float3 font_colour) {
 
     if (((char >> pixel_index_inside_char) & 1) == 1) {
         color = font_colour;
+    } else {
+        color = 0.0;
     }
 }
 
 void render_debug_font(uint2 id, inout float3 color) {
     for (int x = -1; x < 2; x++) {
         for (int y = -1; y < 2; y++) {
-            render_debug_font_raw((int2)id + int2(x,y) * 2, color, all(int2(x, y) == 0) ? 1.0 : 0.0);
+            // massive performance regression on mesa radv compared to windows
+            // render_debug_font_raw((int2)id + int2(x,y) * 2, color, all(int2(x, y) == 0) ? 1.0 : 0.0);
         }
     }
+
+
+    
 
     render_debug_font_raw(id, color, 1.0);
 }
@@ -82,6 +88,7 @@ void write_swapchain_image(uint3 id: SV_DispatchThreadID) {
     let swapchain_image = storage_images[SWAPCHAIN_STORAGE_IMAGE_IDX];
     let entire_bloom_image = sampled_images[ENTIRE_BLOOM_SAMPLED_IMAGE_IDX];
     let uniforms = storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
+
 
 #ifdef SHORT_CIRCUIT_NO_TONEMAPPING
     swapchain_image[id.xy] = pre_compose[id.xy / DOWNSCALE_FACTOR];

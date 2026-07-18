@@ -248,7 +248,7 @@ impl InternalApp {
         #[cfg(not(debug_assertions))]
         let running_cfg_debug_assertions = false;
 
-        let debug_stuff = args.enable_debug_stuff || running_cfg_debug_assertions;
+        let debug_stuff = args.validate || running_cfg_debug_assertions;
         let instance = instance::create_instance(&entry, raw_display_handle, debug_stuff);
         log::info!("created instance");
         let debug_messenger = debug::create_debug_messenger(&entry, &instance, debug_stuff).inspect(|_x| {

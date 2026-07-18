@@ -57,7 +57,7 @@ impl MultipleChunks {
             },
         });
 
-        let _threads = (0..8).into_iter().map(|thread_id| {
+        let _threads = (0..0).into_iter().map(|thread_id| {
             let shared = shared.clone();
             let tx = tx.clone();
             let thread = std::thread::spawn(move || {
@@ -127,6 +127,8 @@ impl MultipleChunks {
     }
 
     pub fn stuff(&mut self, position: vek::Vec3<f32>) {
+	    return;
+	
         if !self.chunks.is_empty() { return; }
         let OctreeDelta { added, removed } = self.octree.compute(&[position]);
 

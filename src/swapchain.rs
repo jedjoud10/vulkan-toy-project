@@ -2,7 +2,7 @@ use ash::vk;
 
 // for some reason using 2 gives the least amount of microstuttering???
 // idfk...
-pub const SWAPCHAIN_IMAGES: usize = 3;
+pub const SWAPCHAIN_IMAGES: usize = 6;
 
 pub unsafe fn create_swapchain(
     instance: &ash::Instance,
@@ -29,10 +29,17 @@ pub unsafe fn create_swapchain(
     let surface_formats: Vec<vk::SurfaceFormatKHR> = surface_loader
         .get_physical_device_surface_formats(physical_device, surface_khr)
         .unwrap();
-    log::debug!("surface formats {:?}", surface_formats);
+    // log::debug!("surface formats {:?}", surface_formats);
     
     let swapchain_format = surface_formats[0].format;
     
+    let test = surface_loader
+        .get_physical_device_surface_capabilities(physical_device, surface_khr)
+        .unwrap();
+    log::debug!("surface min image cnt: {}", test.min_image_count);
+    log::debug!("surface max image cnt: {}", test.max_image_count);
+    
+
     let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
         .surface(surface_khr)
         .min_image_count(SWAPCHAIN_IMAGES as u32)
