@@ -34,7 +34,7 @@ struct Statistics {
     int calls;
 }
 
-static const int DEPTH = 5;
+static const int DEPTH = 6;
 static const float EPS = 0.00001;
 static const uint32_t BOTTOM_NODE = 0xFFFFFFFF;
 static const uint32_t FULL_NODE = 0xFFFFFFFF-1; 
@@ -139,33 +139,6 @@ DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_ITERATI
 ) {
     float tmin = 0;
     int face2 = 0;
-    if (K < 4) {
-        uint64_t bounds = svo.get_aabb(actual_child_index);  
-        uint16_t3 aabb_min = (uint16_t3)uint64_t3(bounds, (bounds >> 10), (bounds >> 20)) & 0b1111111111;
-        uint16_t3 aabb_max = (uint16_t3)uint64_t3((bounds >> 30), (bounds >> 40), (bounds >> 50)) & 0b1111111111;       
-
-        stats.buffer_fetches += 1;
-        if (ray_box_intersection3(inv_dir, dir_sign, ray_pos, aabb_min, aabb_max, tmin, face2)) {
-            // cheating a bit :3
-            distance = max(tmin - 0.2, distance);
-            /*
-            // make sure we are dealing with leaf nodes and that they represent volume cuboids
-            // FIXME: this, however, causes a lot of shadowing issues for some reason
-            if (K == 0 && ((bounds >> 60) & 1) == 1) {
-                float3 world = ray_pos + ray_dir * (tmin - EPS);
-                uint3 block_pos = floor(world);
-
-                // apply "accurate" block pos since we know the bounds of the full node and input face
-                int3 tmp_sign = max(0, -dir_sign);
-                block_pos[face2] = aabb_max[face2] - 1;
-                stats.exit_type = 4;
-                return DdaTraversalOutput(true, world, block_pos, tmin, face2);
-            }
-            */
-        } else {
-            return DdaTraversalOutput(false);
-        }
-    }
 
 
     uint64_t raw = 0;

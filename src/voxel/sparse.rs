@@ -289,6 +289,13 @@ struct TraversalNode<'a> {
 }
 
 fn pack_aabb_bounds(vek::Aabb { min, max }: vek::Aabb<u32>, represents_cuboid: bool) -> u64 {
+    let mut flags = 0u64;
+    
+    crate::utils::set_bit(&mut flags, 0, represents_cuboid);
+    
+    debug_assert_eq!(flags & 0b1111, flags);
+    flags << 60
+    /*
     let min = min.clamped(0, TOTAL_SIZE-1);
     let max = max.clamped(0, TOTAL_SIZE-1);
 
@@ -300,6 +307,7 @@ fn pack_aabb_bounds(vek::Aabb { min, max }: vek::Aabb<u32>, represents_cuboid: b
     
     debug_assert_eq!(flags & 0b1111, flags);
     min | max << 30 | flags << 60
+    */
 }
 
 

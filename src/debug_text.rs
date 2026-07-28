@@ -21,7 +21,6 @@ impl DebugText {
     
     pub unsafe fn update_debug_text(&mut self, device: &ash::Device, cmd: vk::CommandBuffer) {
         let bytes = convert_string_to_debug_text_bytes(&self.text);
-        dbg!(bytes.len());
         device.cmd_update_buffer(cmd, self.buffer.buffer, 0, &bytes);
         self.text.clear();
     }

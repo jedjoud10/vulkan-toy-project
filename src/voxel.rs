@@ -55,10 +55,19 @@ pub unsafe fn create_sparse_structures(
         extra.octaves = 3;
         extra.frequency = 0.01;
         
-        let num_chunks = (util::TOTAL_SIZE as usize / 64).min(16);
-        let chunks = (0..(num_chunks*num_chunks*num_chunks)).into_par_iter().map(|index| {
-            let chunk_position = index_to_offset(index, num_chunks);
+        const NUM_CHUNKS: usize = (util::TOTAL_SIZE as usize / 64);
 
+        let mut chunk_positions = Vec::<vek::Vec3<usize>>::new();
+
+        for x in 0..NUM_CHUNKS {
+            for z in 0..NUM_CHUNKS {
+                for y in 0..2 {
+                    chunk_positions.push(vek::Vec3::new(x,y + 2,z));
+                }
+            }
+        }
+
+        let chunks = chunk_positions.into_par_iter().map(|chunk_position: vek::Vec3<usize>| {
             let mut voxel_bit_set = fixedbitset::FixedBitSet::with_capacity(64*64*64);
                         
             for index in 0..(64*64*64)  {

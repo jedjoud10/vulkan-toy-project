@@ -19,32 +19,6 @@ void main(uint3 id: SV_DispatchThreadID) {
 
     float3 ray_pos = uniforms.position.xyz;
 
-    Statistics stats = Statistics();
-    var ray = trace_shi<64>(ray_pos, ray_dir, get_bindless_svo(), stats);
-
-
     float3 col = 0.0;
-    /*
-    if (ray.hit) {
-        float3 diffuse = 1.0;
-        //float3 diffuse = sampled_images[1].Sample(samplers[LINEAR_UNCAMPLED_SAMPLER_IDX], res.value.position.xz).xyz;
-        float3 arm = float3(1.0, 0.5, 0.0);
-        float3 normal = get_face_normal(ray.face, sign(ray_dir));
-        float3 position = get_accurate_world_position_with_face2(ray.distance * ray_dir + ray_pos, ray.specific_block_axis_thing, ray.face, sign(ray_dir));
-        
-        // construct PBR data
-        PbrSurfaceData pbr_surface_data = PbrSurfaceData(position, diffuse, normal, AoRoughnessMetallic(arm));
-        CameraData camera_data = CameraData(-ray_dir);
-        float3 sun = uniforms.sun.xyz;
-        float3 sun_colour = sun_colour(sun.xyz);
-        SunData sun_data = SunData(sun.xyz, sun.y > 0 ? (3.2 * sun_colour) : 0);
-
-        col = lighting2(pbr_surface_data, camera_data, sun_data);
-    } else {
-        col = sample_skybox_and_clouds(ray_pos, ray_dir);
-    }
-    */
-    col = stats.iterations / 4096.0;
-
     storage_images[RENDERED_STORAGE_IMAGE_IDX].Store(id.xy, float4(col, 1));
 }
