@@ -124,7 +124,7 @@ struct DdaTraversalOutput {
 // TODO: OPTIMIZE OPTIMIZE OPTIMIZE OPTIMIZE OPTIMIZE
 // 1. optimize occupancy, we still have buffer latency left to hide
 // 2. optimize raw speed, it is still relatively slow on my HW
-DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_DISTANCE : int>(
+DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_ITERATIONS : int>(
     uint32_t base_index,
     uint32_t actual_child_index,
     float3 ray_dir,
@@ -204,7 +204,7 @@ DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_DISTANC
     for (uint8_t i = 0; i < 12; i++) {
         stats.iterations += 1;
         
-        if (distance > MAX_DISTANCE) {
+        if (stats.iterations > MAX_ITERATIONS) {
             return DdaTraversalOutput(false); 
         }
 
@@ -259,7 +259,7 @@ DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_DISTANC
                 }
                 
                 float distance_to_surface = distance + length(eqs * (side_dist - inv_dir) * voxel_size);
-                var result = dda_trace_recurse<K - 1, END, MAX_DISTANCE>(new_base_index, actual_child_index, ray_dir, ray_pos, inv_dir, dir_sign, distance_to_surface, svo, origin, face, stats);
+                var result = dda_trace_recurse<K - 1, END, MAX_ITERATIONS>(new_base_index, actual_child_index, ray_dir, ray_pos, inv_dir, dir_sign, distance_to_surface, svo, origin, face, stats);
                 if (result.hit) {
                     return result;
                 } else {
@@ -267,40 +267,10 @@ DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_DISTANC
                 }
             } else { 
                 float distance_to_surface = distance + length(eqs * (side_dist - inv_dir) * voxel_size);     
-                //float3 world = ray_pos + ray_dir * (distance_to_surface - EPS);
+                float3 world = ray_pos + ray_dir * (distance_to_surface - EPS);
                 stats.exit_type = 3;
                 stats.exit_node_height = K;
 
-                /*
-                for (int i = 0; i < 8; i++) {
-                    stats.iterations += 1;
-
-                    if (ray_box_intersection2(inv_dir, dir_sign, ray_pos, clamp(origin + hash33(i+origin), origin, origin+1), clamp(origin + hash33(i+origin * 3.1232), origin, origin+1))) {
-                        return DdaTraversalOutput(true, world, origin, face);
-                    }
-                } 
-                */
-                
-                /*
-                if (sin(world.x * 3) > 0) {
-                    return DdaTraversalOutput(true, world, origin, face);
-                }
-                */
-                    
-                /*
-                float3 center = origin + 0.5;
-                for (int i = 0; i < 64; i++) {
-                    stats.iterations += 1;
-                    float d = length(center - world) - 0.3 + snoise(world * 3.2) * 0.1;
-                    if (d < 0.02) {
-                        return DdaTraversalOutput(true, world, origin, 0, face);
-                    }    
-                    world += ray_dir * d;
-                } 
-                */
-                // TODO: i have removed this as it does nothing: clamp(world, parent_world_space_origin, parent_world_space_origin+voxel_size*4)
-                // if something goes wrong add it again 
-                //return DdaTraversalOutput(true, world, origin, distance_to_surface - EPS, face);
                 int3 tmp_sign = max(0, -dir_sign);
                 return DdaTraversalOutput(true, origin[face], distance_to_surface - EPS, face);
             }
@@ -322,111 +292,6 @@ DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_DISTANC
     return DdaTraversalOutput(false);
 }
 
-/*
-float volume_aabb_aabb_overlap(int3 aabb_min, int3 aabb_max, float3 aabb2_center, float aabb2_half_length) {
-    float3 aabb_min_2 = aabb2_center - aabb2_half_length;
-    float3 aabb_max_2 = aabb2_center + aabb2_half_length;
-
-    bool3 a = aabb_min <= aabb_max_2;
-    bool3 b = aabb_min_2 <= aabb_max;
-
-    float3 maxxino = max(aabb_min, aabb_min_2);
-    float3 minnimo = min(aabb_max, aabb_max_2);
-
-    float3 v = (maxxino - minnimo);
-
-    let vol = max(-v.x*v.y*v.z, 0);
-    return vol;
-}
-
-bool aabb_aabb_intersection(int3 aabb_min, int3 aabb_max, float3 aabb2_center, float aabb2_half_length) {
-    float3 aabb_min_2 = aabb2_center - aabb2_half_length;
-    float3 aabb_max_2 = aabb2_center + aabb2_half_length;
-
-    bool3 a = aabb_min <= aabb_max_2;
-    bool3 b = aabb_min_2 <= aabb_max;
-
-    return all(a && b);
-}
-
-// Source - https://stackoverflow.com/a/41457896
-// Posted by josch, modified by community. See post 'Timeline' for change history
-// Retrieved 2026-04-26, License - CC BY-SA 3.0
-bool sphere_aabb_intersection(int3 Bmin, int3 Bmax, float3 C, float r) {
-    float dmin = 0;
-    float r2 = r*r;
-
-    float3 a = select(C < Bmin, pow( C - Bmin, 2 ), 0);
-    dmin += a.x + a.y + a.z;
-    float3 b = select((C > Bmax) & !(C < Bmin), pow( C - Bmax, 2 ), 0);
-    dmin += b.x + b.y + b.z;    
-    return dmin <= r2;
-}
-
-float calculate_aabb_overlap<let K : int>(
-    uint32_t base_index,
-    uint64_t raw,
-    float3 cube_pos,
-    float cube_half_length,
-    SparseVoxelOctree svo,
-    uint16_t3 parent_world_space_origin,
-    inout Statistics statistics,
-) {
-    uint16_t voxel_size = (uint16_t)1 << max(K*2, 0);
-
-    int3 min_bounds = max(floor((cube_pos - cube_half_length - parent_world_space_origin) / voxel_size), 0);
-    int3 max_bounds = min(floor((cube_pos + cube_half_length - parent_world_space_origin) / voxel_size), 3);
-
-    float sum = 0.0;
-    float total_volume = pow(cube_half_length*2, 3);
-
-    [loop]
-    for (int x = min_bounds.x; x <= max_bounds.x; x++) {
-        [loop]
-        for (int y = min_bounds.y; y <= max_bounds.y; y++) {
-            [loop]
-            for (int z = min_bounds.z; z <= max_bounds.z; z++) {
-                int3 localt = int3(x,y,z);               
-                                
-                uint16_t3 origin = parent_world_space_origin + localt * voxel_size;
-
-                uint8_t3 local = (uint8_t3)localt;
-                uint8_t bit_index = local.x | local.y << 2 | local.z << 4;
-
-                statistics.iterations += 1;
-
-                [branch]
-                if (base_index == FULL_NODE || (((raw >> bit_index) & 1) == 1)) {  
-                    [branch]
-                    if (K > 0 && (base_index != BOTTOM_NODE || base_index == FULL_NODE)) {
-                        uint64_t mask = ((uint64_t)1 << bit_index) - 1;
-                        uint32_t child_offset_index = (uint32_t)countbits(mask & raw);
-                    
-                        uint32_t actual_child_index = base_index + child_offset_index;
-                        uint32_t new_base_index = svo.indices_buffer[actual_child_index];
-                    
-                        if (base_index == FULL_NODE || new_base_index == FULL_NODE) {
-                            float overlap_volume = calculate_aabb_overlap<K - 1>(FULL_NODE, uint64_t.maxValue, cube_pos, cube_half_length, svo, origin, statistics);
-                            sum += overlap_volume;
-                            continue;
-                        }
-                    
-                        uint64_t new_raw = svo.bitmasks_buffer[actual_child_index];
-                        statistics.buffer_fetches += 1;
-                        sum += calculate_aabb_overlap<K - 1>(new_base_index, new_raw, cube_pos, cube_half_length, svo, origin, statistics);
-                    } else {
-                        float overlap_volume = volume_aabb_aabb_overlap(origin, origin + voxel_size, cube_pos, cube_half_length);
-                        sum += overlap_volume;
-                        continue;
-                    }
-                }
-            }
-        }    
-    }
-
-    return sum;
-}
-*/
 
 DdaTraversalOutput trace_shi<let MAX_DISTANCE: uint>(
     float3 ray_pos,
@@ -440,95 +305,7 @@ DdaTraversalOutput trace_shi<let MAX_DISTANCE: uint>(
 
     float3 inv_dir = 1.0 / abs(ray_dir);
     int8_t3 dir_sign = (int8_t3)sign(ray_dir);
-    // printf("%u %u %u", storage_buffers_readonly[STORAGE_BUFFER_SVO_INDEX].Load<uint32_t>(0), storage_buffers_readonly[STORAGE_BUFFER_SVO_BITMASK].Load<uint32_t>(0), storage_buffers_readonly[STORAGE_BUFFER_SVO_AABB].Load<uint32_t>(0));
-    // printf("%u %u %u", storage_buffers_readonly[STORAGE_BUFFER_SVO_INDEX].Load<uint32_t>(0), storage_buffers_readonly[STORAGE_BUFFER_SVO_BITMASK].Load<uint32_t>(0), storage_buffers_readonly[STORAGE_BUFFER_SVO_AABB].Load<uint32_t>(0));
-    
-    
     return dda_trace_recurse<DEPTH - 1, 0, MAX_DISTANCE>(1, 0, ray_dir, ray_pos, inv_dir, dir_sign, 0.0, svo, 0, 0, iter);
 }
-
-/*
-float cube_overlap_density_svo(
-    float3 cube_pos,
-    float cube_half_length,
-    SparseVoxelOctree svo,
-    inout Statistics iter,
-) {
-    float total_volume = pow(cube_half_length*2, 3);
-    return calculate_aabb_overlap<DEPTH - 1>(1, svo.bitmasks_buffer[0], cube_pos, cube_half_length, svo, 0, iter) / total_volume;
-}
-
-float cube_overlap_density_svt(
-    float3 cube_pos,
-    float cube_half_length,
-    Fetcher fetcher,
-    inout Statistics statistics,
-) {
-    float total_volume = pow(cube_half_length*2, 3);
-    int k = ceil(cube_half_length);
-
-    float sum = 0.0;
-
-    [loop]
-    for (int x = -k; x <= k; x++) {
-        [loop]
-        for (int y = -k; y <= k; y++) {
-            [loop]
-            for (int z = -k; z <= k; z++) {
-                int3 localt = int3(x,y,z);               
-                                
-                statistics.iterations += 1;
-
-                uint16_t3 pos = cube_pos + int16_t3(x,y,z);
-                if (fetcher.is_solid(pos)) {
-                    sum += volume_aabb_aabb_overlap(pos, pos + 1, cube_pos, cube_half_length);
-                }
-            }
-        }    
-    }
-
-    return sum / total_volume;
-}
-
-float planar_overlap_density_svt(
-    float3 plane_pos,
-    float plane_half_length,
-    int axis, // 1,2,3
-    Fetcher fetcher,
-    inout Statistics statistics,
-) {
-    float total_volume = pow(plane_half_length*2, 2);
-    int k = ceil(plane_half_length);
-
-    float sum = 0.0;
-
-    [loop]
-    for (int x = -k; x <= k; x++) {
-        [loop]
-        for (int y = -k; y <= k; y++) {
-            statistics.iterations += 1;
-
-            int16_t3 offset = 0;
-            if (axis == 0) {
-                offset.y = x;
-                offset.z = y;
-            } else if (axis == 1) {
-                offset.x = x;
-                offset.z = y;
-            } else if (axis == 2) {
-                offset.x = x;
-                offset.y = y;
-            }
-
-            uint16_t3 pos = plane_pos + offset;
-            if (fetcher.is_solid(pos)) {
-                sum += volume_aabb_aabb_overlap(pos, pos + 1, plane_pos, plane_half_length);
-            }
-        }    
-    }
-
-    return sum / total_volume;
-}
-*/
 
 #endif

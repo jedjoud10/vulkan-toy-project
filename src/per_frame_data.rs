@@ -1,6 +1,6 @@
 use ash::vk;
 use gpu_allocator::vulkan::{Allocation, Allocator};
-use crate::{buffer, others, pipeline::{self, PerFrameUniformData}, ray_tracing, renderer::GraphicsContext};
+use crate::{buffer, others, pipeline::{self, PerFrameUniformData}, renderer::GraphicsContext};
 
 pub const FRAMES_IN_FLIGHT: usize = 3;
 

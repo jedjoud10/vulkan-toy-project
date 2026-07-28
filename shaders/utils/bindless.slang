@@ -32,18 +32,11 @@ const static uint CLOUDS_STORAGE_IMAGE_IDX = 4;
 const static uint VOXEL_STORAGE_IMAGE_IDX = -1;
 
 const static uint UNIFORM_BUFFER_THINGY_IDX = 0;
-const static uint STORAGE_BUFFER_VERTEX_BUFFER_IDX = -1;
-const static uint STORAGE_BUFFER_INDEX_BUFFER_IDX = -1;
-const static uint STORAGE_BUFFER_TESS_BUFFER = 1;
-const static uint STORAGE_BUFFER_LIGHTS_BUFFER = 2;
-const static uint STORAGE_BUFFER_DEBUG_TEXT_LINES = 3;
-const static uint STORAGE_BUFFER_VERTEX_COUNTER_IDX = -1;
-const static uint STORAGE_BUFFER_INDEX_COUNTER_IDX = -1;
-const static uint STORAGE_BUFFER_MODELS_METADATA_IDX = 4;
+const static uint STORAGE_BUFFER_DEBUG_TEXT_LINES = 1;
 
-const static uint STORAGE_BUFFER_SVO_INDEX = 5;
-const static uint STORAGE_BUFFER_SVO_BITMASK = 6;
-const static uint STORAGE_BUFFER_SVO_AABB = 7;
+const static uint STORAGE_BUFFER_SVO_INDEX = 2;
+const static uint STORAGE_BUFFER_SVO_BITMASK = 3;
+const static uint STORAGE_BUFFER_SVO_AABB = 4;
 
 
 const static uint SKYBOX_SAMPLER_IMAGE_IDX = 0;

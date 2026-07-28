@@ -1,23 +1,21 @@
 use ash::vk;
 use bytemuck::Pod;
 use bytemuck::Zeroable;
-use bytemuck::bytes_of;
 use bytemuck::cast_slice;
 use bytesize::ByteSize;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
 use smallvec::SmallVec;
+use crate::statistics;
+use crate::debug_text;
 use crate::input::Button;
 use crate::input::Input;
 use crate::material::Material;
-use crate::model;
-use crate::model::GpuModelMetadata;
 use crate::movement::Movement;
 use crate::per_frame_data;
 use crate::physical_device::PhysicalDeviceAndScore;
-use crate::ray_tracing;
 use crate::samplers;
-use crate::tesselation;
+use crate::statistics::Statistics;
 use crate::voxel;
 use crate::voxel::SparseVoxelOctree;
 use winit::event::MouseButton;
@@ -25,14 +23,13 @@ use std::collections::HashMap;
 use std::ops::ControlFlow;
 use std::time::Duration;
 use std::time::Instant;
+use std::fmt::Write;
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::KeyCode;
 use winit::raw_window_handle::HasDisplayHandle;
 use winit::window::Window;
-use crate::statistics::Statistics;
 
 use crate::swapchain;
-use crate::ticker;
 use crate::pipeline;
 use crate::skybox;
 use crate::buffer;
@@ -53,71 +50,7 @@ const WRITE_CLOUDS_ENTRY_POINT: &str = "write_clouds";
 const WRITE_SKYBOX_ENTRY_POINT: &str = "write_skybox";
 const BLUR_AMBIENT_SKYBOX_ENTRY_POINT: &str = "blur_skybox_ambient";
 
-const VOXELIZE_SURFACE_ENTRY_POINT: &str = "voxelize_surface";
-const CALCULATE_DENSITY_ENTRY_POINT: &str = "calculate_density";
-
-const RASTERIZED_SPV: &str = "rasterized.spv";
-const RASTERIZED_CHUNK_SPV: &str = "rasterized_chunk.spv";
-const COMPUTE_SURFACE_SPV: &str = "compute_surface.spv";
 const COMPUTE_FULLSCREEN_SPV: &str = "fullscreen.spv";
-const RASTERIZED_MS_PASSTHROUGH_SPV: &str = "rasterized_ms_passthrough.spv";
-const RASTERIZED_MS_TESSELALTION_SPV: &str = "rasterized_ms_tesselation.spv";
-const RASTERIZED_MS_GENERATED_1_SPV: &str = "rasterized_ms_generated_1.spv";
-const RASTERIZED_MS_GENERATED_GRASS_SPV: &str = "rasterized_ms_generated_grass.spv";
-const RASTERIZED_BACKGROUND_SPV: &str = "rasterized_background.spv";
-
-const NUM_LIGHTS: usize = 1;
-const SUN_SHADOW_RAY_ENABLED: bool = true;
-const EXTRA_LIGHTS_ENABLED: bool = true;
-const EXTRA_LIGHTS_SHADOW_RAY_ENABLED: bool = true;
-const VERY_SHINY_REFLECTIVE_SURFACES: bool = false;
-const DEBUG_TEXT_BUFFER_SIZE_BYTES: usize = 1024;
-const GPU_MODEL_METADATA_BUFFER_MAX_ELEMENT_COUNT: usize = 1024;
-        
-
-const VERTEX_ATTRIBUTE_DESCRIPTIONS: &'static [vk::VertexInputAttributeDescription] = &[vk::VertexInputAttributeDescription {
-    binding: 0,
-    format: vk::Format::R32G32B32_SFLOAT,
-    location: 0,
-    offset: 0
-}, vk::VertexInputAttributeDescription {
-    binding: 1,
-    format: vk::Format::R32G32B32_SFLOAT,
-    location: 1,
-    offset: 0
-}, vk::VertexInputAttributeDescription {
-    binding: 2,
-    format: vk::Format::R32G32_SFLOAT,
-    location: 2,
-    offset: 0
-}];
-const VERTEX_BINDING_DESCRIPTIONS: &'static [vk::VertexInputBindingDescription] = &[vk::VertexInputBindingDescription {
-    binding: 0,
-    stride: size_of::<vek::Vec3<f32>>() as u32,
-    input_rate: vk::VertexInputRate::VERTEX,
-}, vk::VertexInputBindingDescription {
-    binding: 1,
-    stride: size_of::<vek::Vec3<f32>>() as u32,
-    input_rate: vk::VertexInputRate::VERTEX,
-}, vk::VertexInputBindingDescription {
-    binding: 2,
-    stride: size_of::<vek::Vec2<f32>>() as u32,
-    input_rate: vk::VertexInputRate::VERTEX,
-}];
-
-
-
-const VERTEX_ATTRIBUTE_DESCRIPTIONS_CHUNK: &'static [vk::VertexInputAttributeDescription] = &[vk::VertexInputAttributeDescription {
-    binding: 0,
-    format: vk::Format::R32G32B32_SFLOAT,
-    location: 0,
-    offset: 0
-}];
-const VERTEX_BINDING_DESCRIPTIONS_CHUNK: &'static [vk::VertexInputBindingDescription] = &[vk::VertexInputBindingDescription {
-    binding: 0,
-    stride: 4 * 3 as u32,
-    input_rate: vk::VertexInputRate::VERTEX,
-}];
 
 pub struct GraphicsContext<'a> {
     pub device: &'a ash::Device,
@@ -137,6 +70,12 @@ pub struct GraphicsContext<'a> {
     pub descriptor_pool: vk::DescriptorPool,
 }
 
+macro_rules! dbgtext_writeln {
+    ($dst:expr, $($arg:tt)*) => {
+        writeln!($dst, $($arg)*).unwrap();
+    };
+}
+
 
 pub struct InternalApp {
     // entry, physical device, logical device
@@ -151,9 +90,6 @@ pub struct InternalApp {
         vk::DebugUtilsMessengerEXT
     )>,
     debug_marker: Option<ash::ext::debug_utils::Device>,
-
-    // materials
-    materials: Vec<Material>,
     
     // surface & swapchain
     surface_loader: ash::khr::surface::Instance,
@@ -193,27 +129,22 @@ pub struct InternalApp {
     // important too
     allocator: gpu_allocator::vulkan::Allocator,
     
-    // other GPU stuff
+
+
     voxels: SparseVoxelOctree,
-    models: Vec<model::Model>,
-    models_buffer: buffer::Buffer,
-    tlas: ray_tracing::TopLevelAccelerationStructure,
-    static_instances: Vec<vk::AccelerationStructureInstanceKHR>,
-    dynamic_instances: Vec<vk::AccelerationStructureInstanceKHR>,
     
+
+
     timestamp_period: f32,
     skybox: skybox::Skybox,
-    lights_buffer: buffer::Buffer,
-    lights: Vec<vek::Vec4<f32>>,
     samplers: samplers::Samplers,
-    tesselation_buffer: buffer::Buffer,
     uniform_buffer: buffer::Buffer,
 
     // debug settings
     debug_type: u32,
     wireframe: bool,
     toggles_bitmask: u32,
-    debug_text_buffer: buffer::Buffer,
+    debug_text: debug_text::DebugText,
 
     // other CPU stuff
     pub was_resized: bool,
@@ -222,7 +153,6 @@ pub struct InternalApp {
     last_frame_cpu_cmd_record_duration: Duration,
     movement: Movement,
     frame_count: u64,
-    ticker: ticker::Ticker,
     sun: vek::Vec3<f32>,
     args: crate::Args,
     stats: Statistics,
@@ -368,11 +298,6 @@ impl InternalApp {
         let mut compute_pipelines = HashMap::<&'static str, pipeline::GenericComputePipeline>::new();
 
         let spec_constants = [
-            SUN_SHADOW_RAY_ENABLED as u32, 
-            EXTRA_LIGHTS_ENABLED as u32,
-            EXTRA_LIGHTS_SHADOW_RAY_ENABLED as u32,
-            VERY_SHINY_REFLECTIVE_SURFACES as u32,
-            NUM_LIGHTS as u32, 
         ];
 
         let settings = [pipeline::PipelineCreateSettings {
@@ -385,52 +310,6 @@ impl InternalApp {
             wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &[WRITE_SKYBOX_ENTRY_POINT, WRITE_CLOUDS_ENTRY_POINT, BLUR_AMBIENT_SKYBOX_ENTRY_POINT] },
             spec_constants: Some(&[skybox::SKYBOX_RESOLUTION, skybox::CLOUDS_RESOLUTION, skybox::AMBIENT_SKYBOX_RESOLUTION]),
             spv_file_name: COMPUTE_SKY_SPV,
-        }, pipeline::PipelineCreateSettings {
-            pipeline_debug_name: "main render pipeline",
-            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::GraphicsMeshShader { face_culling: true, task_shader: false },
-            spec_constants: None,
-            spv_file_name: RASTERIZED_MS_PASSTHROUGH_SPV,
-        }, pipeline::PipelineCreateSettings {
-            pipeline_debug_name: "tesselation render pipeline",
-            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::GraphicsMeshShader { face_culling: true, task_shader: true },
-            spec_constants: None,
-            spv_file_name: RASTERIZED_MS_TESSELALTION_SPV,
-        }, pipeline::PipelineCreateSettings {
-            pipeline_debug_name: "background sky pipeline",
-            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Graphics { face_culling: false, vertex_input: vk::PipelineVertexInputStateCreateInfo::default() },
-            spec_constants: None,
-            spv_file_name: RASTERIZED_BACKGROUND_SPV,
-        }, pipeline::PipelineCreateSettings {
-            pipeline_debug_name: "generated render pipeline",
-            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::GraphicsMeshShader { face_culling: true, task_shader: true },
-            spec_constants: None,
-            spv_file_name: RASTERIZED_MS_GENERATED_1_SPV,
-        }, pipeline::PipelineCreateSettings {
-            pipeline_debug_name: "grass render pipeline",
-            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::GraphicsMeshShader { face_culling: false, task_shader: true },
-            spec_constants: Some(&spec_constants),
-            spv_file_name: RASTERIZED_MS_GENERATED_GRASS_SPV,
-        }, pipeline::PipelineCreateSettings {
-            pipeline_debug_name: "rasterized render pipeline",
-            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Graphics {
-                face_culling: true,
-                vertex_input: vk::PipelineVertexInputStateCreateInfo::default().vertex_attribute_descriptions(VERTEX_ATTRIBUTE_DESCRIPTIONS).vertex_binding_descriptions(VERTEX_BINDING_DESCRIPTIONS),
-            },
-            spec_constants: Some(&spec_constants),
-            spv_file_name: RASTERIZED_SPV,
-        }, pipeline::PipelineCreateSettings {
-            pipeline_debug_name: "rasterized chunk render pipeline",
-            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Graphics {
-                face_culling: true,
-                vertex_input: vk::PipelineVertexInputStateCreateInfo::default().vertex_attribute_descriptions(VERTEX_ATTRIBUTE_DESCRIPTIONS_CHUNK).vertex_binding_descriptions(VERTEX_BINDING_DESCRIPTIONS_CHUNK),
-            },
-            spec_constants: Some(&spec_constants),
-            spv_file_name: RASTERIZED_CHUNK_SPV,
-        }, pipeline::PipelineCreateSettings {
-            pipeline_debug_name: "compute surface shader",
-            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &[CALCULATE_DENSITY_ENTRY_POINT, VOXELIZE_SURFACE_ENTRY_POINT] },
-            spec_constants: None,
-            spv_file_name: COMPUTE_SURFACE_SPV,
         }, pipeline::PipelineCreateSettings {
             pipeline_debug_name: "compute fullscreen shader",
             wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["main"] },
@@ -494,52 +373,21 @@ impl InternalApp {
         }).collect::<SmallVec<[PerFrameData; per_frame_data::FRAMES_IN_FLIGHT]>>();
         log::info!("created frames in flight structures");
 
-        let lights_buffer = buffer::create_buffer(&mut ctx, size_of::<vek::Vec4<f32>>() * NUM_LIGHTS, "lights buffer", vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
-        let mut lights = Vec::<vek::Vec4<f32>>::new();
-
-        for _i in 0..NUM_LIGHTS {
-            let x = rand::random_range(-10f32..10f32);
-            let y = rand::random_range(-10f32..10f32);
-            let z = rand::random_range(-10f32..10f32);
-            lights.push(vek::Vec4::new(x,y,z, 1.0));
-        }
-
-        buffer::write_to_buffer(&mut ctx, lights_buffer.buffer, bytemuck::cast_slice(lights.as_slice()));
-        log::info!("created lights buffer");
-
         let mut render_targets_data = RenderTargetsData::create_constant_descriptor_sets();
         render_targets_data.recreate_rt_images_and_image_views_and_update_descriptor_sets(&mut ctx, extent, args.downscale_factor);
         log::info!("created constant descriptor sets");
 
         let timestamp_period = physical_device_properties.properties.limits.timestamp_period;
 
-        
         let cmd = others::begin_recording(&mut ctx);
         let mut writer = buffer::begin_buffer_writer(&mut ctx);
 
         let voxels = voxel::create_sparse_structures(&mut ctx, cmd, &mut writer, false);
 
-        let models = vec![
-            /*
-            model::Model::new(vek::Vec3::new(0f32, 20f32, 0f32), "sphere.obj", &mut ctx, 0, cmd, &mut writer),
-            model::Model::new(vek::Vec3::new(10f32, 20f32, 0f32), "not_so_sphere.obj", &mut ctx, 1, cmd, &mut writer),
-            model::Model::new(vek::Vec3::new(-10f32, 20f32, 0f32), "modular_industrial_pipes_01_1k.obj", &mut ctx, 2, cmd, &mut writer),
-            model::Model::new(vek::Vec3::new(-30f32, 20f32, 0f32), "namaqualand_boulder_02_1k.obj", &mut ctx, 0, cmd, &mut writer),
-            model::Model::new(vek::Vec3::new(-40f32, 20f32, 0f32), "ingot_mesh.obj", &mut ctx, 1, cmd, &mut writer),
-            model::Model::new(vek::Vec3::new(-50f32, 20f32, 0f32), "dust_mesh_a.obj", &mut ctx, 2, cmd, &mut writer),     
-            model::Model::new(vek::Vec3::new(0f32, 18f32, 0f32), "rough_plane.obj", &mut ctx, 0, cmd, &mut writer),         
-            model::Model::new(vek::Vec3::new(0f32, 30f32, 0f32), "space_thing.obj", &mut ctx, 0, cmd, &mut writer),       
-            */
-        ];
-
         others::end_recording_and_submit(&mut ctx, cmd);
         buffer::end_buffer_writer(&mut ctx, writer);
 
-        let tlas = ray_tracing::pre_create_tlas(&mut ctx);
-
-        let tesselation_buffer = tesselation::precompute_tesselation_buffer(&mut ctx);
-
-        let debug_text_buffer = buffer::create_buffer(&mut ctx, DEBUG_TEXT_BUFFER_SIZE_BYTES, "debug text", vk::BufferUsageFlags::STORAGE_BUFFER);
+        let debug_text = debug_text::DebugText::new(&mut ctx);
 
         let render_finished_semaphores: SmallVec<[vk::Semaphore; swapchain::SWAPCHAIN_IMAGES]> = (0..swapchain::SWAPCHAIN_IMAGES).into_iter().map(|_| {
             device.create_semaphore(&Default::default(), None).unwrap()
@@ -552,17 +400,7 @@ impl InternalApp {
             vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST
         );
 
-        let materials = vec![
-            Material::new(&mut ctx, "metal/metal_0077"),
-            // Material::new(&mut ctx, "ground/ground_0029"),
-            // Material::new(&mut ctx, "metal_2/metal_0066"),
-            // Material::new(&mut ctx, "ground_2/ground_0019"),
-        ];
-
-        let models_buffer = buffer::create_buffer(&mut ctx, size_of::<GpuModelMetadata>() * GPU_MODEL_METADATA_BUFFER_MAX_ELEMENT_COUNT, "models metadata buffer", vk::BufferUsageFlags::empty());
-
         Self {
-            models_buffer,
             voxels,
             last_frame_cpu_cmd_record_duration: Default::default(),
             frame_count: 0,
@@ -573,7 +411,6 @@ impl InternalApp {
             entry,
             device,
             physical_device,
-            lights_buffer,
             surface_loader,
             surface_khr,
             debug: debug_messenger,
@@ -591,12 +428,10 @@ impl InternalApp {
             skybox,
             was_resized: false,
             frames_in_flight,
-            ticker: ticker::Ticker { accumulator: 0f32, count: 0 },
             sun: vek::Vec3::new(1f32, 0.3f32,0.5f32).normalized(),
             debug_type: 0,
             stats: Default::default(),
             args,
-            lights,
             samplers,
             swapchain_images,
             swapchain_image_views,
@@ -604,20 +439,14 @@ impl InternalApp {
             main_pipeline_layout,
             mesh_shader_device,
             extended_dynamic_state3_device,
-            tesselation_buffer,
             graphics_pipelines,
             compute_pipelines,
             wireframe: false,
             toggles_bitmask: 0,
-            debug_text_buffer,
+            debug_text,
             render_finished_semaphores,
             uniform_buffer,
             acceleration_structure_device,
-            models,
-            static_instances: Vec::new(),
-            dynamic_instances: Vec::new(),
-            tlas,
-            materials,
             host_image_copy_device,
         }
     }
@@ -880,25 +709,13 @@ impl InternalApp {
             .image_info(&storage_image_infos);      
 
         // create bindless descriptor write for storage buffers
-        let mut storage_buffer_infos = vec![
+        let storage_buffer_infos = vec![
             vk::DescriptorBufferInfo::default()
                 .buffer(self.uniform_buffer.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
             vk::DescriptorBufferInfo::default()
-                .buffer(self.tesselation_buffer.buffer)
-                .offset(0)
-                .range(vk::WHOLE_SIZE),
-            vk::DescriptorBufferInfo::default()
-                .buffer(self.lights_buffer.buffer)
-                .offset(0)
-                .range(vk::WHOLE_SIZE),
-            vk::DescriptorBufferInfo::default()
-                .buffer(self.debug_text_buffer.buffer)
-                .offset(0)
-                .range(vk::WHOLE_SIZE),
-            vk::DescriptorBufferInfo::default()
-                .buffer(self.models_buffer.buffer)
+                .buffer(self.debug_text.buffer.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
             vk::DescriptorBufferInfo::default()
@@ -914,11 +731,6 @@ impl InternalApp {
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
         ];
-
-        // add models' backing storage buffers
-        for model in self.models.iter_mut() {
-            model.add_per_frame_backing_storage_buffers(&mut storage_buffer_infos);
-        }
 
         let storage_buffer_write = vk::WriteDescriptorSet::default()
             .descriptor_count(storage_buffer_infos.len() as u32)
@@ -953,11 +765,6 @@ impl InternalApp {
             );
         }
 
-        // add material sampled image views
-        for material in self.materials.iter_mut() {
-            material.add_per_frame_sampled_images(&mut sampled_image_infos);
-        }
-
         let sampled_image_write = vk::WriteDescriptorSet::default()
             .descriptor_count(sampled_image_infos.len() as u32)
             .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
@@ -980,18 +787,7 @@ impl InternalApp {
             .dst_set(main_descriptor_set)
             .image_info(&samplers);
 
-        let tlases = [self.tlas.data.acceleration_structure];
-        let mut acceleration_structure_write_tmp = vk::WriteDescriptorSetAccelerationStructureKHR::default()
-            .acceleration_structures(&tlases);
-
-        let acceleration_structure_write = vk::WriteDescriptorSet::default()
-            .descriptor_count(1)
-            .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-            .dst_set(main_descriptor_set)
-            .dst_binding(4)
-            .push_next(&mut acceleration_structure_write_tmp);
-
-        self.device.update_descriptor_sets(&[storage_image_write, storage_buffer_write, sampled_image_write, sampler_states_write, acceleration_structure_write], &[]);
+        self.device.update_descriptor_sets(&[storage_image_write, storage_buffer_write, sampled_image_write, sampler_states_write], &[]);
 
         // TODO: ideally, these would:
         // 1. be dynamically allocated using some sort of per-frame arena with indexing
@@ -1012,16 +808,6 @@ impl InternalApp {
         self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, query_pool, 0);
         scratch_buffer.begin_of_cmd_recording(self.queue_family_index, &self.device, cmd);
         
-
-        // update lights and its respective buffer
-        self.lights[0] = (vek::Vec3::lerp(self.lights[0].xyz(), self.movement.forward() * 5f32 + self.movement.position, 10f32 * delta)).with_w(0f32);
-        self.device.cmd_update_buffer(cmd, self.lights_buffer.buffer, 0, cast_slice(self.lights.as_slice()));
-
-        // update model positions
-        // TODO: ideally should be moved to tick
-        for model in self.models.iter_mut() {
-            model.update(elapsed, &self.movement);
-        }
         let mut ctx = GraphicsContext {
             device: &self.device,
             pool: self.pool,
@@ -1037,100 +823,30 @@ impl InternalApp {
             main_pipeline_layout: self.main_pipeline_layout,
             descriptor_pool: self.descriptor_pool,
         };
-        //self.multiple_chunks.frame(&mut ctx, scratch_buffer, cmd);
-
-        /*
-        // update dynamic instances for TLAS
-        self.dynamic_instances.clear();
-        let mut models_metadata_buffer_write =  Vec::<GpuModelMetadata>::new();
-        for model in self.models.iter() {
-            self.dynamic_instances.push(model.instance);
-            models_metadata_buffer_write.push(GpuModelMetadata {
-                material_base_index: self.materials[model.material_index as usize].base_index,
-                storage_buffers_base_index: model.base_index,
-            });
-        }
-
-        for (_, chunk) in self.multiple_chunks.chunks.iter() {
-            self.dynamic_instances.push(chunk.instance);
-            models_metadata_buffer_write.push(GpuModelMetadata {
-                material_base_index: self.materials[0].base_index,
-                storage_buffers_base_index: 0,
-            });
-        }
-        */
-
-
-        // update models metadata buffer
-        //self.device.cmd_update_buffer(cmd, self.models_buffer.buffer, 0, cast_slice(models_metadata_buffer_write.as_slice()));
-
-
-
+        
         let subresource_range = vk::ImageSubresourceRange::default()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
             .level_count(1)
             .layer_count(1);
 
-        let mut text = String::new();
-        text += &format!("CPU delta: {:.2}ms\n", delta*1000f32);
-        text += &format!("CPU command buffer record duration: {:.2}ms\n", self.last_frame_cpu_cmd_record_duration.as_micros() as f32 / 1000.0f32);
-        text += &format!("CPU fence wait duration: {:.2}ms\n", (post_wait_for_fence - pre_wait_for_fence).as_micros() as f32 / 1000.0f32);
-        text += &format!("CPU fence acquire swapchain duration: {:.2}ms\n", (post_acquire_swapchain - pre_acquire_swapchain).as_micros() as f32 / 1000.0f32);
-        text += &format!("GPU main frame: {:.2}ms\n", self.stats.get_average_in_ms());
-        text += &format!("pos: {:.2}\n", self.movement.position);
-        text += &format!("debug type: {}\n", self.debug_type);
-        text += &format!("toggles bitmask: {:#032b}\n", self.toggles_bitmask);
-        text += &format!("wireframe: {}\n", self.wireframe);
-        text += &format!("updating frustum: {}\n", self.movement.update_frustum);
+        dbgtext_writeln!(&mut self.debug_text, "CPU delta: {:.2}ms", delta*1000f32);
+        dbgtext_writeln!(&mut self.debug_text, "CPU command buffer record duration: {:.2}ms", self.last_frame_cpu_cmd_record_duration.as_micros() as f32 / 1000.0f32);
+        dbgtext_writeln!(&mut self.debug_text, "CPU fence wait duration: {:.2}ms", (post_wait_for_fence - pre_wait_for_fence).as_micros() as f32 / 1000.0f32);
+        dbgtext_writeln!(&mut self.debug_text, "CPU fence acquire swapchain duration: {:.2}ms", (post_acquire_swapchain - pre_acquire_swapchain).as_micros() as f32 / 1000.0f32);
+        dbgtext_writeln!(&mut self.debug_text, "GPU main frame: {:.2}ms", self.stats.get_average_in_ms());
+        dbgtext_writeln!(&mut self.debug_text, "pos: {:.2}", self.movement.position);
+        dbgtext_writeln!(&mut self.debug_text, "debug type: {}", self.debug_type);
+        dbgtext_writeln!(&mut self.debug_text, "toggles bitmask: {:#032b}", self.toggles_bitmask);
+        dbgtext_writeln!(&mut self.debug_text, "wireframe: {}", self.wireframe);
+        dbgtext_writeln!(&mut self.debug_text, "updating frustum: {}", self.movement.update_frustum);
 
-        let report = self.allocator.generate_report();
+        let report = ctx.allocator.generate_report();
         let reserved_bytes = ByteSize::b(report.total_reserved_bytes).display().iec();
         let allocated_bytes = ByteSize::b(report.total_reserved_bytes).display().iec();
-        text += &format!("reserved bytes: {}\n", reserved_bytes);
-        text += &format!("allocated bytes: {}\n", allocated_bytes);
-        text += &format!("TLAS static instances: {}\n", self.static_instances.len());
-        text += &format!("TLAS dynamic instances: {}\n", self.dynamic_instances.len());
-        text += &format!("models: {}\n", self.models.len());
+        dbgtext_writeln!(&mut self.debug_text, "reserved bytes: {}", reserved_bytes);
+        dbgtext_writeln!(&mut self.debug_text, "allocated bytes: {}", allocated_bytes);
         
-        
-        
-        
-        #[derive(Clone, Copy, Pod, Zeroable)]
-        #[repr(C)]
-        struct DebugTextLineHeader {
-            start_byte_offset: u32,
-            char_count: u32,
-        }
-        
-        // write total number of lines
-        let total_num_lines = text.lines().count() as u32;
-        let mut bytes = bytemuck::bytes_of(&total_num_lines).to_vec();
-
-        // write headers for each line
-        let mut prefix_sum_chars_only = 0u32;
-        for line in text.lines() {
-            // calculate the total size in bytes prior to the actual text data
-            let mut total_size_prior = total_num_lines * size_of::<DebugTextLineHeader>() as u32;
-
-            // plus also the u32 to indicate the line count
-            total_size_prior += size_of::<u32>() as u32;
-
-            let header_for_line = DebugTextLineHeader {
-                start_byte_offset: total_size_prior + prefix_sum_chars_only, 
-                char_count: line.as_bytes().len() as u32,
-            };
-            
-            bytes.extend_from_slice(bytemuck::bytes_of(&header_for_line));
-            prefix_sum_chars_only += line.as_bytes().len() as u32;
-        }
-
-        for line in text.lines() {
-            bytes.extend_from_slice(line.as_bytes());
-        }
-
-        // wtf
-        bytes.resize(bytes.len().div_ceil(4) * 4, 0);
-        self.device.cmd_update_buffer(cmd, self.debug_text_buffer.buffer, 0, &bytes);
+        self.debug_text.update_debug_text(&ctx.device, cmd);        
 
         // bind the descriptor set for subsequent pipelines
         self.device.cmd_bind_descriptor_sets(
@@ -1190,7 +906,7 @@ impl InternalApp {
             .dst_queue_family_index(self.queue_family_index)
             .size(vk::WHOLE_SIZE);
         let debug_text_buffer_barrier = vk::BufferMemoryBarrier2::default()
-            .buffer(self.debug_text_buffer.buffer)
+            .buffer(self.debug_text.buffer.buffer)
             .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
             .dst_access_mask(vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::MEMORY_WRITE)
             .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
@@ -1198,25 +914,7 @@ impl InternalApp {
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)
             .size(vk::WHOLE_SIZE);
-        let lights_buffer_barrier = vk::BufferMemoryBarrier2::default()
-            .buffer(self.lights_buffer.buffer)
-            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
-            .dst_access_mask(vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::MEMORY_WRITE)
-            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(self.queue_family_index)
-            .size(vk::WHOLE_SIZE);
-        let materials_buffer_barrier = vk::BufferMemoryBarrier2::default()
-            .buffer(self.models_buffer.buffer)
-            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
-            .dst_access_mask(vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::MEMORY_WRITE)
-            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(self.queue_family_index)
-            .size(vk::WHOLE_SIZE);
-        let buffer_memory_barriers = [uniform_buffer_barrier, debug_text_buffer_barrier, lights_buffer_barrier, materials_buffer_barrier];
+        let buffer_memory_barriers = [uniform_buffer_barrier, debug_text_buffer_barrier];
         let dep = vk::DependencyInfo::default().buffer_memory_barriers(&buffer_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
@@ -1280,20 +978,6 @@ impl InternalApp {
         );
 
         self.device.cmd_dispatch(cmd, skybox::AMBIENT_SKYBOX_RESOLUTION, skybox::AMBIENT_SKYBOX_RESOLUTION, 6);
-
-        /*
-        // rebuild TLAS
-        ray_tracing::rebuild_tlas(
-            &self.static_instances,
-            &self.dynamic_instances,
-            &self.tlas,
-            cmd,
-            &self.acceleration_structure_device,
-            &self.device,
-            self.queue_family_index,
-            scratch_buffer
-        );
-        */
         
         
         let skybox_subresource_range = vk::ImageSubresourceRange::default()
@@ -1623,23 +1307,9 @@ impl InternalApp {
     pub unsafe fn destroy(mut self) {
         self.device.device_wait_idle().unwrap();
 
-        self.tlas.destroy(&self.acceleration_structure_device, &self.device, &mut self.allocator);
-
-        for model in self.models {
-            model.destroy(&self.acceleration_structure_device, &self.device, &mut self.allocator);
-        }
-        log::info!("destroyed models");
-
-        for material in self.materials {
-            material.destroy(&self.device, &mut self.allocator);
-        }
-        log::info!("destroyed materials");
-
         self.voxels.destroy(&self.device, &mut self.allocator);
         log::info!("destroyed sparse voxel octree");
         
-        self.tesselation_buffer.destroy(&self.device, &mut self.allocator);
-        log::info!("destroyed tesselation buffer");
         
         for (_, graphic_pipeline) in self.graphics_pipelines {
             graphic_pipeline.destroy(&self.device);
@@ -1654,16 +1324,10 @@ impl InternalApp {
         self.skybox.destroy(&self.device, &mut self.allocator);
         log::info!("destroyed skybox");
 
-        self.lights_buffer.destroy(&self.device, &mut self.allocator);
-        log::info!("destroyed lights buffer");
-
-        self.models_buffer.destroy(&self.device, &mut self.allocator);
-        log::info!("destroyed models buffer");
-
         self.uniform_buffer.destroy(&self.device, &mut self.allocator);
         log::info!("destroyed per frame uniform buffer");    
         
-        self.debug_text_buffer.destroy(&self.device, &mut self.allocator);
+        self.debug_text.destroy(&self.device, &mut self.allocator);
         log::info!("destroyed debug text buffer");
 
         log::info!("waiting for all frame in flight fences...");

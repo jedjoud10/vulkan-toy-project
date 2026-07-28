@@ -20,10 +20,11 @@ void main(uint3 id: SV_DispatchThreadID) {
     float3 ray_pos = uniforms.position.xyz;
 
     Statistics stats = Statistics();
-    var ray = trace_shi<4096>(ray_pos, ray_dir, get_bindless_svo(), stats);
+    var ray = trace_shi<64>(ray_pos, ray_dir, get_bindless_svo(), stats);
 
 
     float3 col = 0.0;
+    /*
     if (ray.hit) {
         float3 diffuse = 1.0;
         //float3 diffuse = sampled_images[1].Sample(samplers[LINEAR_UNCAMPLED_SAMPLER_IDX], res.value.position.xz).xyz;
@@ -38,11 +39,12 @@ void main(uint3 id: SV_DispatchThreadID) {
         float3 sun_colour = sun_colour(sun.xyz);
         SunData sun_data = SunData(sun.xyz, sun.y > 0 ? (3.2 * sun_colour) : 0);
 
-        col = lighting3<1>(pbr_surface_data, camera_data, sun_data);
+        col = lighting2(pbr_surface_data, camera_data, sun_data);
     } else {
         col = sample_skybox_and_clouds(ray_pos, ray_dir);
     }
-    
+    */
+    col = stats.iterations / 4096.0;
 
     storage_images[RENDERED_STORAGE_IMAGE_IDX].Store(id.xy, float4(col, 1));
 }
