@@ -35,62 +35,38 @@ Optional<TestDdaTraceResults> test_dda_trace<let MAX_DISTANCE : int>(
     
     uint64_t raw = storage_buffers_readonly[STORAGE_BUFFER_TESTING_BUFFER].LoadAligned<uint64_t>(0);
     uint iter = 0;
+    int wowza = 0;
 
-    [loop]
+    float3 position = ray_pos;
+    float tmax = 0;
+
+    /*
     for (; iter < MAX_DISTANCE; iter++) {
-        float dist = d(ray_pos);
 
-        if (dist < 0.001) {
-            int16_t3 floored_pos = (int16_t3)floor(ray_pos * 10.0);
-            float3 side_dist = ((dir_sign * (floored_pos - ray_pos * 10.0) + dir_sign * 0.5 + 0.5) * inv_dir);
-            bool3 eqs = false;
+        int3 voxel_position = floor(position);
+        Data k = start_from_root_go_down(voxel_position, wowza);
 
-            for (; iter < MAX_DISTANCE; iter++) {
-
-                float distance_offset = length(select(eqs, 1.0, 0.0) * (side_dist - inv_dir) / 10.0);
-                float3 position = ray_pos + distance_offset * ray_dir;
-                if (d(position) > 0.001) {
-                    ray_pos = position + ray_dir * 0.001;
-                    break;
-                }
-
-                /*
-                uint8_t3 local = abs(floored_pos % 4);
-                uint8_t bit_index = local.x | local.y << 2 | local.z << 4; 
-                bool b = (raw >> bit_index) & 1 != 0;
-                
-                if (b) {
-                    uint8_t face = (uint8_t)firstbithigh(eqs.x | eqs.y << 1 | eqs.z << 2);
-                    int8_t3 normal = get_face_normal(face, dir_sign);
-                    return TestDdaTraceResults(iter, floored_pos, position, (float3)normal);
-                }
-                */
-
-                if (d(round(position * 10) / 10.0) < 0) {
-                    uint8_t face = (uint8_t)firstbithigh(eqs.x | eqs.y << 1 | eqs.z << 2);
-                    int8_t3 normal = get_face_normal(face, dir_sign);
-                    return TestDdaTraceResults(iter, floored_pos, position, (float3)normal);
-                }
-
-                eqs = min3(side_dist.x, side_dist.y, side_dist.z) == side_dist;
-                side_dist += select(eqs, inv_dir, 0.0);
-                floored_pos += select(eqs, (int16_t3)dir_sign, int16_t3(0));
-            }
+        if (k.leaf) {
+            return TestDdaTraceResults(wowza + iter, voxel_position, 0, 0);
         }
 
-        ray_pos += ray_dir * dist;
+        // int3 bounds_min = voxel_position;
+        // int3 bounds_max = voxel_position+1;       
 
+        // int3 bounds_min = k.min_bounds;
+        // int3 bounds_max = k.max_bounds+1;    
 
-
-
-
+        ray_box_intersection(inv_dir, dir_sign, ray_pos, bounds_min, bounds_max, tmax);
+        
 
         
+
         
+        position = ray_pos + ray_dir * (tmax + 0.01);
     }
 
     return none;
-
+    */
     /*
     [loop]
     for (uint i = 0; i < MAX_DISTANCE; i++) {
@@ -123,14 +99,40 @@ void main(uint3 id: SV_DispatchThreadID) {
     float3 ray_pos = uniforms.position.xyz;
     float3 col = 0.0;
 
+    /*
+    float tmin = 0;
+    bool hit = ray_box_intersection(1.0 / abs(ray_dir), sign(ray_dir), ray_pos, 0, 100, tmin);
+
+    if (hit) {
+        col = tmin;
+    }
+    */
+    
+    Statistics stats = Statistics();
+    DdaTraversalOutput output = trace_shi(ray_pos, ray_dir, get_bindless_svo(), stats);
+
+    if (output.hit) {
+        if ((uniforms.toggles_bitmask & 1) == 1) {
+            col = stats.iterations / 256.0;
+        } else {
+            col = 1.0;
+        }
+    }
+
+    /*
     Optional<TestDdaTraceResults> results = test_dda_trace<256>(ray_dir, ray_pos);
     if (results.hasValue) {
-        col = results.value.iters / 64.0;
-        // col = sin(results.value.block);
+        if ((uniforms.toggles_bitmask & 1) == 1) {
+            col = results.value.iters / 64.0;
+        } else {
+            col = sin(results.value.block);
+        }
+        
         // col = lighting2(PbrSurfaceData(results.value.position, 1.0, -results.value.normal, AoRoughnessMetallic(float3(1, 1, 0))), CameraData(-ray_dir), SunData(uniforms.sun.xyz, 1.0));
     } else {
         // col = sample_skybox_and_clouds(ray_pos, ray_dir);
     }
+    */
 
     
     storage_images[RENDERED_STORAGE_IMAGE_IDX].Store(id.xy, float4(col, 1));

@@ -1,6 +1,6 @@
 pub const BOTTOM_NODE: u32 = u32::MAX;
 pub const FULL_NODE: u32 = u32::MAX-1; 
-pub const SVO_DEPTH: u32 = 6;
+pub const SVO_DEPTH: u32 = 7;
 pub const TOTAL_SIZE: u32 = 1 << (SVO_DEPTH * 2);
 
 pub fn offset_to_index(offset: vek::Vec3<usize>, size: usize) -> usize {

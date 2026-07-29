@@ -34,7 +34,7 @@ struct Statistics {
     int calls;
 }
 
-static const int DEPTH = 6;
+static const int DEPTH = 7;
 static const float EPS = 0.00001;
 static const uint32_t BOTTOM_NODE = 0xFFFFFFFF;
 static const uint32_t FULL_NODE = 0xFFFFFFFF-1; 
@@ -46,8 +46,8 @@ bool ray_box_intersection(
     float3 inv_dir,
     int8_t3 dir_sign,
     float3 ray_pos,
-    int16_t3 aabb_min,
-    int16_t3 aabb_max,
+    int32_t3 aabb_min,
+    int32_t3 aabb_max,
     out float _tmin,
 ) {
     float3 t1 = (aabb_min - ray_pos) * inv_dir * dir_sign;
@@ -124,7 +124,7 @@ struct DdaTraversalOutput {
 // TODO: OPTIMIZE OPTIMIZE OPTIMIZE OPTIMIZE OPTIMIZE
 // 1. optimize occupancy, we still have buffer latency left to hide
 // 2. optimize raw speed, it is still relatively slow on my HW
-DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_ITERATIONS : int>(
+DdaTraversalOutput dda_trace_recurse<let K : int>(
     uint32_t base_index,
     uint32_t actual_child_index,
     float3 ray_dir,
@@ -133,7 +133,7 @@ DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_ITERATI
     int8_t3 dir_sign,
     float distance,
     SparseVoxelOctree svo,
-    uint16_t3 parent_world_space_origin,
+    uint32_t3 parent_world_space_origin,
     uint8_t face,
     inout Statistics stats,
 ) {
@@ -158,7 +158,7 @@ DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_ITERATI
     }
     */
 
-    uint16_t voxel_size = (uint16_t)1 << max(K*2, 0);
+    uint32_t voxel_size = (uint32_t)1 << max(K*2, 0);
     
     // do everything in world space first, and then we convert to local space
     // ray will always be in the parent's working space, so we offset by the parent origin and clamp coords to [0..4)
@@ -177,10 +177,6 @@ DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_ITERATI
     for (uint8_t i = 0; i < 12; i++) {
         stats.iterations += 1;
         
-        if (stats.iterations > MAX_ITERATIONS) {
-            return DdaTraversalOutput(false); 
-        }
-
         // we know that floored pos is the local coordinate directly anyways
         uint8_t3 local = (uint8_t3)floored_pos;
         uint8_t bit_index = local.x | local.y << 2 | local.z << 4; 
@@ -194,7 +190,7 @@ DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_ITERATI
         [branch]
         if ((((raw >> bit_index) & 1) == 1)) {  
             // world space position of the node origin
-            uint16_t3 origin = parent_world_space_origin + floored_pos * voxel_size;
+            uint32_t3 origin = parent_world_space_origin + floored_pos * voxel_size;
 
             // check if we have reached the bottom most node and exit if so
             [branch]
@@ -214,7 +210,7 @@ DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_ITERATI
                 stats.buffer_fetches += 1;
 
                 // check if we reached a full node and if we did, we must somehow calculate block position and world position accurately 
-                if (new_base_index == FULL_NODE || K <= END) {
+                if (new_base_index == FULL_NODE) {
                     stats.exit_type = 2;
                     stats.exit_node_height = K;
 
@@ -232,7 +228,7 @@ DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_ITERATI
                 }
                 
                 float distance_to_surface = distance + length(eqs * (side_dist - inv_dir) * voxel_size);
-                var result = dda_trace_recurse<K - 1, END, MAX_ITERATIONS>(new_base_index, actual_child_index, ray_dir, ray_pos, inv_dir, dir_sign, distance_to_surface, svo, origin, face, stats);
+                var result = dda_trace_recurse<K - 1>(new_base_index, actual_child_index, ray_dir, ray_pos, inv_dir, dir_sign, distance_to_surface, svo, origin, face, stats);
                 if (result.hit) {
                     return result;
                 } else {
@@ -266,7 +262,7 @@ DdaTraversalOutput dda_trace_recurse<let K : int, let END : int, let MAX_ITERATI
 }
 
 
-DdaTraversalOutput trace_shi<let MAX_DISTANCE: uint>(
+DdaTraversalOutput trace_shi(
     float3 ray_pos,
     float3 ray_dir,
     SparseVoxelOctree svo,
@@ -278,7 +274,86 @@ DdaTraversalOutput trace_shi<let MAX_DISTANCE: uint>(
 
     float3 inv_dir = 1.0 / abs(ray_dir);
     int8_t3 dir_sign = (int8_t3)sign(ray_dir);
-    return dda_trace_recurse<DEPTH - 1, 0, MAX_DISTANCE>(1, 0, ray_dir, ray_pos, inv_dir, dir_sign, 0.0, svo, 0, 0, iter);
+    return dda_trace_recurse<DEPTH - 1>(1, 0, ray_dir, ray_pos, inv_dir, dir_sign, 0.0, svo, 0, 0, iter);
 }
+
+/*
+struct Data {
+    int3 min_bounds;
+    int3 max_bounds;
+    bool leaf;
+}
+
+Data start_from_root_go_down(
+    int3 position,
+    inout int wowza,
+) {
+    SparseVoxelOctree svo = get_bindless_svo();
+
+    // start from root
+    uint32_t  base_index = 1;
+    uint32_t  actual_child_index = 0;
+
+    uint64_t raw = 0;
+    int3 parent_world_space_origin = 0;
+    uint16_t voxel_size = 0;
+
+
+    for (int l = DEPTH-1; l >= 0; l--) {
+        wowza++;
+        voxel_size = (uint16_t)1 << max(l*2, 0);
+        if (((base_index >> 30) & 1) == 0) {
+            raw = svo.get_bitmask(actual_child_index);
+        } else {
+            raw = uint64_t.maxValue;
+        }
+
+        // calculate the world position relative to the node we are in
+        // required to calculate bit index
+        uint8_t3 local = (uint8_t3)((position - parent_world_space_origin) / voxel_size);
+        uint8_t bit_index = local.x | local.y << 2 | local.z << 4; 
+        uint16_t3 origin = parent_world_space_origin + local * voxel_size;
+        if (raw == 0) {
+            return Data(parent_world_space_origin, parent_world_space_origin + voxel_size, false);
+        }
+
+        [branch]
+        if ((((raw >> bit_index) & 1) == 1)) {  
+            parent_world_space_origin = parent_world_space_origin + local * voxel_size;
+
+            // check if we have reached the bottom most node and exit if so
+            [branch]
+            if (l > 0) {
+                // calculate child offset index, which is NOT the same as the bit index
+                // we need to count the number of ones that come before (excluding) `bit_index` in `raw` 
+                // create a mask for the first `n` bits
+                uint64_t mask = ((uint64_t)1 << bit_index) - 1;
+                uint32_t child_offset_index = (uint32_t)countbits(mask & raw);
+
+
+                // POSSIBLE OPTIMIZATION: store a "delta offset" compared to the base node, which could allow us to encode this as a u16 instead...
+                //    - we can store the starting index for an entire level (depth=0,1,2,3,...) of the tree in a wayyy smaller buffer and use that as an offsetter as well, since we know that child indices are greater than parent indices!
+                // this should allow us to use u16, even though we have an extra buffer fetch, but that one should be cheap because it is depth based (uses `K`, compiler should store that in scalar mem)
+                uint32_t new_actual_child_index = base_index + child_offset_index;
+                uint32_t new_base_index = svo.get_index(new_actual_child_index);
+
+                // check if we reached a full node and if we did, we must somehow calculate block position and world position accurately 
+                if (new_base_index == FULL_NODE) {
+                    return Data(origin, origin + voxel_size, true);
+                }
+                
+                base_index = new_base_index; 
+                actual_child_index = new_actual_child_index;
+            } else { 
+                return Data(position, position + 1, true);
+            }
+        } else {
+            break;
+        }
+    }
+
+    return Data(parent_world_space_origin, parent_world_space_origin + voxel_size, false);
+}
+*/
 
 #endif

@@ -25,10 +25,10 @@ impl SparseVoxelOctree {
         // another buffer stores the "children base" index references as u16s
         // it contains a bitmask of its children
         log::debug!("creating SVO...");
-        let max_svo_element_size = 4096 * 64 * 16;
-        let aabb_buffer = buffer::create_buffer(ctx, max_svo_element_size * size_of::<u64>(), "sparse voxel octree aabb bounds", vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
-        let bitmask_buffer = buffer::create_buffer(ctx, max_svo_element_size * size_of::<u64>(), "sparse voxel octree brick bitmasks", vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
-        let index_buffer = buffer::create_buffer(ctx, max_svo_element_size * size_of::<u32>(), "sparse voxel octree child indices", vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
+        let max_svo_element_size = 16 * 4096 * 64 * 16;
+        let aabb_buffer = buffer::create_buffer(ctx, 1, "sparse voxel octree aabb bounds", vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST);
+        let bitmask_buffer = buffer::create_buffer_with_location(ctx, max_svo_element_size * size_of::<u64>(), "sparse voxel octree brick bitmasks", vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST, gpu_allocator::MemoryLocation::CpuToGpu);
+        let index_buffer = buffer::create_buffer_with_location(ctx, max_svo_element_size * size_of::<u32>(), "sparse voxel octree child indices", vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST, gpu_allocator::MemoryLocation::CpuToGpu);
         
         Self {
             bitmask_buffer,
@@ -171,9 +171,13 @@ impl SparseVoxelOctree {
         let indices_buffer_bytes = bytemuck::cast_slice::<_, u8>(built.indices.as_slice());
         let aabb_buffer_bytes = bytemuck::cast_slice::<_, u8>(built.aabbs.as_slice());
     
-        buffer::write_with_scratch_buffer(ctx, cmd, scratch_buffer, bitmasks_buffer_bytes, self.bitmask_buffer.buffer, 0);
-        buffer::write_with_scratch_buffer(ctx, cmd, scratch_buffer, indices_buffer_bytes, self.index_buffer.buffer, 0);
-        buffer::write_with_scratch_buffer(ctx, cmd, scratch_buffer, aabb_buffer_bytes, self.aabb_buffer.buffer, 0);
+        self.bitmask_buffer.allocation.mapped_slice_mut().unwrap()[..bitmasks_buffer_bytes.len()].copy_from_slice(bitmasks_buffer_bytes);
+        self.index_buffer.allocation.mapped_slice_mut().unwrap()[..indices_buffer_bytes.len()].copy_from_slice(indices_buffer_bytes);
+        
+
+        //buffer::write_with_scratch_buffer(ctx, cmd, scratch_buffer, bitmasks_buffer_bytes, self.bitmask_buffer.buffer, 0);
+        //buffer::write_with_scratch_buffer(ctx, cmd, scratch_buffer, indices_buffer_bytes, self.index_buffer.buffer, 0);
+        //buffer::write_with_scratch_buffer(ctx, cmd, scratch_buffer, aabb_buffer_bytes, self.aabb_buffer.buffer, 0);
     }
     
     pub unsafe fn destroy(self, device: &ash::Device, allocator: &mut Allocator) {
