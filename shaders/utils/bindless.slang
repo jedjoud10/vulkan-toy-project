@@ -37,6 +37,7 @@ const static uint STORAGE_BUFFER_DEBUG_TEXT_LINES = 1;
 const static uint STORAGE_BUFFER_SVO_INDEX = 2;
 const static uint STORAGE_BUFFER_SVO_BITMASK = 3;
 const static uint STORAGE_BUFFER_SVO_AABB = 4;
+const static uint STORAGE_BUFFER_TESTING_BUFFER = 5;
 
 
 const static uint SKYBOX_SAMPLER_IMAGE_IDX = 0;

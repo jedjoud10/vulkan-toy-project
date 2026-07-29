@@ -8,12 +8,13 @@ use crate::{buffer::{self, ScratchBuffer}, renderer::GraphicsContext};
 mod sparse;
 mod util;
 mod chunk;
+mod testing;
 
-use sparse::*;
-use util::*;
+pub use sparse::*;
+pub use util::*;
+pub use testing::*;
 pub use util::{TOTAL_SIZE};
 
-pub use sparse::SparseVoxelOctree;
 
 pub unsafe fn create_sparse_structures(
     ctx: &mut GraphicsContext,
@@ -122,6 +123,20 @@ pub unsafe fn create_sparse_structures(
     }
 
 
+    svo
+}
+
+
+pub unsafe fn create_sparse_structures2(
+    ctx: &mut GraphicsContext,
+    cmd: vk::CommandBuffer,
+    scratch_buffer: &mut ScratchBuffer,
+    force_regenerate: bool,
+) -> TestingStructure {
+    let mut svo = TestingStructure::new(ctx);
+
+    svo.rebuild(ctx, cmd, scratch_buffer);
+    
     svo
 }
 

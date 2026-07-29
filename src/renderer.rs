@@ -18,6 +18,7 @@ use crate::samplers;
 use crate::statistics::Statistics;
 use crate::voxel;
 use crate::voxel::SparseVoxelOctree;
+use crate::voxel::TestingStructure;
 use winit::event::MouseButton;
 use std::collections::HashMap;
 use std::ops::ControlFlow;
@@ -132,6 +133,8 @@ pub struct InternalApp {
 
 
     voxels: SparseVoxelOctree,
+    voxels2: TestingStructure,
+    
     
 
 
@@ -383,6 +386,8 @@ impl InternalApp {
         let mut writer = buffer::begin_buffer_writer(&mut ctx);
 
         let voxels = voxel::create_sparse_structures(&mut ctx, cmd, &mut writer, false);
+        let voxels2 = voxel::create_sparse_structures2(&mut ctx, cmd, &mut writer, false);
+
 
         others::end_recording_and_submit(&mut ctx, cmd);
         buffer::end_buffer_writer(&mut ctx, writer);
@@ -402,6 +407,7 @@ impl InternalApp {
 
         Self {
             voxels,
+            voxels2,
             last_frame_cpu_cmd_record_duration: Default::default(),
             frame_count: 0,
             input: Default::default(),
@@ -728,6 +734,10 @@ impl InternalApp {
                 .range(vk::WHOLE_SIZE),
             vk::DescriptorBufferInfo::default()
                 .buffer(self.voxels.aabb_buffer.buffer)
+                .offset(0)
+                .range(vk::WHOLE_SIZE),
+            vk::DescriptorBufferInfo::default()
+                .buffer(self.voxels2.buffer.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
         ];
@@ -1309,6 +1319,9 @@ impl InternalApp {
 
         self.voxels.destroy(&self.device, &mut self.allocator);
         log::info!("destroyed sparse voxel octree");
+
+        self.voxels2.destroy(&self.device, &mut self.allocator);
+        log::info!("destroyed sfasdfafdsa");
         
         
         for (_, graphic_pipeline) in self.graphics_pipelines {

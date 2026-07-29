@@ -120,6 +120,15 @@ pub fn main() {
         .format_file(true)
         .format_line_number(true)
         .init();
+
+    unsafe {
+        std::env::set_var("MESA_EXPERIMENTAL", "hic");
+
+        // what EVER you fucking do, do NOT enable MESA_VK_TRACE. this shit fries your GPU bro. don't do it bro
+        // std::env::set_var("MESA_VK_TRACE", "rgp");
+        // std::env::set_var("MESA_VK_TRACE_TRIGGER", "/tmp/trigger");
+    }
+
     let event_loop = EventLoop::new().unwrap();
     let mut app = App {
         start: Instant::now(),
