@@ -4,8 +4,9 @@ use smallvec::SmallVec;
 use vek::Clamp;
 use winit::keyboard::KeyCode;
 
+const DEFAULT_STARTING_SNAPSHOT: Option<usize> = Some(1);
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 pub struct Snapshot {
     pub position: vek::Vec3<f32>,
     pub rotation: vek::Quaternion<f32>,
@@ -44,12 +45,8 @@ impl Movement {
         Self {
             fov: default_fov(),
             target_fov: default_fov(),
-            //position: vek::Vec3::new(40.5f32, 80f32, 40.5f32),
-            //rotation : vek::Quaternion::rotation_y(-130f32.to_radians()),
-            position: vek::Vec3::zero(),
             camera_frustum_planes: Default::default(),
-            rotation: vek::Quaternion::identity(),
-            fixed_mode_snapshot_index: None,
+            fixed_mode_snapshot_index: DEFAULT_STARTING_SNAPSHOT,
             update_frustum: true,
             snapshots,
             ..Default::default()
@@ -152,11 +149,14 @@ impl Movement {
             && !self.snapshots.is_empty() {
                 *idx += 1;
                 *idx %= self.snapshots.len();
-                self.position = self.snapshots[*idx].position;
-                self.rotation = self.snapshots[*idx].rotation;
-                self.fov = self.snapshots[*idx].fov;
             }
 
+        // copy snapshot params to camera
+        if let Some(idx) = self.fixed_mode_snapshot_index && !self.snapshots.is_empty() {
+            self.position = self.snapshots[idx].position;
+            self.rotation = self.snapshots[idx].rotation;
+            self.fov = self.snapshots[idx].fov;
+        }
             
         
         // recalculate projection matrices

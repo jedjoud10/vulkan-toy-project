@@ -50,22 +50,16 @@ pub unsafe fn create_sparse_structures(
     } else {
         // regenerate chunks and save to file
         log::warn!("cache file not found (or was forced to regenerate), regenerating chunks...");
-        let mut fbm = noise::Fbm::<noise::Perlin>::new(0); 
-        fbm.octaves = 3;
-        fbm.frequency = 0.001;
-        
-        let mut extra = noise::Fbm::<noise::Billow::<noise::Simplex>>::new(0); 
-        extra.octaves = 3;
-        extra.frequency = 0.01;
+        let noise = noise::Perlin::new(0);         
         
         const NUM_CHUNKS: usize = (util::TOTAL_SIZE as usize / 64);
 
         let mut chunk_positions = Vec::<vek::Vec3<usize>>::new();
 
-        for x in 0..256 {
-            for z in 0..256 {
-                for y in 0..2 {
-                    chunk_positions.push(vek::Vec3::new(x,y + 2,z));
+        for x in 0..NUM_CHUNKS {
+            for z in 0..NUM_CHUNKS {
+                for y in 0..6 {
+                    chunk_positions.push(vek::Vec3::new(x,y,z));
                 }
             }
         }
@@ -78,7 +72,7 @@ pub unsafe fn create_sparse_structures(
                 let world_position = local_position + chunk_position * 64;
                 let pos = world_position.as_::<f64>();
 
-                let height = fbm.get([pos.x, pos.z]) * 300.0f64 - 160.0f64;
+                let height = noise.get([pos.x * 0.001, pos.z * 0.001, pos.y * 0.0026f64]) * 300.0f64 - 160.0f64;
 
                 let density = height + pos.y;
 

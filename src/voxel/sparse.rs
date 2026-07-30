@@ -1,3 +1,5 @@
+use std::num::{NonZeroU16, NonZeroU32};
+use std::ops::Index;
 use std::{collections::VecDeque, time::Instant};
 use crate::renderer::GraphicsContext;
 use crate::utils::*;
@@ -222,9 +224,93 @@ pub struct TopLevelAccelerationStructureNode {
     pub full: bool,
 }
 
+// a more memory optimized version of Box<[Option<usize>; 64]>=size_of(usize)*2*64=1024 bytes on heap
+// given that the WORST CASE scenario number of nodes in a 64x64x64 volume is (4^3)^3 = 64*64*64 = 262144, which can be represented in 18 bits
+// 18 bits * 64 = 1152 bits = 36 words + u64 to represent option 
+// this new struct, however, only takes 152 bytes
+pub struct OptChildren {
+    words: [u32; 36],
+    opt_bitmask: u64,
+}
+
+impl OptChildren {
+    const BITS_PER_CHILD_INDEX: usize = 18;
+    const MAX_VAL: usize = 1 << Self::BITS_PER_CHILD_INDEX;
+    const U32_BITS: usize = u32::BITS as usize;
+
+    pub fn from_non_packed_ver(non_packed: Box<[Option<usize>; 64]>) -> Self {
+        let mut this = Self {
+            opt_bitmask: 0u64,
+            words: [0u32; 36]
+        };
+
+        for (i, val) in non_packed.iter().enumerate() {
+            this.set_child(i, val.as_ref().map(|x| *x as u32));
+        }
+
+        this
+    }
+
+    // problem: this can span across multiple words
+    pub fn set_child(&mut self, local_index: usize, child_idx: Option<u32>) {
+        let bit_start = local_index * Self::BITS_PER_CHILD_INDEX;
+        let word_index = bit_start / Self::U32_BITS;
+        let bit_start_in_local_word = bit_start - word_index * Self::U32_BITS;
+
+        if bit_start_in_local_word > (Self::U32_BITS - Self::BITS_PER_CHILD_INDEX) {
+            // overflows to second word
+            let snd_word_index = word_index + 1;
+
+            // number of bits that have overflown to snd word
+            let overflown_bits = (bit_start_in_local_word + Self::BITS_PER_CHILD_INDEX) % Self::U32_BITS;
+
+            todo!()
+        } else {
+            // contained within one word
+            if let Some(idx) = child_idx {
+                assert!(idx < Self::MAX_VAL as u32);
+
+                let clear_mask = (1 << 19) - 1;
+
+                // clear the corresponding 18 bits
+                self.words[word_index] &= !(clear_mask << bit_start_in_local_word);
+
+                // write the corresponding 18 bits
+                self.words[word_index] |= idx << bit_start_in_local_word;
+            } else {
+                // no need to clear the 18 bits since we set the bitmask to represent "None"
+            }
+        }
+
+        // set Option u64 bitmask
+        if child_idx.is_some() {
+            set_bit(&mut self.opt_bitmask, local_index as u32, true);
+        } else {
+            set_bit(&mut self.opt_bitmask, local_index as u32, false);
+        } 
+    }
+
+    pub fn get_child(&self, local_index: usize) -> Option<u32> {
+        todo!()
+    }
+
+    pub fn iter(&self) -> OptChildrenIterator {
+        todo!()
+    }
+}
+
+pub struct OptChildrenIterator<'a>(&'a OptChildren);
+impl<'a> Iterator for OptChildrenIterator<'a> {
+    type Item = Option<usize>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        todo!()
+    }
+}
+
 pub struct ChunkLevelAccelerationStructureNode {
-    pub bounds: vek::Aabb<u32>,
-    pub children: Option<Box<[Option<usize>; 64]>>,
+    pub children: Option<Box<[Option<NonZeroU32>; 64]>>,
+    // pub children: Option<Box<OptChildren>>,
     pub full: bool,
 }
 
@@ -280,7 +366,7 @@ impl<'a> TraversalNodeType<'a> {
     fn bounds(&self) -> vek::Aabb<u32> {
         match self {
             TraversalNodeType::TopLevel { node } => node.bounds,
-            TraversalNodeType::ChunkLevel { node, .. } => node.bounds,
+            TraversalNodeType::ChunkLevel { node, .. } => vek::Aabb::default(),
         }
     }
 }
@@ -433,9 +519,9 @@ pub fn convert_to_buffers(svo: &SparseVoxelOctree) -> SparseVoxelTreeBuildResult
                     },
                     TraversalNodeType::ChunkLevel { chunk_flat_array, node } => {
                         if let Some(children) = node.children.as_ref() {
-                            for (pci, (ci, child)) in children.iter().enumerate().filter_map(|(ci, x)| x.as_ref().map(|x| (ci, x))).enumerate() {
+                            for (pci, (ci, child)) in children.iter().enumerate().filter_map(|(ci, x)| x.map(|x| (ci, x))).enumerate() {
                                 // `self_packed_child_offset = pci` assumes that we are doing this in BFS order. with DFS order, that is no longer the case
-                                queue.push_back(TraversalNode { node_type: TraversalNodeType::ChunkLevel { chunk_flat_array, node: &chunk_flat_array[*child] }, height: height - 1, parent_base_child_index: Some(base_child_index as usize), self_packed_child_offset: pci });
+                                queue.push_back(TraversalNode { node_type: TraversalNodeType::ChunkLevel { chunk_flat_array, node: &chunk_flat_array[child.get() as usize] }, height: height - 1, parent_base_child_index: Some(base_child_index as usize), self_packed_child_offset: pci });
                                 test_count += 1;
                             
                                 // VERIFY: makes sure that the packed child index matches up

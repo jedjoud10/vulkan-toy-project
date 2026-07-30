@@ -1,6 +1,6 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, num::NonZeroU32};
 use fixedbitset::FixedBitSet;
-use crate::voxel::{sparse::ChunkLevelAccelerationStructureNode, util::offset_to_index};
+use crate::voxel::{OptChildren, sparse::ChunkLevelAccelerationStructureNode, util::offset_to_index};
 
 pub const CHUNK_SIZE: usize = 64;
 pub const CHUNK_VOLUME: usize = 64*64*64;
@@ -11,6 +11,9 @@ pub enum ChunkData {
     Partial(FixedBitSet)
 }
 
+// ABSOLUTE worst case number of nodes in a chunk
+// 64 * 64 * 64 =  
+// L0 * L1 * L2 = 262k > u16::MAX :(
 
 // invariant: ChunkData MUST be in correct state
 // it cannot be in the "partial" state if it contains a fully cleared or fully set bitset
@@ -93,7 +96,16 @@ impl Chunk {
     }
 
     pub fn rebuild(&mut self) {
+        let i = std::time::Instant::now();
         (self.sparse_representation, self.bounds) = chunk_to_sparse(&self.voxel_data, self.position);
+
+        match &mut self.voxel_data {
+            ChunkData::Partial(fixed_bit_set) => *fixed_bit_set = FixedBitSet::new(),
+            _ => {}
+        };
+
+        let k = std::time::Instant::now();
+        log::debug!("took {}ms", (k-i).as_millis());
     }
 }
 
@@ -105,8 +117,8 @@ fn chunk_to_sparse(data: &ChunkData, chunk_position: vek::Vec3<u32>) -> (Vec<Chu
     };
 
     let data = match data {
-        ChunkData::Full => return (vec![ChunkLevelAccelerationStructureNode { bounds: full_world_space_bounds, children: None, full: true }], full_world_space_bounds),
-        ChunkData::Empty => return (vec![ChunkLevelAccelerationStructureNode { bounds: vek::Aabb::default(), children: None, full: false }], vek::Aabb::default()),
+        ChunkData::Full => return (vec![ChunkLevelAccelerationStructureNode { /* bounds: full_world_space_bounds, */ children: None, full: true }], full_world_space_bounds),
+        ChunkData::Empty => return (vec![ChunkLevelAccelerationStructureNode { /* bounds: vek::Aabb::default(), */ children: None, full: false }], vek::Aabb::default()),
         ChunkData::Partial(data) => data 
     };
     
@@ -222,7 +234,12 @@ struct NotSoSimpleTraversalNode {
 
 // mip 0 is bottom most mip
 // mip N-1 is one node (top mip)
-pub fn convert_mips_to_nodes<const MIP_COUNT: usize>(chunk_world_space_origin: vek::Vec3<u32>, all_mips: &[FixedBitSet; MIP_COUNT], any_mips: &[FixedBitSet; MIP_COUNT], all_bounds: &[Vec<vek::Aabb<u32>>; MIP_COUNT]) -> Vec<ChunkLevelAccelerationStructureNode> {
+pub fn convert_mips_to_nodes<const MIP_COUNT: usize>(
+    chunk_world_space_origin: vek::Vec3<u32>,
+    all_mips: &[FixedBitSet; MIP_COUNT],
+    any_mips: &[FixedBitSet; MIP_COUNT],
+    all_bounds: &[Vec<vek::Aabb<u32>>; MIP_COUNT]
+) -> Vec<ChunkLevelAccelerationStructureNode> {
     let mut queue = VecDeque::<NotSoSimpleTraversalNode>::new();
     queue.push_back(NotSoSimpleTraversalNode { mip_index: MIP_COUNT-1, index_within_mip: 0, height: MIP_COUNT as u32-1, origin: vek::Vec3::zero(), local_chunk_bounds: all_bounds[MIP_COUNT - 1][0] });
 
@@ -246,7 +263,7 @@ pub fn convert_mips_to_nodes<const MIP_COUNT: usize>(chunk_world_space_origin: v
         // testing purposes
         if mip_index == 0 {
             nodes.push(ChunkLevelAccelerationStructureNode {
-                bounds: world_space_bounds,
+                // bounds: world_space_bounds,
                 children: None,
                 full: is_node_all,
             });
@@ -256,7 +273,7 @@ pub fn convert_mips_to_nodes<const MIP_COUNT: usize>(chunk_world_space_origin: v
 
         //log::debug!("mip index: {mip_index}, mip size: {mip_size}, voxel size: {voxel_size}, index within mip: {index_within_mip}, height: {height}, origin: {origin}, is node any: {is_node_any}, is node all: {is_node_all}");
 
-        let children = if height == 0 {
+        let children: Option<Box<[Option<NonZeroU32>; 64]>> = if height == 0 {
             None
         } else {
             if is_node_all {
@@ -264,7 +281,7 @@ pub fn convert_mips_to_nodes<const MIP_COUNT: usize>(chunk_world_space_origin: v
             } else {
                 if is_node_any {
                     //log::debug!("node any");
-                    let mut flat_node_children: Box<[Option<usize>; 64]> = Box::new([Option::<usize>::None; 64]);
+                    let mut flat_node_children: Box<[Option<NonZeroU32>; 64]> = Box::new([Option::<NonZeroU32>::None; 64]);
 
                     let next_mip_size = mip_size * 4;
 
@@ -283,8 +300,8 @@ pub fn convert_mips_to_nodes<const MIP_COUNT: usize>(chunk_world_space_origin: v
                         let child_index_in_next_mip = offset_to_index(child_origin_next_mip_space, next_mip_size);
                         //log::debug!("child index in next mip: {child_index_in_next_mip}");
 
-                        assert!(child_index_in_next_mip < (next_mip_size * next_mip_size * next_mip_size));
-                        assert!((next_mip_size * next_mip_size * next_mip_size) == any_mips[mip_index-1].len());
+                        debug_assert!(child_index_in_next_mip < (next_mip_size * next_mip_size * next_mip_size));
+                        debug_assert!((next_mip_size * next_mip_size * next_mip_size) == any_mips[mip_index-1].len());
 
                         if (any_mips[mip_index-1])[child_index_in_next_mip] {
                             if mip_index > 1 {
@@ -297,9 +314,9 @@ pub fn convert_mips_to_nodes<const MIP_COUNT: usize>(chunk_world_space_origin: v
                                     local_chunk_bounds: all_bounds[mip_index-1][child_index_in_next_mip]
                                 });
                                 estimated_next_index += 1;
-                                flat_node_children[child_index] = Some(estimated_next_index);
+                                flat_node_children[child_index] = Some(NonZeroU32::new(estimated_next_index as u32).unwrap());
                             } else {
-                                flat_node_children[child_index] = Some(usize::MAX);
+                                flat_node_children[child_index] = Some(NonZeroU32::MAX);
                             }
                         }
                     }
@@ -313,7 +330,8 @@ pub fn convert_mips_to_nodes<const MIP_COUNT: usize>(chunk_world_space_origin: v
 
         // add node to flat node list
         nodes.push(ChunkLevelAccelerationStructureNode {
-            bounds: world_space_bounds,
+            // bounds: world_space_bounds,
+            //children: children.map(|x| Box::new(OptChildren::from_non_packed_ver(x))),
             children,
             full: is_node_all,
         });

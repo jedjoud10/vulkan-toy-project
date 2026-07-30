@@ -3,6 +3,7 @@
 
 #include "sky.slang"
 #include "bindless.slang"
+#include "ray_stuff_other.slang"
 
 #define PI 3.1415926538
 
@@ -93,6 +94,13 @@ public struct PbrSurfaceData {
 	public AoRoughnessMetallic arm;
 };
 
+float3 get_sun_shadow(float3 world, float3 normal, float3 sun) {
+	Statistics stats = Statistics();
+    DdaTraversalOutput output = trace_shi(world + sun * 0.1, sun, get_bindless_svo(), stats);
+
+	return output.hit ? 0.0 : 1.0;
+}
+
 
 public float3 radiance_sun(
 	PbrSurfaceData surface,
@@ -106,8 +114,8 @@ public float3 radiance_sun(
 	float3 specular = specular(f0, surface.arm.roughness, camera.view, sun.direction, surface.normal, half_view);
 	float n_dot_l = max(dot(sun.direction, surface.normal), 0.0);
 
-	// float3 shadow = get_sun_shadow(surface.position, surface.normal, sun.direction); 
-	float3 shadow = 1.0;
+	float3 shadow = get_sun_shadow(surface.position, surface.normal, sun.direction); 
+	// float3 shadow = 1.0;
 	return (kd * surface.albedo / PI + specular) * sun.color * n_dot_l * shadow;
 }
 

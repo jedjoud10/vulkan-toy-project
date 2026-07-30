@@ -32,6 +32,8 @@ struct Statistics {
     int exit_node_height;
     int active_threads_per_call;
     int calls;
+
+    int largest_parent_to_child_index_gap;
 }
 
 static const int DEPTH = 7;
@@ -172,6 +174,8 @@ DdaTraversalOutput dda_trace_recurse<let K : int>(
 
     float3 side_dist = ((dir_sign * ((floored_pos - modified_ray_pos) + 0.5) + 0.5) * inv_dir);
     bool3 eqs = false;    
+
+    uint min_depth = load_per_frame_uniforms().debug_type;
     
     
     for (uint8_t i = 0; i < 12; i++) {
@@ -194,7 +198,7 @@ DdaTraversalOutput dda_trace_recurse<let K : int>(
 
             // check if we have reached the bottom most node and exit if so
             [branch]
-            if (K > 0) {
+            if (K > 0 && K > min_depth) {
                 // calculate child offset index, which is NOT the same as the bit index
                 // we need to count the number of ones that come before (excluding) `bit_index` in `raw` 
                 // create a mask for the first `n` bits
@@ -208,6 +212,7 @@ DdaTraversalOutput dda_trace_recurse<let K : int>(
                 uint32_t actual_child_index = base_index + child_offset_index;
                 uint32_t new_base_index = svo.get_index(actual_child_index);
                 stats.buffer_fetches += 1;
+                stats.largest_parent_to_child_index_gap = max(stats.largest_parent_to_child_index_gap, new_base_index-base_index);
 
                 // check if we reached a full node and if we did, we must somehow calculate block position and world position accurately 
                 if (new_base_index == FULL_NODE) {
