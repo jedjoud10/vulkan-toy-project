@@ -4,6 +4,7 @@ use std::{collections::VecDeque, time::Instant};
 use crate::renderer::GraphicsContext;
 use crate::utils::*;
 use crate::voxel::chunk::CHUNK_SIZE;
+use ash::ext::host_image_copy::DeviceFn;
 use ash::vk;
 use gpu_allocator::vulkan::Allocator;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
@@ -624,3 +625,37 @@ fn surface_area_bitmask(bitmask: u64) -> u32 {
     }
     surface_area
 }
+
+/*
+fn bitmask_to_bounds_naive(bitmask: u64) -> vek::Aabb::<u8> {
+    let mut bounds = vek::Aabb::<u8>::default();
+
+    for x in  0..4i32 {
+        for y in 0..4i32 {
+            for z in 0..4i32 {
+                let vec = vek::Vec3::new(x,y,z);
+                let i = (z + y * 4 + x * 4 * 4) as u32;
+
+                if is_set(bitmask, i) {
+                    bounds = bounds.expanded_to_contain_point(vec.as_::<u8>());
+                }
+            }
+        }
+    }
+
+    bounds
+}
+
+fn bitmask_to_bounds_fast(bitmask: u64) -> vek::Aabb::<u8> {
+    let mut bounds = vek::Aabb::<u8>::default();
+    bounds.min = vek::Vec3::<u8>::default();
+    bounds.max = vek::Vec3::<u8>::broadcast(3);
+    
+
+    // check if any bits in x-layer are set
+    let x_layers_bitmask = (bitmask & 0x1111_1111_1111_1111) 
+    
+
+    bounds
+}
+*/

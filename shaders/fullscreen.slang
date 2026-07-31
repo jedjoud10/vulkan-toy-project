@@ -20,23 +20,28 @@ void main(uint3 id: SV_DispatchThreadID) {
     float3 ray_pos = uniforms.position.xyz;
     float3 col = 0.0;
 
+    Configuration config = Configuration();
     Statistics stats = Statistics();
-    DdaTraversalOutput output = trace_shi(ray_pos, ray_dir, get_bindless_svo(), stats);
+    DdaTraversalOutput output = trace_shi(ray_pos, ray_dir, config, get_bindless_svo(), stats);
 
     if (output.hit) {
         float3 world = ray_pos + ray_dir * output.distance;
         //world = get_accurate_world_position_with_face2(world, output.specific_block_axis_thing, output.face, sign(ray_dir));
         float3 normal = get_face_normal(output.face, sign(ray_dir));
 
-        float3 albedo = snoise(floor(world * 10.0)) * 0.1 + 0.9;
+        float3 albedo = snoise(world * 1.001) * 0.3 + 0.7;
 
-        PbrSurfaceData surface = PbrSurfaceData(world, albedo, normal, AoRoughnessMetallic(float3(1, 0.2, 0)));
+        PbrSurfaceData surface = PbrSurfaceData(world, albedo, normal, AoRoughnessMetallic(float3(1, 0.9, 0)));
         SunData sun = SunData(uniforms.sun.xyz, 1.0);
         CameraData cam = CameraData(-ray_dir);
 
         col = lighting2(surface, cam, sun);
     } else {
         col = sample_skybox_and_clouds(ray_pos, ray_dir);
+    }
+
+    if ((uniforms.toggles_bitmask & 1) == 1) {
+        col = stats.iterations / 256.0;
     }
 
     

@@ -36,11 +36,33 @@ struct Statistics {
     int largest_parent_to_child_index_gap;
 }
 
+struct Configuration {
+}
+
 static const int DEPTH = 7;
 static const float EPS = 0.00001;
 static const uint32_t BOTTOM_NODE = 0xFFFFFFFF;
 static const uint32_t FULL_NODE = 0xFFFFFFFF-1; 
 static const int TOTAL_SIZE = 1 << (DEPTH * 2);
+
+bool ray_box_intersection(
+    float3 inv_dir,
+    int8_t3 dir_sign,
+    float3 ray_pos,
+    int32_t3 aabb_min,
+    int32_t3 aabb_max,
+) {
+    float3 t1 = (aabb_min - ray_pos) * inv_dir * dir_sign;
+    float3 t2 = (aabb_max - ray_pos) * inv_dir * dir_sign;
+
+    float3 k1 = min(t1, t2);
+    float3 k2 = max(t1, t2);
+
+    float tmin = max3(k1.x, k1.y, k1.z);
+    float tmax = min3(k2.x, k2.y, k2.z);
+
+    return max(tmin, 0) <= tmax;
+}
 
 
 // https://tavianator.com/2022/ray_box_boundary.html
@@ -113,6 +135,138 @@ bool ray_box_intersection2(
     return max(tmin, 0) <= tmax;
 }
 
+// u64 bitmask ordering: 
+//    for x in  0..4i32 {
+//        for y in 0..4i32 {
+//            for z in 0..4i32 {
+//                let i = (z + y * 4 + x * 4 * 4) as u32;
+
+
+
+// creates a 4-bit wide bitmask that state if any of the 4 x layers have any bits
+uint8_t extract_x_layer_bits(uint64_t bitmask) {
+    const static uint64_t MASK_16_BITS_SET = 0b1111_1111_1111_1111;
+    
+    uint8_t layer1 = ((bitmask & MASK_16_BITS_SET) != 0); 
+    uint8_t layer2 = (((bitmask >> 16) & MASK_16_BITS_SET) != 0); 
+    uint8_t layer3 = (((bitmask >> 32) & MASK_16_BITS_SET) != 0); 
+    uint8_t layer4 = (((bitmask >> 48) & MASK_16_BITS_SET) != 0); 
+
+    return layer1 | layer2 << 1 | layer3 << 2 | layer4 << 3;
+}
+
+// creates a 4-bit wide bitmask that state if any of the 4 y layers have any bits
+uint8_t extract_y_layer_bits(uint64_t bitmask) {
+    const static uint64_t LAYER_Y_INTERLEAVING_MASK = 0b1111 | (0b1111 << 16) | (0b1111 << 32) | (0b1111 << 48);
+    
+    uint8_t layer1 = ((bitmask & LAYER_Y_INTERLEAVING_MASK) != 0); 
+    uint8_t layer2 = (((bitmask >> 4) & LAYER_Y_INTERLEAVING_MASK) != 0); 
+    uint8_t layer3 = (((bitmask >> 8) & LAYER_Y_INTERLEAVING_MASK) != 0); 
+    uint8_t layer4 = (((bitmask >> 12) & LAYER_Y_INTERLEAVING_MASK) != 0); 
+
+    return layer1 | layer2 << 1 | layer3 << 2 | layer4 << 3;
+}
+
+// creates a 4-bit wide bitmask that state if any of the 4 z layers have any bits
+uint8_t extract_z_layer_bits(uint64_t bitmask) {
+    const static uint64_t LAYER_Z_INTERLEAVING_MASK = 0b0001 | (0b0001 << 4) | (0b0001 << 8) | (0b0001 << 12);
+    
+    uint8_t layer1 = ((bitmask & LAYER_Z_INTERLEAVING_MASK) != 0); 
+    uint8_t layer2 = (((bitmask >> 1) & LAYER_Z_INTERLEAVING_MASK) != 0); 
+    uint8_t layer3 = (((bitmask >> 2) & LAYER_Z_INTERLEAVING_MASK) != 0); 
+    uint8_t layer4 = (((bitmask >> 3) & LAYER_Z_INTERLEAVING_MASK) != 0); 
+
+    return layer1 | layer2 << 1 | layer3 << 2 | layer4 << 3;
+}
+
+
+// holy fucking shit this is cursed
+const static uint8_t[] lookup = {
+    // 0b0000: INVALID!!!
+    0b10000,
+
+    // 0b0001:
+    0 | (0 << 2),
+
+    // 0b0010:
+    1 | (1 << 2),
+
+    // 0b0011:
+    0 | (1 << 2),
+    
+    // 0b0100:
+    2 | (2 << 2),
+
+    // 0b0101:
+    0 | (2 << 2),
+
+    // 0b0111:
+    0 | (2 << 2),
+
+    // 0b1001:
+    0 | (3 << 2),
+
+    // 0b1010:
+    1 | (3 << 2),
+
+    // 0b1011:
+    0 | (3 << 2),
+    
+    // 0b1100:
+    2 | (3 << 2),
+
+    // 0b1101:
+    0 | (3 << 2),
+
+    // 0b1111:
+    0 | (3 << 2),
+};
+
+// layer_bits is 4 bit wide bitmask
+// returns 1D bounds. min (from least sig. bit) is stored in the first 2 bits. max (from least sig. bit) is stored in the next 2 bits
+// min is inclusive. max is inclusive as well. 5th bit states invalidity
+uint8_t get_max_min_layer_bits(uint8_t layer_bits) {
+    // TODO: DONT DO THIS. WHY IS THERE NO LZCNT OP
+    return lookup[layer_bits];
+}
+
+struct RelativePackedAABB {
+    // we just need 12 bits in total
+    // 2 bits per axis, 3 axis, min+max = 12 bits
+    // first 6 bits are the x,y,z coords of min (in that order)
+    // next 6 bits are the x,y,z coords of max (in that order)
+    uint16_t data;  
+
+    property uint8_t3 min {
+        get { return uint8_t3(data & 0b11, (data >> 2) & 0b11, (data >> 4) & 0b11); }
+	}
+
+    property uint8_t3 max {
+        get { return uint8_t3((data >> 6) & 0b11, (data >> 8) & 0b11, (data >> 10) & 0b11); }
+	}
+}
+
+RelativePackedAABB extract_aabb_bitmask(uint64_t bitmask) {
+    uint8_t x = extract_x_layer_bits(bitmask);
+    uint8_t y = extract_y_layer_bits(bitmask);
+    uint8_t z = extract_z_layer_bits(bitmask);
+
+    // first 2 bits are min, next 2 bits are max (both inclusive)
+    uint8_t bounds_x = get_max_min_layer_bits(x);
+    uint8_t bounds_y = get_max_min_layer_bits(y);
+    uint8_t bounds_z = get_max_min_layer_bits(z);
+
+    // max bounds testing
+    // bounds_x = 0b11_00;
+    // bounds_y = 0b11_00;
+    // bounds_z = 0b11_00;    
+
+    uint16_t min_part = bounds_x & 0b11 | (bounds_y & 0b11) << 2 | (bounds_z & 0b11) << 4;
+    uint16_t max_part = ((bounds_x & 0b1100) >> 2) | ((bounds_y & 0b1100) >> 2) << 2 | ((bounds_z & 0b1100) >> 2) << 4;
+
+    return RelativePackedAABB(min_part | max_part << 6);
+}
+
 
 struct DdaTraversalOutput {
     bool hit;
@@ -121,6 +275,7 @@ struct DdaTraversalOutput {
     uint specific_block_axis_thing;
     float distance;
     uint8_t face;
+    uint depth;
 }
 
 // TODO: OPTIMIZE OPTIMIZE OPTIMIZE OPTIMIZE OPTIMIZE
@@ -135,6 +290,7 @@ DdaTraversalOutput dda_trace_recurse<let K : int>(
     int8_t3 dir_sign,
     float distance,
     SparseVoxelOctree svo,
+    Configuration config,
     uint32_t3 parent_world_space_origin,
     uint8_t face,
     inout Statistics stats,
@@ -152,6 +308,7 @@ DdaTraversalOutput dda_trace_recurse<let K : int>(
         raw = uint64_t.maxValue;
     }
 
+
     //base_index &= ~(1 << 30); // get rid of flag bits
 
     /*
@@ -161,6 +318,27 @@ DdaTraversalOutput dda_trace_recurse<let K : int>(
     */
 
     uint32_t voxel_size = (uint32_t)1 << max(K*2, 0);
+
+    UniformThing uniforms = load_per_frame_uniforms();
+    uint min_depth = uniforms.debug_type;
+    bool aabb_test_toggle = (uniforms.toggles_bitmask & 2) != 0;
+
+    if (K > 2 && aabb_test_toggle) {
+        RelativePackedAABB babaisyou = extract_aabb_bitmask(raw);
+        int32_t3 aabb_global_min = babaisyou.min * (voxel_size << 0) + parent_world_space_origin;
+        int32_t3 aabb_global_max = babaisyou.max * (voxel_size << 0) + parent_world_space_origin;
+        // int32_t3 aabb_global_min = int32_t3(0) * (voxel_size << 2) + parent_world_space_origin;
+        // int32_t3 aabb_global_max = int32_t3(3) * (voxel_size << 2) + parent_world_space_origin;
+        // aabb_global_min -= voxel_size;
+        // aabb_global_max += voxel_size;
+        
+        float tmin = 0;
+        if (ray_box_intersection(inv_dir, dir_sign, ray_pos, aabb_global_min, aabb_global_max, tmin)) {
+            //distance = max(tmin, distance);
+        } else {
+            return DdaTraversalOutput(false);
+        }
+    }
     
     // do everything in world space first, and then we convert to local space
     // ray will always be in the parent's working space, so we offset by the parent origin and clamp coords to [0..4)
@@ -175,7 +353,8 @@ DdaTraversalOutput dda_trace_recurse<let K : int>(
     float3 side_dist = ((dir_sign * ((floored_pos - modified_ray_pos) + 0.5) + 0.5) * inv_dir);
     bool3 eqs = false;    
 
-    uint min_depth = load_per_frame_uniforms().debug_type;
+
+
     
     
     for (uint8_t i = 0; i < 12; i++) {
@@ -184,7 +363,6 @@ DdaTraversalOutput dda_trace_recurse<let K : int>(
         // we know that floored pos is the local coordinate directly anyways
         uint8_t3 local = (uint8_t3)floored_pos;
         uint8_t bit_index = local.x | local.y << 2 | local.z << 4; 
-
 
         stats.calls += 1;
         stats.active_threads_per_call += WaveActiveCountBits((((raw >> bit_index) & 1) == 1));
@@ -197,8 +375,10 @@ DdaTraversalOutput dda_trace_recurse<let K : int>(
             uint32_t3 origin = parent_world_space_origin + floored_pos * voxel_size;
 
             // check if we have reached the bottom most node and exit if so
+            bool loaded_in = length((origin + voxel_size * 0.5) - ray_pos) < voxel_size * 200.5 + hash13(ray_dir * 40.12314 * float3(10.4324, -50.23423, 60.13)) * 10 * voxel_size;
+
             [branch]
-            if (K > 0 && K > min_depth) {
+            if (K > 0) {
                 // calculate child offset index, which is NOT the same as the bit index
                 // we need to count the number of ones that come before (excluding) `bit_index` in `raw` 
                 // create a mask for the first `n` bits
@@ -228,17 +408,19 @@ DdaTraversalOutput dda_trace_recurse<let K : int>(
                     //block_pos[face] = origin[face] + tmp_sign[face] * (voxel_size-1);
                     
                     int3 tmp_sign = max(0, -dir_sign);
-                    return DdaTraversalOutput(true, origin[face] + tmp_sign[face] * (voxel_size-1), tmin - EPS, face);
+                    return DdaTraversalOutput(true, origin[face] + tmp_sign[face] * (voxel_size-1), tmin - EPS, face, K);
                     //return DdaTraversalOutput(true, world, block_pos, tmin, face);
                 }
                 
-                float distance_to_surface = distance + length(eqs * (side_dist - inv_dir) * voxel_size);
-                var result = dda_trace_recurse<K - 1>(new_base_index, actual_child_index, ray_dir, ray_pos, inv_dir, dir_sign, distance_to_surface, svo, origin, face, stats);
-                if (result.hit) {
-                    return result;
-                } else {
-                    stats.num_entered_but_missed++;
-                }
+                if (loaded_in || K > min_depth) {
+                    float distance_to_surface = distance + length(eqs * (side_dist - inv_dir) * voxel_size);
+                    var result = dda_trace_recurse<K - 1>(new_base_index, actual_child_index, ray_dir, ray_pos, inv_dir, dir_sign, distance_to_surface, svo, config, origin, face, stats);
+                    if (result.hit) {
+                        return result;
+                    } else {
+                        stats.num_entered_but_missed++;
+                    }
+                }                
             } else { 
                 float distance_to_surface = distance + length(eqs * (side_dist - inv_dir) * voxel_size);     
                 float3 world = ray_pos + ray_dir * (distance_to_surface - EPS);
@@ -246,7 +428,7 @@ DdaTraversalOutput dda_trace_recurse<let K : int>(
                 stats.exit_node_height = K;
 
                 int3 tmp_sign = max(0, -dir_sign);
-                return DdaTraversalOutput(true, origin[face], distance_to_surface - EPS, face);
+                return DdaTraversalOutput(true, origin[face], distance_to_surface - EPS, face, 0);
             }
         }
 
@@ -266,10 +448,10 @@ DdaTraversalOutput dda_trace_recurse<let K : int>(
     return DdaTraversalOutput(false);
 }
 
-
 DdaTraversalOutput trace_shi(
     float3 ray_pos,
     float3 ray_dir,
+    Configuration config,
     SparseVoxelOctree svo,
     inout Statistics iter,
 ) {
@@ -279,7 +461,7 @@ DdaTraversalOutput trace_shi(
 
     float3 inv_dir = 1.0 / abs(ray_dir);
     int8_t3 dir_sign = (int8_t3)sign(ray_dir);
-    return dda_trace_recurse<DEPTH - 1>(1, 0, ray_dir, ray_pos, inv_dir, dir_sign, 0.0, svo, 0, 0, iter);
+    return dda_trace_recurse<DEPTH - 1>(1, 0, ray_dir, ray_pos, inv_dir, dir_sign, 0.0, svo, config, 0, 0, iter);
 }
 
 /*
