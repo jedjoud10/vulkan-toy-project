@@ -4,7 +4,7 @@ use ash::vk;
 use bytemuck::{Pod, Zeroable};
 use smallvec::SmallVec;
 
-
+// TODO: redesign this so that it is better aligned to memory
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 pub struct PerFrameUniformData {
@@ -22,6 +22,8 @@ pub struct PerFrameUniformData {
     pub debug_type: u32,
     pub toggles_bitmask: u32,
     pub time: f32,
+    pub _padding2: u32,
+    pub frame_count: u64,
 }
 
 pub struct SingleEntryPointWrapper {

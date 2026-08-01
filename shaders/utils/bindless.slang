@@ -2,7 +2,7 @@
 #define BINDLESS
 #include "hash.slang"
 
-struct UniformThing {
+public struct UniformThing {
     float4x4 view_matrix;
     float4x4 projection_matrix;
     float4x4 inv_view_matrix;
@@ -17,6 +17,8 @@ struct UniformThing {
     uint32_t debug_type;
     uint32_t toggles_bitmask;
     float32_t time;
+    uint32_t padding2;
+    uint64_t frame_count;
 };
 
 struct GpuModelMetadata {

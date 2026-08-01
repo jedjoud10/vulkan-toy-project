@@ -95,8 +95,32 @@ public struct PbrSurfaceData {
 	public AoRoughnessMetallic arm;
 };
 
+// https://dubiousconst282.github.io/2024/10/03/voxel-ray-tracing/
+float3 GetRandomSphereDir() {
+    float2 u = (NextRandomU32() >> uint2(0, 16) & 65535) / 65536.0;
+
+    float phi = u.x * 6.283185307179586;
+    float y = u.y * 2 - 1;
+    float r = sqrt(1.0 - y * y);
+    return float3(sin(phi) * r, y, cos(phi) * r);
+}
+
+// PCG random
+static uint g_RandomSeed = 0;
+uint NextRandomU32() {
+    uint state = g_RandomSeed * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return g_RandomSeed = (word >> 22u) ^ word;
+}
+void InitRandom(uint2 pos, uint frameNo) {
+    g_RandomSeed = pos.x ^ (pos.y << 16);
+    NextRandomU32();
+    g_RandomSeed ^= frameNo * 1234;
+}
+
 float3 get_sun_shadow(float3 world, float3 normal, float3 sun) {
-	let res = trace(world + normal * 0.01 + sun * 0.01, sun);
+	float3 sun_direction = normalize(sun + GetRandomSphereDir() * 0.02);
+	let res = trace(world + normal * 0.01 + sun_direction * 0.01, sun_direction);
 	return res.hit ? 0.0 : 1.0;
 }
 
@@ -105,6 +129,7 @@ public float3 radiance_sun(
 	PbrSurfaceData surface,
 	CameraData camera,
 	SunData sun,
+	UniformThing thing,
 ) {
     float3 half_view = normalize(camera.view + sun.direction);
     float3 f0 = lerp(0.04, surface.albedo, surface.arm.metallic);
@@ -114,6 +139,7 @@ public float3 radiance_sun(
 	float n_dot_l = max(dot(sun.direction, surface.normal), 0.0);
 
 	float3 shadow = get_sun_shadow(surface.position, surface.normal, sun.direction); 
+	// float3 shadow = 1.0;
 	return (kd * surface.albedo / PI + specular) * sun.color * n_dot_l * shadow;
 }
 
@@ -121,8 +147,9 @@ public float3 lighting2(
 	PbrSurfaceData surface,
 	CameraData camera,
 	SunData light,
+	UniformThing thing,
 ) {
-	float3 radiance = radiance_sun(surface, camera, light);
+	float3 radiance = radiance_sun(surface, camera, light, thing);
 
 	// IBL diffuse term
 	float3 f0 = lerp(0.04, surface.albedo, surface.arm.metallic);
@@ -135,24 +162,58 @@ public float3 lighting2(
 	return radiance + ambient * 0.1;
 }
 
-public float3 do_thing_lol(float3 ray_pos, float3 ray_dir) {
+public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir, UniformThing uniforms) {
 	float3 col = 0.0;
-    let uniforms = load_per_frame_uniforms();
 
-    let res = trace(ray_pos, ray_dir);
-    if (res.hit) {
-        //let shadow = trace(res.pos + res.diff * 0.01, uniforms.sun.xyz);
-        //col = shadow.iters / 256.0;
-    
-        PbrSurfaceData pbr_surface_data = PbrSurfaceData(res.pos, 1.0, res.diff, AoRoughnessMetallic(float3(1, 1, 0)));
-        CameraData camera_data = CameraData(-ray_dir);
-        float3 sun = uniforms.sun.xyz;
-        float3 sun_colour = sun_colour(sun.xyz);
-        SunData sun_data = SunData(sun.xyz, 3.0);
-        col = lighting2(pbr_surface_data, camera_data, sun_data) * (1 - res.ref/3.0);
-    } else {
-        col = sample_skybox_and_clouds(res.pos, res.dir);
-    }
+	InitRandom(id.xy, (uint32_t)uniforms.frame_count);
+
+	float3 camera_view = -ray_dir;
+
+	// https://dubiousconst282.github.io/2024/10/03/voxel-ray-tracing/
+	for (int bounce = 0; bounce < 3; bounce++) {
+		let res = trace(ray_pos, ray_dir);
+    	if (res.hit) {    
+			float3 diffuse = 1.0;
+			float3 arm = float3(1.0, 0.1, 0);
+
+			if (snoise(res.pos * 0.5) > 0) {
+				arm.y = 0.8;
+			}
+
+    	    PbrSurfaceData surface = PbrSurfaceData(res.pos, diffuse, res.diff, AoRoughnessMetallic(arm));
+    	    CameraData camera = CameraData(camera_view);
+    	    float3 sun = uniforms.sun.xyz;
+    	    float3 sun_colour = sun_colour(sun.xyz);
+    	    SunData light = SunData(sun.xyz, 3.0);
+
+
+			float3 radiance = radiance_sun(surface, camera, light, uniforms);
+
+			// IBL diffuse term
+			float3 f0 = lerp(0.04, surface.albedo, surface.arm.metallic);
+			float3 ks = fresnelRoughness(f0, surface.normal, camera.view, surface.arm.roughness);
+			float3 kd = (1 - ks) * (1 - surface.arm.metallic);
+			float3 irradiance = get_environment_diffuse(surface.normal);
+			float3 ambient = irradiance * surface.albedo * kd * surface.arm.ao;
+
+			col += radiance + ambient * 0.0;
+
+			float3 randomized_ray_dir = res.diff + GetRandomSphereDir();
+			float3 reflected_ray_dir = reflect(ray_dir, res.diff);
+
+			ray_dir = normalize(lerp(reflected_ray_dir, randomized_ray_dir, surface.arm.roughness));
+			float3 last_ray_pos = ray_pos;
+			ray_pos = res.pos + ray_dir * 0.01;
+			camera_view = ray_pos - last_ray_pos;
+    	} else {
+    	    col += sample_skybox_and_clouds(res.pos, res.dir);
+    	}
+
+		if ((uniforms.toggles_bitmask & 1) != 0) {
+			break;
+		}
+	}
+
 
 	return col;
 }

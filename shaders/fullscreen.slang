@@ -19,9 +19,13 @@ void main(uint3 id: SV_DispatchThreadID) {
     ray_dir = normalize(-ray_dir);
     
     float3 ray_pos = uniforms.position.xyz;
-    float3 col = do_thing_lol(ray_pos, ray_dir);
+    float3 col = trace_scene_multibounce(id.xy, ray_pos, ray_dir, uniforms);
+    float3 last = storage_images[RENDERED_STORAGE_IMAGE_IDX].Load(id.xy).xyz;
 
-    //col = (float)i / 256.0;
+    float lerp_factor = 1.0;
+    if ((uniforms.toggles_bitmask & 2) != 2) {
+        lerp_factor = 0.03;
+    }
 
-    storage_images[RENDERED_STORAGE_IMAGE_IDX].Store(id.xy, float4(col, 1));
+    storage_images[RENDERED_STORAGE_IMAGE_IDX].Store(id.xy, float4(lerp(last, col, lerp_factor), 1));
 }

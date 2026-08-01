@@ -132,9 +132,8 @@ pub struct InternalApp {
     
 
 
-    voxels: SparseVoxelOctree,
-    voxels2: TestingStructure,
-    
+    // voxels: SparseVoxelOctree,
+    // voxels2: TestingStructure,
     
 
 
@@ -385,9 +384,8 @@ impl InternalApp {
         let cmd = others::begin_recording(&mut ctx);
         let mut writer = buffer::begin_buffer_writer(&mut ctx);
 
-        let voxels = voxel::create_sparse_structures(&mut ctx, cmd, &mut writer, false);
-        let voxels2 = voxel::create_sparse_structures2(&mut ctx, cmd, &mut writer, false);
-
+        //let voxels = voxel::create_sparse_structures(&mut ctx, cmd, &mut writer, false);
+        //let voxels2 = voxel::create_sparse_structures2(&mut ctx, cmd, &mut writer, false);
 
         others::end_recording_and_submit(&mut ctx, cmd);
         buffer::end_buffer_writer(&mut ctx, writer);
@@ -406,8 +404,8 @@ impl InternalApp {
         );
 
         Self {
-            voxels,
-            voxels2,
+            // voxels,
+            // voxels2,
             last_frame_cpu_cmd_record_duration: Default::default(),
             frame_count: 0,
             input: Default::default(),
@@ -724,6 +722,7 @@ impl InternalApp {
                 .buffer(self.debug_text.buffer.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
+            /*
             vk::DescriptorBufferInfo::default()
                 .buffer(self.voxels.index_buffer.buffer)
                 .offset(0)
@@ -740,6 +739,7 @@ impl InternalApp {
                 .buffer(self.voxels2.buffer.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
+            */
         ];
 
         let storage_buffer_write = vk::WriteDescriptorSet::default()
@@ -900,7 +900,11 @@ impl InternalApp {
             time: elapsed,
             toggles_bitmask: self.toggles_bitmask,
 
+            frame_count: self.frame_count,
+
             _padding: Default::default(),
+            _padding2: Default::default(),
+            
         };
 
         self.device.cmd_update_buffer(cmd, self.uniform_buffer.buffer, 0, bytemuck::bytes_of(&uniform_per_frame_data));
@@ -1032,10 +1036,10 @@ impl InternalApp {
             .image(self.skybox.ambient_skybox_image)
             .subresource_range(clouds_subresource_range);
         let rendered_image_barrier = vk::ImageMemoryBarrier2::default()
-            .old_layout(vk::ImageLayout::UNDEFINED)
+            .old_layout(vk::ImageLayout::GENERAL)
             .new_layout(vk::ImageLayout::GENERAL)
-            .src_access_mask(vk::AccessFlags2::NONE)
-            .dst_access_mask(vk::AccessFlags2::SHADER_STORAGE_WRITE)
+            .src_access_mask(vk::AccessFlags2::SHADER_STORAGE_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_STORAGE_WRITE | vk::AccessFlags2::SHADER_STORAGE_READ)
             .src_stage_mask(vk::PipelineStageFlags2::NONE)
             .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
             .src_queue_family_index(self.queue_family_index)
@@ -1317,11 +1321,13 @@ impl InternalApp {
     pub unsafe fn destroy(mut self) {
         self.device.device_wait_idle().unwrap();
 
+        /*
         self.voxels.destroy(&self.device, &mut self.allocator);
         log::info!("destroyed sparse voxel octree");
 
         self.voxels2.destroy(&self.device, &mut self.allocator);
         log::info!("destroyed sfasdfafdsa");
+        */
         
         
         for (_, graphic_pipeline) in self.graphics_pipelines {

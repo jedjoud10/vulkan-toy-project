@@ -107,7 +107,7 @@ void write_swapchain_image(uint3 id: SV_DispatchThreadID) {
 
     float2 screen_uvs = -screen_uvs_negative_one_to_one * 0.5 + 0.5;
 
-    float3 final_colour = pre_compose[src_coords].xyz;
+    float3 final_colour = max(pre_compose[src_coords].xyz, 0);
    
     SamplerState sampler = samplers[LINEAR_CLAMPED_SAMPLER_IDX];
 
@@ -156,7 +156,7 @@ void bloom_downsample(uint3 id: SV_DispatchThreadID, uniform float2 previous_blo
         for (int y = -1; y <= 1; y++) {
             float2 offset = float2(x,y);
             float2 uvs = ((float2)(id.xy * 2) + offset * 2.0 + 1) / previous_bloom_mip_resolution;
-            float4 loaded = previous_bloom_mip.Sample(sampler, uvs);
+            float4 loaded = max(previous_bloom_mip.Sample(sampler, uvs), 0);
             
             if (length(loaded) > MIN_BLOOM_THRESHOLD) {
                 float kernel_strength = GAUSSIAN_KERNEL_3X3[(x+1) * 3 + (y+1)];
@@ -179,7 +179,7 @@ void bloom_upsample(uint3 id: SV_DispatchThreadID, uniform float2 previous_bloom
     for (int x = 0; x < 2; x++) {
         for (int y = 0; y < 2; y++) {
             float2 uvs = ((float2)(id.xy + int2(x,y))) * 0.5 / previous_bloom_mip_resolution;
-            sum += previous_bloom_mip.Sample(sampler, uvs);
+            sum += max(previous_bloom_mip.Sample(sampler, uvs), 0);
         }
     }
     

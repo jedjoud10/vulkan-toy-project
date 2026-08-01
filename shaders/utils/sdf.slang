@@ -3,6 +3,7 @@
 
 #include "other.slang"
 #include "noises.slang"
+#include "bindless.slang"
 
 
 // https://iquilezles.org/articles/distfunctions/
@@ -41,9 +42,9 @@ float sdHexPrism( vec3 p, vec2 h )
 }
 
 [Differentiable]
-float d(float3 p) {
+float d(float3 p, float t) {
     // float s = length(p - 10*clamp(round(p/10.0), -float3(100, 1, 100), float3(100, 1, 100))) - 2;
-    float sphere = length(p) - 2;
+    float sphere = length(p + float3(0, -1, 0)) - 2;
     float octa = sdOctahedron(p - float3(0, 20, 0), 2.0);
     float hex = sdHexPrism(p - float3(10, 0, 0,), float2(3, 4));
     return min(sphere, min(p.y, min(octa, hex)));
@@ -56,39 +57,41 @@ struct TraceRes {
     float3 dir;
     float3 diff;
     float closest;
-    int ref;
 };
 
+static const uint MAX_ITERS = 256;
+static const float MAX_DISTANCE = 1000;
+static const float THRESHOLD_DISTANCE = 0.001;
+
+
 TraceRes trace(float3 ray_pos, float3 ray_dir) {
+    let uniforms = load_per_frame_uniforms();
     float closest = 1.0;
+    float3 point = ray_pos;
     int i = 0;
-    int ref = 0;
-    for (; i < 256; i++) {
-        let k = d(ray_pos);
+    float distance = 0.0;
+    for (; i < MAX_ITERS; i++) {
+        let k = d(point, uniforms.time);
 
-        if (k < 0.001) {
-            DifferentialPair<float3> dp_a = diffPair(ray_pos);
-            bwd_diff(d)(dp_a, 1.0);  
+        if (k < THRESHOLD_DISTANCE) {
+            DifferentialPair<float3> dp_a = diffPair(point);
+            DifferentialPair<float> dp_t = diffPair(uniforms.time);
+            
+            bwd_diff(d)(dp_a, dp_t, 1.0);  
             float3 normal = normalize(dp_a.d);
-
-            if (ref < 3) {
-                ref++;
-                ray_dir = reflect(ray_dir, normal);
-                ray_pos += ray_dir * 0.05;
-            } else {
-                return TraceRes(i, true, ray_pos, ray_dir, normal, closest, ref);
-            }
+            return TraceRes(i, true, point, ray_dir, normal, closest);
         }
 
-        if (k > 100) {
+        if (k > MAX_DISTANCE) {
             break;
         }
 
-        ray_pos += ray_dir * k;
+        distance += k;
+        point += ray_dir * k;
         closest = min(k, closest);
     }
 
-    return TraceRes(i, false, ray_pos, ray_dir, 0.0, closest, ref);
+    return TraceRes(i, false, ray_pos, ray_dir, 0.0, closest);
 }
 
 #endif
