@@ -4,6 +4,10 @@
 #include "utils/sky.slang"
 #include "utils/pbr.slang"
 
+float d(float3 p) {
+    return min(length(p - 10*round(p/10.0)) - 2, p.y);
+}
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void main(uint3 id: SV_DispatchThreadID) {
@@ -17,8 +21,6 @@ void main(uint3 id: SV_DispatchThreadID) {
     ray_dir = mul(float4(ray_dir.xy, 1, 0), uniforms.inv_view_matrix).xyz;
     ray_dir = normalize(-ray_dir);
 
-    float3 ray_pos = uniforms.position.xyz;
-    float3 col = 0.0;
 
     Configuration config = Configuration();
     Statistics stats = Statistics();
@@ -43,7 +45,6 @@ void main(uint3 id: SV_DispatchThreadID) {
     if ((uniforms.toggles_bitmask & 1) == 1) {
         col = stats.iterations / 256.0;
     }
-
     
     storage_images[RENDERED_STORAGE_IMAGE_IDX].Store(id.xy, float4(col, 1));
 }

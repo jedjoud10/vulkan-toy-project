@@ -181,50 +181,59 @@ uint8_t extract_z_layer_bits(uint64_t bitmask) {
 
 
 // holy fucking shit this is cursed
-const static uint8_t[] lookup = {
-    // 0b0000: INVALID!!!
-    0b10000,
+const static uint8_t[16] lookup = {
+    // 0b000000: INVALID!!!
+    0b000_00,
 
     // 0b0001:
-    0 | (0 << 2),
+    0 | (1 << 2),
 
     // 0b0010:
-    1 | (1 << 2),
+    1 | (2 << 2),
 
     // 0b0011:
-    0 | (1 << 2),
+    0 | (2 << 2),
     
     // 0b0100:
-    2 | (2 << 2),
-
-    // 0b0101:
-    0 | (2 << 2),
-
-    // 0b0111:
-    0 | (2 << 2),
-
-    // 0b1001:
-    0 | (3 << 2),
-
-    // 0b1010:
-    1 | (3 << 2),
-
-    // 0b1011:
-    0 | (3 << 2),
-    
-    // 0b1100:
     2 | (3 << 2),
 
-    // 0b1101:
+    // 0b0101:
     0 | (3 << 2),
+
+    // 0b0110:
+    1 | (3 << 2),
+
+    // 0b0111:
+    0 | (3 << 2),
+
+    // 0b1000:
+    3 | (4 << 2),
+
+    // 0b1001:
+    0 | (4 << 2),
+
+    // 0b1010:
+    1 | (4 << 2),
+
+    // 0b1011:
+    0 | (4 << 2),
+    
+    // 0b1100:
+    2 | (4 << 2),
+
+    // 0b1101:
+    0 | (4 << 2),
+
+    // 0b1110:
+    1 | (4 << 2),
 
     // 0b1111:
-    0 | (3 << 2),
+    0 | (4 << 2),
 };
 
-// layer_bits is 4 bit wide bitmask
-// returns 1D bounds. min (from least sig. bit) is stored in the first 2 bits. max (from least sig. bit) is stored in the next 2 bits
-// min is inclusive. max is inclusive as well. 5th bit states invalidity
+// layer_bits is 5 bit wide bitmask
+// returns 1D bounds. min (from least sig. bit) is stored in the first 2 bits. max (from least sig. bit) is stored in the next 3 bits
+// min is inclusive. max is exclusive as well. 5th bit states invalidity
 uint8_t get_max_min_layer_bits(uint8_t layer_bits) {
     // TODO: DONT DO THIS. WHY IS THERE NO LZCNT OP
     return lookup[layer_bits];
@@ -234,7 +243,7 @@ struct RelativePackedAABB {
     // we just need 12 bits in total
     // 2 bits per axis, 3 axis, min+max = 12 bits
     // first 6 bits are the x,y,z coords of min (in that order)
-    // next 6 bits are the x,y,z coords of max (in that order)
+    // next 9 bits are the x,y,z coords of max (in that order)
     uint16_t data;  
 
     property uint8_t3 min {
@@ -242,7 +251,7 @@ struct RelativePackedAABB {
 	}
 
     property uint8_t3 max {
-        get { return uint8_t3((data >> 6) & 0b11, (data >> 8) & 0b11, (data >> 10) & 0b11); }
+        get { return uint8_t3((data >> 6) & 0b111, (data >> 9) & 0b111, (data >> 12) & 0b111); }
 	}
 }
 
@@ -251,18 +260,21 @@ RelativePackedAABB extract_aabb_bitmask(uint64_t bitmask) {
     uint8_t y = extract_y_layer_bits(bitmask);
     uint8_t z = extract_z_layer_bits(bitmask);
 
-    // first 2 bits are min, next 2 bits are max (both inclusive)
-    uint8_t bounds_x = get_max_min_layer_bits(x);
-    uint8_t bounds_y = get_max_min_layer_bits(y);
-    uint8_t bounds_z = get_max_min_layer_bits(z);
+    // first 2 bits are min, next 3 bits are max (both inclusive)
+    uint16_t bounds_x = get_max_min_layer_bits(x);
+    uint16_t bounds_y = get_max_min_layer_bits(y);
+    uint16_t bounds_z = get_max_min_layer_bits(z);
 
     // max bounds testing
-    // bounds_x = 0b11_00;
-    // bounds_y = 0b11_00;
-    // bounds_z = 0b11_00;    
+    bounds_x = 0b111_00;
+    // bounds_y = 0b111_00;
+    bounds_z = 0b111_00;
 
+    // 6 bits
     uint16_t min_part = bounds_x & 0b11 | (bounds_y & 0b11) << 2 | (bounds_z & 0b11) << 4;
-    uint16_t max_part = ((bounds_x & 0b1100) >> 2) | ((bounds_y & 0b1100) >> 2) << 2 | ((bounds_z & 0b1100) >> 2) << 4;
+    
+    // 9 bits
+    uint16_t max_part = ((bounds_x & 0b11100) >> 2) | ((bounds_y & 0b11100) >> 2) << 3 | ((bounds_z & 0b11100) >> 2) << 6;
 
     return RelativePackedAABB(min_part | max_part << 6);
 }
@@ -300,6 +312,7 @@ DdaTraversalOutput dda_trace_recurse<let K : int>(
 
 
     uint64_t raw = 0;
+    uint8_t raw_mask_read = 0;
 
     if (((base_index >> 30) & 1) == 0) {
         raw = svo.get_bitmask(actual_child_index);
@@ -321,24 +334,31 @@ DdaTraversalOutput dda_trace_recurse<let K : int>(
 
     UniformThing uniforms = load_per_frame_uniforms();
     uint min_depth = uniforms.debug_type;
+
+    /*
     bool aabb_test_toggle = (uniforms.toggles_bitmask & 2) != 0;
 
-    if (K > 2 && aabb_test_toggle) {
+    if (aabb_test_toggle) {
         RelativePackedAABB babaisyou = extract_aabb_bitmask(raw);
-        int32_t3 aabb_global_min = babaisyou.min * (voxel_size << 0) + parent_world_space_origin;
-        int32_t3 aabb_global_max = babaisyou.max * (voxel_size << 0) + parent_world_space_origin;
-        // int32_t3 aabb_global_min = int32_t3(0) * (voxel_size << 2) + parent_world_space_origin;
-        // int32_t3 aabb_global_max = int32_t3(3) * (voxel_size << 2) + parent_world_space_origin;
-        // aabb_global_min -= voxel_size;
+        // printf("%d %d %d", babaisyou.max.x, babaisyou.max.y, babaisyou.max.z);
+
+
+        // no need to shift voxel_size<<2, because babaisyou.max can already reach 4 (since it is in local coords). 4 * (voxel_size) = voxel_size << 2
+        int32_t3 aabb_global_min = babaisyou.min * (voxel_size) + parent_world_space_origin;
+        int32_t3 aabb_global_max = babaisyou.max * (voxel_size) + parent_world_space_origin;
+        // int32_t3 aabb_global_min = parent_world_space_origin;
+        // int32_t3 aabb_global_max = 7*voxel_size + parent_world_space_origin;
+        // aabb_global_min -= voxel_size/2;
         // aabb_global_max += voxel_size;
         
         float tmin = 0;
         if (ray_box_intersection(inv_dir, dir_sign, ray_pos, aabb_global_min, aabb_global_max, tmin)) {
-            //distance = max(tmin, distance);
+            distance = max(tmin-0.2, distance);
         } else {
             return DdaTraversalOutput(false);
         }
     }
+    */
     
     // do everything in world space first, and then we convert to local space
     // ray will always be in the parent's working space, so we offset by the parent origin and clamp coords to [0..4)
@@ -351,12 +371,8 @@ DdaTraversalOutput dda_trace_recurse<let K : int>(
     floored_pos = (int8_t3)clamp(floored_pos, 0, 4);
 
     float3 side_dist = ((dir_sign * ((floored_pos - modified_ray_pos) + 0.5) + 0.5) * inv_dir);
-    bool3 eqs = false;    
+    bool3 eqs = false;  
 
-
-
-    
-    
     for (uint8_t i = 0; i < 12; i++) {
         stats.iterations += 1;
         
@@ -367,8 +383,6 @@ DdaTraversalOutput dda_trace_recurse<let K : int>(
         stats.calls += 1;
         stats.active_threads_per_call += WaveActiveCountBits((((raw >> bit_index) & 1) == 1));
         
-
-
         [branch]
         if ((((raw >> bit_index) & 1) == 1)) {  
             // world space position of the node origin
@@ -426,7 +440,6 @@ DdaTraversalOutput dda_trace_recurse<let K : int>(
                 float3 world = ray_pos + ray_dir * (distance_to_surface - EPS);
                 stats.exit_type = 3;
                 stats.exit_node_height = K;
-
                 int3 tmp_sign = max(0, -dir_sign);
                 return DdaTraversalOutput(true, origin[face], distance_to_surface - EPS, face, 0);
             }
