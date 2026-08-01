@@ -4,6 +4,7 @@
 #include "sky.slang"
 #include "bindless.slang"
 #include "ray_stuff_other.slang"
+#include "sdf.slang"
 
 #define PI 3.1415926538
 
@@ -95,11 +96,8 @@ public struct PbrSurfaceData {
 };
 
 float3 get_sun_shadow(float3 world, float3 normal, float3 sun) {
-	Statistics stats = Statistics();
-	Configuration config = Configuration();
-    DdaTraversalOutput output = trace_shi(world + sun * 0.1, sun, config, get_bindless_svo(), stats);
-
-	return output.hit ? 0.0 : 1.0;
+	let res = trace(world + normal * 0.01 + sun * 0.01, sun);
+	return res.hit ? 0.0 : 1.0;
 }
 
 
@@ -115,8 +113,7 @@ public float3 radiance_sun(
 	float3 specular = specular(f0, surface.arm.roughness, camera.view, sun.direction, surface.normal, half_view);
 	float n_dot_l = max(dot(sun.direction, surface.normal), 0.0);
 
-	// float3 shadow = get_sun_shadow(surface.position, surface.normal, sun.direction); 
-	float3 shadow = 1.0;
+	float3 shadow = get_sun_shadow(surface.position, surface.normal, sun.direction); 
 	return (kd * surface.albedo / PI + specular) * sun.color * n_dot_l * shadow;
 }
 
@@ -136,6 +133,28 @@ public float3 lighting2(
 	
 	
 	return radiance + ambient * 0.1;
+}
+
+public float3 do_thing_lol(float3 ray_pos, float3 ray_dir) {
+	float3 col = 0.0;
+    let uniforms = load_per_frame_uniforms();
+
+    let res = trace(ray_pos, ray_dir);
+    if (res.hit) {
+        //let shadow = trace(res.pos + res.diff * 0.01, uniforms.sun.xyz);
+        //col = shadow.iters / 256.0;
+    
+        PbrSurfaceData pbr_surface_data = PbrSurfaceData(res.pos, 1.0, res.diff, AoRoughnessMetallic(float3(1, 1, 0)));
+        CameraData camera_data = CameraData(-ray_dir);
+        float3 sun = uniforms.sun.xyz;
+        float3 sun_colour = sun_colour(sun.xyz);
+        SunData sun_data = SunData(sun.xyz, 3.0);
+        col = lighting2(pbr_surface_data, camera_data, sun_data) * (1 - res.ref/3.0);
+    } else {
+        col = sample_skybox_and_clouds(res.pos, res.dir);
+    }
+
+	return col;
 }
 
 #endif
