@@ -20,31 +20,19 @@ void main(uint3 id: SV_DispatchThreadID) {
     float3 ray_dir = mul(ndc, uniforms.inv_projection_matrix).xyz;
     ray_dir = mul(float4(ray_dir.xy, 1, 0), uniforms.inv_view_matrix).xyz;
     ray_dir = normalize(-ray_dir);
-
-
-    Configuration config = Configuration();
-    Statistics stats = Statistics();
-    DdaTraversalOutput output = trace_shi(ray_pos, ray_dir, config, get_bindless_svo(), stats);
-
-    if (output.hit) {
-        float3 world = ray_pos + ray_dir * output.distance;
-        //world = get_accurate_world_position_with_face2(world, output.specific_block_axis_thing, output.face, sign(ray_dir));
-        float3 normal = get_face_normal(output.face, sign(ray_dir));
-
-        float3 albedo = snoise(world * 1.001) * 0.3 + 0.7;
-
-        PbrSurfaceData surface = PbrSurfaceData(world, albedo, normal, AoRoughnessMetallic(float3(1, 0.9, 0)));
-        SunData sun = SunData(uniforms.sun.xyz, 1.0);
-        CameraData cam = CameraData(-ray_dir);
-
-        col = lighting2(surface, cam, sun);
-    } else {
-        col = sample_skybox_and_clouds(ray_pos, ray_dir);
-    }
-
-    if ((uniforms.toggles_bitmask & 1) == 1) {
-        col = stats.iterations / 256.0;
-    }
     
+    float3 ray_pos = uniforms.position.xyz;
+    float3 col = 0.0;
+
+    for (int i = 0; i < 256; i++) {
+        let k = d(ray_pos);
+        ray_pos += ray_dir * k;
+
+        if (k < 0.01) {
+            col = sin(ray_pos) * 0.5 + 0.5;
+            break;
+        }
+    }
+
     storage_images[RENDERED_STORAGE_IMAGE_IDX].Store(id.xy, float4(col, 1));
 }
