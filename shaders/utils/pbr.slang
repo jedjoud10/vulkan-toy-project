@@ -127,15 +127,14 @@ float3 get_sun_shadow(float3 world, float3 normal, float3 sun) {
 		return 0.0;
 	}
 
-	let res = trace(world + normal * 0.01 + sun_direction * 0.01, sun_direction);
-	return res.hit ? 0.0 : 1.0;
-	
-
-	/*
+#ifdef SDF_SOFT_SHADOWS_SUPPORTED
 	// https://iquilezles.org/articles/rmshadows/
 	let res = trace(world + normal * 0.01 + sun * 0.01, sun);
 	return min(res.shadow, clouds_shadow);
-	*/
+#else
+	let res = trace(world + normal * 0.01 + sun_direction * 0.01, sun_direction);
+	return res.hit ? 0.0 : 1.0;
+#endif
 }
 
 
@@ -194,7 +193,7 @@ public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) 
 			if ((uniforms.toggles_bitmask & 4) == 0) {
 				// TODO: file a bug report SOMEWHERE because these NonUniformResourceIndex are not doing anything
 				// (even tried with a simpler setup that uses NonUniformResourceIndex into a texture sample, still does not work) 
-				uint material_index = NonUniformResourceIndex(snoise(world.xz * 0.1) > 0.0 ? 0 : 1);
+				uint material_index = NonUniformResourceIndex(floor((snoise(world.xz * 0.03) * 0.5 + 0.5) * 4));
 				uint index = NonUniformResourceIndex(storage_buffers_readonly[STORAGE_BUFFER_MATERIALS_BUFFER].Load<uint32_t>(NonUniformResourceIndex(material_index * 4)));
 			
 

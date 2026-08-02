@@ -464,23 +464,30 @@ impl InternalApp {
 
         // hex
         blases_instances.push(ray_tracing::instantiate_blas(
-            vek::Quaternion::identity(),
+            vek::Quaternion::default(),
             vek::Vec3::new(10f32, 2f32, 0f32),
-            vek::Vec3::new(2.0, 2.0, 4.0),
+            vek::Vec3::new(2.6, 2.1, 4.1),
             &blases[0],
             0)
         );
 
-        /*
         // torus
         blases_instances.push(ray_tracing::instantiate_blas(
-            vek::Quaternion::identity(),
-            -vek::Vec3::unit_y(),
-            vek::Vec3::new(1000.0, 1.0, 1000.0),
+            vek::Quaternion::rotation_3d(2.4f32, vek::Vec3::<f32>::one().normalized()),
+            vek::Vec3::new(2f32, 2f32, 5f32),
+            vek::Vec3::new(7f32, 2f32, 7f32),
             &blases[0],
             0)
         );
-        */
+
+        // cylinder
+        blases_instances.push(ray_tracing::instantiate_blas(
+            vek::Quaternion::default(),
+            vek::Vec3::new(-10f32,0f32, -0f32),
+            vek::Vec3::new(2f32, 400f32, 2f32),
+            &blases[0],
+            0)
+        );
 
         Self {
             materials_buffer,
@@ -1490,10 +1497,11 @@ impl InternalApp {
         }
         log::info!("destroyed BLASes");
 
-
         self.tlas.destroy(&self.acceleration_structure_device, &self.device, &mut self.allocator);
         log::info!("destroyed TLAS");
 
+        self.scene_representation_for_sdf_buffer.destroy(&self.device, &mut self.allocator);
+        log::info!("destroyed gpu repr");
 
         log::info!("waiting for all frame in flight fences...");
         let fences = self.frames_in_flight.iter().map(|x| x.end_fence).collect::<Vec<_>>();

@@ -134,8 +134,7 @@ pub unsafe fn create_blas(
 }
 
 pub fn instantiate_blas(rotation: vek::Quaternion<f32>, position: vek::Vec3<f32>, scale: vek::Vec3<f32>, data: &AccelerationStructureData, instance_index_low_24: u32) -> vk::AccelerationStructureInstanceKHR {
-
-    let matrix = vek::Mat4::from(rotation).scaled_3d(scale).translated_3d(position);
+    let matrix: vek::Mat4::<f32> = vek::Mat4::<f32>::translation_3d(position) * vek::Mat4::from(rotation) * vek::Mat4::<f32>::scaling_3d(scale);
     let row_arrays = &matrix.into_row_arrays()[0..3];
     let matrix: [f32; 12] = cast_slice::<[f32;4],f32>(row_arrays).try_into().unwrap();
 
