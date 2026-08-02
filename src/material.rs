@@ -1,11 +1,17 @@
 use std::{borrow::Cow, io::Read};
 
 use ash::vk;
-use bytemuck::{bytes_of, cast_slice};
+use bytemuck::{Pod, Zeroable, bytes_of, cast_slice};
 use gpu_allocator::vulkan::{Allocation, Allocator};
 use image::{EncodableLayout, GenericImage, GenericImageView};
 
 use crate::{buffer, others, renderer::GraphicsContext, texture::{Texture, create_texture}};
+
+#[derive(Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+pub struct GpuMaterialInfo {
+    pub base_index: u32,
+}
 
 pub struct Material {
     pub albedo_texture: Texture,

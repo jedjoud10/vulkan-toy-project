@@ -5,6 +5,7 @@
 #include "bindless.slang"
 #include "ray_stuff_other.slang"
 #include "sdf.slang"
+#include "triplanar.slang"
 
 #define PI 3.1415926538
 
@@ -120,8 +121,18 @@ void InitRandom(uint2 pos, uint frameNo) {
 
 float3 get_sun_shadow(float3 world, float3 normal, float3 sun) {
 	float3 sun_direction = normalize(sun + GetRandomSphereDir() * 0.02);
+	let clouds_shadow = 1-clouds(sun_direction, world).a;
+
+	if (clouds_shadow == 0) {
+		return 0.0;
+	}
+	/*
 	let res = trace(world + normal * 0.01 + sun_direction * 0.01, sun_direction);
 	return res.hit ? 0.0 : 1.0;
+	*/
+
+	let res = trace(world + normal * 0.01 + sun * 0.01, sun);
+	return min(res.shadow, clouds_shadow);
 }
 
 
@@ -164,28 +175,37 @@ public float3 lighting2(
 
 public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir, UniformThing uniforms) {
 	float3 col = 0.0;
-
+	float3 mask = 1.0;
 	InitRandom(id.xy, (uint32_t)uniforms.frame_count);
 
 	float3 camera_view = -ray_dir;
 
 	// https://dubiousconst282.github.io/2024/10/03/voxel-ray-tracing/
-	for (int bounce = 0; bounce < 3; bounce++) {
+	for (int bounce = 0; bounce < 4; bounce++) {
 		let res = trace(ray_pos, ray_dir);
     	if (res.hit) {    
-			float3 diffuse = 1.0;
-			float3 arm = float3(1.0, 0.1, 0);
+			float3 world = res.pos;
+			float3 normal = res.normal;
 
-			if (snoise(res.pos * 0.5) > 0) {
-				arm.y = 0.8;
+			// TODO: file a bug report SOMEWHERE because these NonUniformResourceIndex are not doing anything
+			// (even tried with a simpler setup that uses NonUniformResourceIndex into a texture sample, still does not work) 
+			uint material_index = NonUniformResourceIndex(snoise(world.xz * 0.1) > 0.0 ? 0 : 3);
+			uint index = NonUniformResourceIndex(storage_buffers_readonly[STORAGE_BUFFER_MATERIALS_BUFFER].Load<uint32_t>(NonUniformResourceIndex(material_index * 4)));
+			
+			float3 diffuse = sample_triplanar(index, world, normal);
+			float3 arm = sample_triplanar(index+1, world, normal);
+
+			if ((uniforms.toggles_bitmask & 4) != 0) {
+				arm = float3(1, 1, 0);
 			}
 
-    	    PbrSurfaceData surface = PbrSurfaceData(res.pos, diffuse, res.diff, AoRoughnessMetallic(arm));
+			normal = sample_triplanar_normal(index+2, world, normal);
+			
+			PbrSurfaceData surface = PbrSurfaceData(res.pos, diffuse, normal, AoRoughnessMetallic(arm));
     	    CameraData camera = CameraData(camera_view);
     	    float3 sun = uniforms.sun.xyz;
     	    float3 sun_colour = sun_colour(sun.xyz);
-    	    SunData light = SunData(sun.xyz, 3.0);
-
+    	    SunData light = SunData(sun.xyz, 6.0);
 
 			float3 radiance = radiance_sun(surface, camera, light, uniforms);
 
@@ -193,20 +213,21 @@ public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir, 
 			float3 f0 = lerp(0.04, surface.albedo, surface.arm.metallic);
 			float3 ks = fresnelRoughness(f0, surface.normal, camera.view, surface.arm.roughness);
 			float3 kd = (1 - ks) * (1 - surface.arm.metallic);
-			float3 irradiance = get_environment_diffuse(surface.normal);
-			float3 ambient = irradiance * surface.albedo * kd * surface.arm.ao;
+			
+			
+			col += mask * radiance;
+			float3 ambient = surface.albedo * kd * surface.arm.ao;
+			mask *= lerp(ks, surface.albedo, surface.arm.metallic);
 
-			col += radiance + ambient * 0.0;
-
-			float3 randomized_ray_dir = res.diff + GetRandomSphereDir();
-			float3 reflected_ray_dir = reflect(ray_dir, res.diff);
+			float3 randomized_ray_dir = normal + GetRandomSphereDir();
+			float3 reflected_ray_dir = reflect(ray_dir, normal);
 
 			ray_dir = normalize(lerp(reflected_ray_dir, randomized_ray_dir, surface.arm.roughness));
-			float3 last_ray_pos = ray_pos;
 			ray_pos = res.pos + ray_dir * 0.01;
-			camera_view = ray_pos - last_ray_pos;
+			camera_view = -ray_dir;
     	} else {
-    	    col += sample_skybox_and_clouds(res.pos, res.dir);
+    	    col += mask * sample_skybox_and_clouds(res.pos, res.dir);
+			break;
     	}
 
 		if ((uniforms.toggles_bitmask & 1) != 0) {

@@ -6,6 +6,7 @@ use bytesize::ByteSize;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
 use smallvec::SmallVec;
+use crate::material::GpuMaterialInfo;
 use crate::statistics;
 use crate::debug_text;
 use crate::input::Button;
@@ -131,7 +132,8 @@ pub struct InternalApp {
     allocator: gpu_allocator::vulkan::Allocator,
     
 
-
+    materials: Vec<Material>,
+    materials_buffer: buffer::Buffer,
     // voxels: SparseVoxelOctree,
     // voxels2: TestingStructure,
     
@@ -384,6 +386,15 @@ impl InternalApp {
         let cmd = others::begin_recording(&mut ctx);
         let mut writer = buffer::begin_buffer_writer(&mut ctx);
 
+        let materials = vec![
+            Material::new(&mut ctx, "metal/metal_0077"),
+            Material::new(&mut ctx, "ground/ground_0029"),
+            Material::new(&mut ctx, "metal_2/metal_0066"),
+            Material::new(&mut ctx, "ground_2/ground_0019"),
+        ];
+
+        let materials_buffer = buffer::create_buffer(&mut ctx, materials.len() * size_of::<GpuMaterialInfo>(), "gpu materials buffer", vk::BufferUsageFlags::TRANSFER_DST);
+
         //let voxels = voxel::create_sparse_structures(&mut ctx, cmd, &mut writer, false);
         //let voxels2 = voxel::create_sparse_structures2(&mut ctx, cmd, &mut writer, false);
 
@@ -404,6 +415,8 @@ impl InternalApp {
         );
 
         Self {
+            materials_buffer,
+            materials,
             // voxels,
             // voxels2,
             last_frame_cpu_cmd_record_duration: Default::default(),
@@ -722,24 +735,10 @@ impl InternalApp {
                 .buffer(self.debug_text.buffer.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
-            /*
             vk::DescriptorBufferInfo::default()
-                .buffer(self.voxels.index_buffer.buffer)
+                .buffer(self.materials_buffer.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
-            vk::DescriptorBufferInfo::default()
-                .buffer(self.voxels.bitmask_buffer.buffer)
-                .offset(0)
-                .range(vk::WHOLE_SIZE),
-            vk::DescriptorBufferInfo::default()
-                .buffer(self.voxels.aabb_buffer.buffer)
-                .offset(0)
-                .range(vk::WHOLE_SIZE),
-            vk::DescriptorBufferInfo::default()
-                .buffer(self.voxels2.buffer.buffer)
-                .offset(0)
-                .range(vk::WHOLE_SIZE),
-            */
         ];
 
         let storage_buffer_write = vk::WriteDescriptorSet::default()
@@ -773,6 +772,11 @@ impl InternalApp {
                 .image_view(*bloom_sampled_image_view)
                 .image_layout(vk::ImageLayout::GENERAL)
             );
+        }
+
+        // add material sampled image views
+        for material in self.materials.iter_mut() {
+            material.add_per_frame_sampled_images(&mut sampled_image_infos);
         }
 
         let sampled_image_write = vk::WriteDescriptorSet::default()
@@ -858,6 +862,10 @@ impl InternalApp {
         
         self.debug_text.update_debug_text(&ctx.device, cmd);        
 
+        let gpu_material_data = self.materials.iter().map(|x| GpuMaterialInfo { base_index: x.base_index }).collect::<Vec<_>>();
+        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&gpu_material_data), self.materials_buffer.buffer, 0);
+
+
         // bind the descriptor set for subsequent pipelines
         self.device.cmd_bind_descriptor_sets(
             cmd,
@@ -928,7 +936,16 @@ impl InternalApp {
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)
             .size(vk::WHOLE_SIZE);
-        let buffer_memory_barriers = [uniform_buffer_barrier, debug_text_buffer_barrier];
+        let materials_gpu_buffer = vk::BufferMemoryBarrier2::default()
+            .buffer(self.materials_buffer.buffer)
+            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .size(vk::WHOLE_SIZE);
+        let buffer_memory_barriers = [uniform_buffer_barrier, debug_text_buffer_barrier, materials_gpu_buffer];
         let dep = vk::DependencyInfo::default().buffer_memory_barriers(&buffer_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
@@ -1038,9 +1055,9 @@ impl InternalApp {
         let rendered_image_barrier = vk::ImageMemoryBarrier2::default()
             .old_layout(vk::ImageLayout::GENERAL)
             .new_layout(vk::ImageLayout::GENERAL)
-            .src_access_mask(vk::AccessFlags2::SHADER_STORAGE_WRITE)
+            .src_access_mask(vk::AccessFlags2::SHADER_STORAGE_WRITE | vk::AccessFlags2::SHADER_STORAGE_READ)
             .dst_access_mask(vk::AccessFlags2::SHADER_STORAGE_WRITE | vk::AccessFlags2::SHADER_STORAGE_READ)
-            .src_stage_mask(vk::PipelineStageFlags2::NONE)
+            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
             .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)
@@ -1328,6 +1345,10 @@ impl InternalApp {
         self.voxels2.destroy(&self.device, &mut self.allocator);
         log::info!("destroyed sfasdfafdsa");
         */
+        self.materials_buffer.destroy(&self.device, &mut self.allocator);
+        for material in self.materials {
+            material.destroy(&self.device, &mut self.allocator);
+        }
         
         
         for (_, graphic_pipeline) in self.graphics_pipelines {

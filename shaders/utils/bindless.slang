@@ -36,9 +36,11 @@ const static uint VOXEL_STORAGE_IMAGE_IDX = -1;
 const static uint UNIFORM_BUFFER_THINGY_IDX = 0;
 const static uint STORAGE_BUFFER_DEBUG_TEXT_LINES = 1;
 
-const static uint STORAGE_BUFFER_SVO_INDEX = 2;
-const static uint STORAGE_BUFFER_SVO_BITMASK = 3;
-const static uint STORAGE_BUFFER_SVO_AABB = 4;
+const static uint STORAGE_BUFFER_MATERIALS_BUFFER = 2;
+
+const static uint STORAGE_BUFFER_SVO_INDEX = -1;
+const static uint STORAGE_BUFFER_SVO_BITMASK = -1;
+const static uint STORAGE_BUFFER_SVO_AABB = 1;
 const static uint STORAGE_BUFFER_TESTING_BUFFER = 5;
 
 

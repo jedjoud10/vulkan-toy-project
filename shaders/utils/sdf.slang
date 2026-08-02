@@ -42,12 +42,19 @@ float sdHexPrism( vec3 p, vec2 h )
 }
 
 [Differentiable]
+float sdCylinder( vec3 p, vec3 c )
+{
+  return length(p.xz-c.xy)-c.z;
+}
+
+[Differentiable]
 float d(float3 p, float t) {
     // float s = length(p - 10*clamp(round(p/10.0), -float3(100, 1, 100), float3(100, 1, 100))) - 2;
     float sphere = length(p + float3(0, -1, 0)) - 2;
     float octa = sdOctahedron(p - float3(0, 20, 0), 2.0);
-    float hex = sdHexPrism(p - float3(10, 0, 0,), float2(3, 4));
-    return min(sphere, min(p.y, min(octa, hex)));
+    float hex = sdHexPrism(p + float3(-10, -2, 0,), float2(2, 4));
+    float cyl = sdCylinder(p + float3(10, 0, 0), float3(0, 0, 2));
+    return min(sphere, min(p.y, min(min(octa, cyl), hex)));
 }
 
 struct TraceRes {
@@ -55,8 +62,8 @@ struct TraceRes {
     bool hit;
     float3 pos;
     float3 dir;
-    float3 diff;
-    float closest;
+    float3 normal;
+    float shadow;
 };
 
 static const uint MAX_ITERS = 256;
@@ -66,7 +73,7 @@ static const float THRESHOLD_DISTANCE = 0.001;
 
 TraceRes trace(float3 ray_pos, float3 ray_dir) {
     let uniforms = load_per_frame_uniforms();
-    float closest = 1.0;
+    float shadow = 1.0;
     float3 point = ray_pos;
     int i = 0;
     float distance = 0.0;
@@ -79,19 +86,19 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
             
             bwd_diff(d)(dp_a, dp_t, 1.0);  
             float3 normal = normalize(dp_a.d);
-            return TraceRes(i, true, point, ray_dir, normal, closest);
+            return TraceRes(i, true, point, ray_dir, normal, 0.0);
         }
 
         if (k > MAX_DISTANCE) {
             break;
         }
 
+        shadow = min(shadow, k * 8.0 / distance);
         distance += k;
         point += ray_dir * k;
-        closest = min(k, closest);
     }
 
-    return TraceRes(i, false, ray_pos, ray_dir, 0.0, closest);
+    return TraceRes(i, false, ray_pos, ray_dir, 0.0, shadow);
 }
 
 #endif
