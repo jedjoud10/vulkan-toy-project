@@ -1,12 +1,14 @@
 use ash::vk;
 use bytemuck::Pod;
 use bytemuck::Zeroable;
+use bytemuck::bytes_of;
 use bytemuck::cast_slice;
 use bytesize::ByteSize;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
 use smallvec::SmallVec;
 use crate::material::GpuMaterialInfo;
+use crate::ray_tracing;
 use crate::statistics;
 use crate::debug_text;
 use crate::input::Button;
@@ -136,8 +138,14 @@ pub struct InternalApp {
     materials_buffer: buffer::Buffer,
     // voxels: SparseVoxelOctree,
     // voxels2: TestingStructure,
-    
 
+
+    tlas: crate::ray_tracing::TopLevelAccelerationStructure,
+    blases: Vec<crate::ray_tracing::AccelerationStructureData>,
+    blases_instances: Vec<vk::AccelerationStructureInstanceKHR>,
+
+    scene_representation_for_sdf: Vec<vek::Vec3<f32>>,
+    scene_representation_for_sdf_buffer: buffer::Buffer,
 
     timestamp_period: f32,
     skybox: skybox::Skybox,
@@ -398,6 +406,23 @@ impl InternalApp {
         //let voxels = voxel::create_sparse_structures(&mut ctx, cmd, &mut writer, false);
         //let voxels2 = voxel::create_sparse_structures2(&mut ctx, cmd, &mut writer, false);
 
+
+        
+        let aabbs = [ray_tracing::AccelerationStructureAabb {
+            min: -vek::Vec3::one(),
+            max: vek::Vec3::one(),
+        }];
+
+        let written = writer.write_bytes(cast_slice(&aabbs));
+
+        let geometry = ray_tracing::BlasGeometry::AABBs {
+            aabb_buffer_address: written.buffer_device_address_start,
+            max_count: 1
+        };
+
+        let blas = ray_tracing::create_blas(&mut ctx, cmd, geometry);
+        let blases = vec![blas];
+
         others::end_recording_and_submit(&mut ctx, cmd);
         buffer::end_buffer_writer(&mut ctx, writer);
 
@@ -414,9 +439,58 @@ impl InternalApp {
             vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST
         );
 
+        let tlas = ray_tracing::pre_create_tlas(&mut ctx);
+        let scene_representation_for_sdf_buffer = buffer::create_buffer_default_flags(&mut ctx, size_of::<u32>() + size_of::<vek::Vec3<f32>>() * 100, "a");
+
+        let mut blases_instances = Vec::new();
+
+        // plane
+        blases_instances.push(ray_tracing::instantiate_blas(
+            vek::Quaternion::identity(),
+            -vek::Vec3::unit_y(),
+            vek::Vec3::new(1000.0, 1.0, 1000.0),
+            &blases[0],
+            0)
+        );
+
+        // sphere
+        blases_instances.push(ray_tracing::instantiate_blas(
+            vek::Quaternion::identity(),
+            vek::Vec3::unit_y(),
+            vek::Vec3::broadcast(2f32),
+            &blases[0],
+            0)
+        );
+
+        // hex
+        blases_instances.push(ray_tracing::instantiate_blas(
+            vek::Quaternion::identity(),
+            vek::Vec3::new(10f32, 2f32, 0f32),
+            vek::Vec3::new(2.0, 2.0, 4.0),
+            &blases[0],
+            0)
+        );
+
+        /*
+        // torus
+        blases_instances.push(ray_tracing::instantiate_blas(
+            vek::Quaternion::identity(),
+            -vek::Vec3::unit_y(),
+            vek::Vec3::new(1000.0, 1.0, 1000.0),
+            &blases[0],
+            0)
+        );
+        */
+
         Self {
             materials_buffer,
             materials,
+            tlas, 
+            blases,
+            blases_instances,
+
+            scene_representation_for_sdf: Vec::new(),
+            scene_representation_for_sdf_buffer,
             // voxels,
             // voxels2,
             last_frame_cpu_cmd_record_duration: Default::default(),
@@ -488,6 +562,8 @@ impl InternalApp {
         };
 
         if add {
+            //self.blases_instances.push(ray_tracing::instantiate_blas(vek::Quaternion::identity(), position, 1.0, &self.blases[0], 0));
+            //self.scene_representation_for_sdf.push(position);
         }
     }
 
@@ -739,6 +815,10 @@ impl InternalApp {
                 .buffer(self.materials_buffer.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
+            vk::DescriptorBufferInfo::default()
+                .buffer(self.scene_representation_for_sdf_buffer.buffer)
+                .offset(0)
+                .range(vk::WHOLE_SIZE),
         ];
 
         let storage_buffer_write = vk::WriteDescriptorSet::default()
@@ -801,7 +881,18 @@ impl InternalApp {
             .dst_set(main_descriptor_set)
             .image_info(&samplers);
 
-        self.device.update_descriptor_sets(&[storage_image_write, storage_buffer_write, sampled_image_write, sampler_states_write], &[]);
+        let tlases = [self.tlas.data.acceleration_structure];
+        let mut acceleration_structure_write_tmp = vk::WriteDescriptorSetAccelerationStructureKHR::default()
+            .acceleration_structures(&tlases);
+
+        let acceleration_structure_write = vk::WriteDescriptorSet::default()
+            .descriptor_count(1)
+            .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+            .dst_set(main_descriptor_set)
+            .dst_binding(4)
+            .push_next(&mut acceleration_structure_write_tmp);
+
+        self.device.update_descriptor_sets(&[storage_image_write, storage_buffer_write, sampled_image_write, sampler_states_write, acceleration_structure_write], &[]);
 
         // TODO: ideally, these would:
         // 1. be dynamically allocated using some sort of per-frame arena with indexing
@@ -864,6 +955,21 @@ impl InternalApp {
 
         let gpu_material_data = self.materials.iter().map(|x| GpuMaterialInfo { base_index: x.base_index }).collect::<Vec<_>>();
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&gpu_material_data), self.materials_buffer.buffer, 0);
+
+        // write count
+        let cnt = self.scene_representation_for_sdf.len() as u32;
+        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, bytes_of(&cnt), self.scene_representation_for_sdf_buffer.buffer, 0);
+
+        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene_representation_for_sdf), self.scene_representation_for_sdf_buffer.buffer, size_of::<u32>() as u64);
+
+        // rebuild TLAS
+        ray_tracing::rebuild_tlas(
+            self.blases_instances.iter().copied(),
+            &self.tlas,
+            &mut ctx,
+            cmd,
+            scratch_buffer,
+        );
 
 
         // bind the descriptor set for subsequent pipelines
@@ -945,7 +1051,16 @@ impl InternalApp {
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)
             .size(vk::WHOLE_SIZE);
-        let buffer_memory_barriers = [uniform_buffer_barrier, debug_text_buffer_barrier, materials_gpu_buffer];
+        let scene_repr_gpu_buffer = vk::BufferMemoryBarrier2::default()
+            .buffer(self.scene_representation_for_sdf_buffer.buffer)
+            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .size(vk::WHOLE_SIZE);
+        let buffer_memory_barriers = [uniform_buffer_barrier, debug_text_buffer_barrier, materials_gpu_buffer, scene_repr_gpu_buffer];
         let dep = vk::DependencyInfo::default().buffer_memory_barriers(&buffer_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
@@ -1369,6 +1484,16 @@ impl InternalApp {
         
         self.debug_text.destroy(&self.device, &mut self.allocator);
         log::info!("destroyed debug text buffer");
+
+        for x in self.blases {
+            x.destroy(&self.acceleration_structure_device, &self.device, &mut self.allocator);
+        }
+        log::info!("destroyed BLASes");
+
+
+        self.tlas.destroy(&self.acceleration_structure_device, &self.device, &mut self.allocator);
+        log::info!("destroyed TLAS");
+
 
         log::info!("waiting for all frame in flight fences...");
         let fences = self.frames_in_flight.iter().map(|x| x.end_fence).collect::<Vec<_>>();

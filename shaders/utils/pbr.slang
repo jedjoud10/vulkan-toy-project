@@ -126,13 +126,16 @@ float3 get_sun_shadow(float3 world, float3 normal, float3 sun) {
 	if (clouds_shadow == 0) {
 		return 0.0;
 	}
-	/*
+
 	let res = trace(world + normal * 0.01 + sun_direction * 0.01, sun_direction);
 	return res.hit ? 0.0 : 1.0;
-	*/
+	
 
+	/*
+	// https://iquilezles.org/articles/rmshadows/
 	let res = trace(world + normal * 0.01 + sun * 0.01, sun);
 	return min(res.shadow, clouds_shadow);
+	*/
 }
 
 
@@ -140,7 +143,6 @@ public float3 radiance_sun(
 	PbrSurfaceData surface,
 	CameraData camera,
 	SunData sun,
-	UniformThing thing,
 ) {
     float3 half_view = normalize(camera.view + sun.direction);
     float3 f0 = lerp(0.04, surface.albedo, surface.arm.metallic);
@@ -158,9 +160,8 @@ public float3 lighting2(
 	PbrSurfaceData surface,
 	CameraData camera,
 	SunData light,
-	UniformThing thing,
 ) {
-	float3 radiance = radiance_sun(surface, camera, light, thing);
+	float3 radiance = radiance_sun(surface, camera, light);
 
 	// IBL diffuse term
 	float3 f0 = lerp(0.04, surface.albedo, surface.arm.metallic);
@@ -173,7 +174,7 @@ public float3 lighting2(
 	return radiance + ambient * 0.1;
 }
 
-public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir, UniformThing uniforms) {
+public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) {
 	float3 col = 0.0;
 	float3 mask = 1.0;
 	InitRandom(id.xy, (uint32_t)uniforms.frame_count);
@@ -181,33 +182,35 @@ public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir, 
 	float3 camera_view = -ray_dir;
 
 	// https://dubiousconst282.github.io/2024/10/03/voxel-ray-tracing/
-	for (int bounce = 0; bounce < 4; bounce++) {
+	for (int bounce = 0; bounce < 2; bounce++) {
 		let res = trace(ray_pos, ray_dir);
     	if (res.hit) {    
 			float3 world = res.pos;
 			float3 normal = res.normal;
 
-			// TODO: file a bug report SOMEWHERE because these NonUniformResourceIndex are not doing anything
-			// (even tried with a simpler setup that uses NonUniformResourceIndex into a texture sample, still does not work) 
-			uint material_index = NonUniformResourceIndex(snoise(world.xz * 0.1) > 0.0 ? 0 : 3);
-			uint index = NonUniformResourceIndex(storage_buffers_readonly[STORAGE_BUFFER_MATERIALS_BUFFER].Load<uint32_t>(NonUniformResourceIndex(material_index * 4)));
-			
-			float3 diffuse = sample_triplanar(index, world, normal);
-			float3 arm = sample_triplanar(index+1, world, normal);
+			float3 diffuse = 1.0; 
+			float3 arm = float3(1, 1, 0);
 
-			if ((uniforms.toggles_bitmask & 4) != 0) {
-				arm = float3(1, 1, 0);
+			if ((uniforms.toggles_bitmask & 4) == 0) {
+				// TODO: file a bug report SOMEWHERE because these NonUniformResourceIndex are not doing anything
+				// (even tried with a simpler setup that uses NonUniformResourceIndex into a texture sample, still does not work) 
+				uint material_index = NonUniformResourceIndex(snoise(world.xz * 0.1) > 0.0 ? 0 : 1);
+				uint index = NonUniformResourceIndex(storage_buffers_readonly[STORAGE_BUFFER_MATERIALS_BUFFER].Load<uint32_t>(NonUniformResourceIndex(material_index * 4)));
+			
+
+				diffuse = sample_triplanar(index, world, normal);
+				arm = sample_triplanar(index+1, world, normal);
+				normal = sample_triplanar_normal(index+2, world, normal);
 			}
 
-			normal = sample_triplanar_normal(index+2, world, normal);
 			
 			PbrSurfaceData surface = PbrSurfaceData(res.pos, diffuse, normal, AoRoughnessMetallic(arm));
     	    CameraData camera = CameraData(camera_view);
     	    float3 sun = uniforms.sun.xyz;
     	    float3 sun_colour = sun_colour(sun.xyz);
-    	    SunData light = SunData(sun.xyz, 6.0);
+    	    SunData light = SunData(sun.xyz, 16.0);
 
-			float3 radiance = radiance_sun(surface, camera, light, uniforms);
+			float3 radiance = radiance_sun(surface, camera, light);
 
 			// IBL diffuse term
 			float3 f0 = lerp(0.04, surface.albedo, surface.arm.metallic);
@@ -217,7 +220,7 @@ public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir, 
 			
 			col += mask * radiance;
 			float3 ambient = surface.albedo * kd * surface.arm.ao;
-			mask *= lerp(ks, surface.albedo, surface.arm.metallic);
+			mask *= lerp(fresnelRoughness(surface.albedo, surface.normal, camera.view, surface.arm.roughness), surface.albedo, surface.arm.metallic);
 
 			float3 randomized_ray_dir = normal + GetRandomSphereDir();
 			float3 reflected_ray_dir = reflect(ray_dir, normal);

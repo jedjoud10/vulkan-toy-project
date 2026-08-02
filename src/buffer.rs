@@ -85,6 +85,14 @@ pub unsafe fn create_buffer_with_location(
     }
 }
 
+pub unsafe fn create_buffer_default_flags(
+    ctx: &mut GraphicsContext,
+    size: usize,
+    name: &str,
+) -> Buffer {
+    create_buffer_with_location(ctx, size, name, vk::BufferUsageFlags::empty(), gpu_allocator::MemoryLocation::GpuOnly)
+}
+
 
 pub unsafe fn create_buffer(
     ctx: &mut GraphicsContext,
@@ -143,6 +151,10 @@ pub unsafe fn write_with_scratch_buffer(
     buffer: vk::Buffer,
     offset: u64,
 ) {
+    if bytes.is_empty() {
+        return;
+    }
+
     let written = scratch_buffer.write_bytes(bytes);
 
     let region = vk::BufferCopy2::default()

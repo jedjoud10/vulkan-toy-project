@@ -10,7 +10,7 @@
 void main(uint3 id: SV_DispatchThreadID) {
 
 
-    let uniforms = load_per_frame_uniforms();
+    uniforms = load_per_frame_uniforms();
     float2 screen_uvs = (id.xy / uniforms.screen_resolution);
     
     let ndc = float4(screen_uvs * 2 - 1, 1, 1);
@@ -21,8 +21,14 @@ void main(uint3 id: SV_DispatchThreadID) {
     float3 ray_pos = uniforms.position.xyz;
     float3 last = storage_images[RENDERED_STORAGE_IMAGE_IDX].Load(id.xy).xyz;
 
-    // float3 col = 0.0;
-    float3 col = trace_scene_multibounce(id.xy, ray_pos, ray_dir, uniforms);
+    float3 col = 0;
+
+    if (uniforms.debug_type == 1) {
+        col = trace(ray_pos, ray_dir).iters / 256.0;
+    } else {
+        col = trace_scene_multibounce(id.xy, ray_pos, ray_dir);
+    }
+
 
     float lerp_factor = 1.0;
     if ((uniforms.toggles_bitmask & 2) != 2) {

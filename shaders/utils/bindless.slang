@@ -38,10 +38,13 @@ const static uint STORAGE_BUFFER_DEBUG_TEXT_LINES = 1;
 
 const static uint STORAGE_BUFFER_MATERIALS_BUFFER = 2;
 
+const static uint STORAGE_BUFFER_SCENE_REPR_BUFFER = 3;
+
+
 const static uint STORAGE_BUFFER_SVO_INDEX = -1;
 const static uint STORAGE_BUFFER_SVO_BITMASK = -1;
-const static uint STORAGE_BUFFER_SVO_AABB = 1;
-const static uint STORAGE_BUFFER_TESTING_BUFFER = 5;
+const static uint STORAGE_BUFFER_SVO_AABB = -1;
+const static uint STORAGE_BUFFER_TESTING_BUFFER = -1;
 
 
 const static uint SKYBOX_SAMPLER_IMAGE_IDX = 0;
@@ -93,5 +96,7 @@ UniformThing load_per_frame_uniforms() {
     // it (probably) does not help that `UniformThing` is not very well structured 
     return storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
 }
+
+public static UniformThing uniforms;
 
 #endif
