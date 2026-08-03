@@ -119,6 +119,8 @@ void InitRandom(uint2 pos, uint frameNo) {
     g_RandomSeed ^= frameNo * 1234;
 }
 
+#define SHADOWS
+
 float3 get_sun_shadow(float3 world, float3 normal, float3 sun) {
 	float3 sun_direction = normalize(sun + GetRandomSphereDir() * 0.02);
 	let clouds_shadow = 1-clouds(sun_direction, world).a;
@@ -150,8 +152,11 @@ public float3 radiance_sun(
 	float3 specular = specular(f0, surface.arm.roughness, camera.view, sun.direction, surface.normal, half_view);
 	float n_dot_l = max(dot(sun.direction, surface.normal), 0.0);
 
+#ifdef SHADOWS
 	float3 shadow = get_sun_shadow(surface.position, surface.normal, sun.direction); 
-	// float3 shadow = 1.0;
+#else
+	float3 shadow = 1.0;
+#endif
 	return (kd * surface.albedo / PI + specular) * sun.color * n_dot_l * shadow;
 }
 

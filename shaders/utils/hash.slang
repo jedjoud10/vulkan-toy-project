@@ -145,6 +145,7 @@ float4 hash44(float4 p4)
     return fract((p4.xxyz+p4.yzzw)*p4.zywx);
 }
 
+// FIXME: something is wrong with this idfk what
 float noise(float2 p) {
     float zz = hash12(floor(p));
     float zo = hash12(floor(p) + float2(0, 1));
@@ -177,5 +178,32 @@ float noise(float3 p) {
 
     return lerp(bottom, top, uv.y) * 2 - 1;
 }
+
+
+[BackwardDerivativeOf(noise)]
+void bwd_test(inout DifferentialPair<float3> p_pair, float dOut)
+{
+    float eps = 0.001;
+    float x = noise(p_pair.p - float3(eps, 0, 0));
+    float y = noise(p_pair.p - float3(0, eps, 0));
+    float z = noise(p_pair.p - float3(0, 0, eps));
+    float b = noise(p_pair.p);
+
+
+    p_pair = diffPair<float3>(p_pair.p, float3(b-x, b-y, b-z));
+}
+
+[BackwardDerivativeOf(noise)]
+void bwd_test(inout DifferentialPair<float2> p_pair, float dOut)
+{
+    float eps = 0.001;
+    float x = noise(p_pair.p - float2(eps, 0));
+    float y = noise(p_pair.p - float2(0, eps));
+    float b = noise(p_pair.p);
+
+
+    p_pair = diffPair<float2>(p_pair.p, float2(b-x, b-y));
+}
+
 
 #endif

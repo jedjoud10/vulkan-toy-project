@@ -23,10 +23,21 @@ void main(uint3 id: SV_DispatchThreadID) {
 
     float3 col = 0;
 
-    if (uniforms.debug_type == 1) {
-        col = trace(ray_pos, ray_dir).iters / 256.0;
-    } else {
+    if (uniforms.debug_type == 0) {
         col = trace_scene_multibounce(id.xy, ray_pos, ray_dir);
+    } else {
+        TraceRes res = trace(ray_pos, ray_dir);
+    
+        switch (uniforms.debug_type) {
+            case 1: 
+                col = res.iters / 256.0;
+                break;
+            case 2: 
+                col = max(res.normal, 0);
+                break;
+            default:
+                col = 0.0; 
+        }
     }
 
 

@@ -5,8 +5,8 @@
 #include "noises.slang"
 #include "bindless.slang"
 
-
 // https://iquilezles.org/articles/distfunctions/
+[Differentiable]
 float smin(float a, float b, float k) {
     float h = max(0., k-abs(b-a))/k;
     return min(a,b)-h*h*h*k/6.;
@@ -56,36 +56,12 @@ float sdTorus( vec3 p, vec2 t )
   return length(q)-t.y;
 }
 
+// https://iquilezles.org/articles/distfunctions/
 [Differentiable]
-float3x3 AngleAxis3x3(float angle, float3 axis)
+float sdRoundBox( vec3 p, vec3 b, float r )
 {
-    float c, s;
-    sincos(angle, s, c);
-
-    float t = 1 - c;
-    float x = axis.x;
-    float y = axis.y;
-    float z = axis.z;
-
-    return float3x3(
-        t * x * x + c,      t * x * y - s * z,  t * x * z + s * y,
-        t * x * y + s * z,  t * y * y + c,      t * y * z - s * x,
-        t * x * z - s * y,  t * y * z + s * x,  t * z * z + c
-    );
-}
-
-
-[BackwardDerivativeOf(noise)]
-void bwd_test(inout DifferentialPair<float3> p_pair, float dOut)
-{
-    float eps = 0.001;
-    float x = noise(p_pair.p - float3(eps, 0, 0));
-    float y = noise(p_pair.p - float3(0, eps, 0));
-    float z = noise(p_pair.p - float3(0, 0, eps));
-    float b = noise(p_pair.p);
-
-
-    p_pair = diffPair<float3>(p_pair.p, float3(b-x, b-y, b-z));
+  vec3 q = abs(p) - b + r;
+  return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0) - r;
 }
 
 [Differentiable]
@@ -105,29 +81,23 @@ float d(float3 p) {
     float3x3 rot = AngleAxis3x3(2.4, normalize(float3(1, 1, 1)));
     float3 torus_origin = float3(2, 2, 5);
     float tor = sdTorus(mul(p - torus_origin, rot), float2(5, 2)) + sin(p.y * 20.0) * 0.05 + 0.05;
-    
-    return min(sphere, min(p.y, min(min(octa, cyl), min(hex, tor))));
-    
 
-    
-    /*
+    float ground = p.y /* + snoise(p.xz * 2.0) * 0.2 + 0.1 */;
+
+    float sdf = min(sphere, min(ground, min(min(octa, cyl), min(hex, tor))));
+
+    float k = 1000;
+
     // TODO: fix this lolz
     uint count = storage_buffers_readonly[STORAGE_BUFFER_SCENE_REPR_BUFFER].Load<uint32_t>(0);
-    float k = 1000;
-    [MaxIters(1)]
-    for (int element = 0; element < count; element++) {
+    [MaxIters(3)]
+    for (int element = 0; element < 3; element++) {
         float3 origin = storage_buffers_readonly[STORAGE_BUFFER_SCENE_REPR_BUFFER].Load<float3>(4 + element * 12);
-        float deformation = (sin(p.y * 20)+sin(p.z * 20)+sin(p.x * 20)) * 0.01;
-        k = min(k, length(origin-p) - 1 + deformation);
-
-        if (k < 0) {
-            return k;
-        }
+        k = smin(k, sdRoundBox(origin-p, 3.0, 1.0), 2);
     }
-    return k;
-    */
 
-    // return length(p) - 1.5;
+    sdf = max(sdf, -k);
+    return sdf;
 }
 
 struct TraceRes {
@@ -139,9 +109,12 @@ struct TraceRes {
     float shadow;
 };
 
+#define HWRT_BOUNDS_ACCEL
+
 static const uint MAX_ITERS = 256;
 static const float MAX_DISTANCE = 10000;
 static const float THRESHOLD_DISTANCE = 0.001;
+static const float DISTANCE_SCALING_FACTOR = 0.9;
 
 float2 ray_box_get_tmin_tmax(
     float3 ray_pos,
@@ -161,13 +134,12 @@ float2 ray_box_get_tmin_tmax(
     return float2(tmin,tmax);
 }
 
-void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout float distance) {    
+void trace_inner<uint T>(inout RayQuery<T> sq, inout int i) {    
     // software AABB test lmao to get min and max dists of ray into  AABB
     float2 tmin_tmax = ray_box_get_tmin_tmax(sq.CandidateRayObjectRayOrigin(), sq.CandidateObjectRayDirection(), -1.0, 1.0);
-    distance = max(tmin_tmax.x, 0);
-    
+    float distance = min(max(tmin_tmax.x, 0), sq.CommittedRayT());
     float3 point = sq.WorldRayOrigin() + sq.WorldRayDirection() * distance;
-
+    
     for (; i < MAX_ITERS; i++) {
         float k = d(point);
 
@@ -177,6 +149,9 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout float distance
             return;
         }
 
+        point += sq.WorldRayDirection() * k * DISTANCE_SCALING_FACTOR;
+        distance += k * DISTANCE_SCALING_FACTOR;
+    
         // check if we left the bounds of the AABB (tmax is calculated using software ray-AABB test)
         if (distance > tmin_tmax.y) {
             return;
@@ -186,19 +161,15 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout float distance
         if (distance > sq.CommittedRayT()) {
             return;
         }
-
-        point += sq.WorldRayDirection() * k * 0.90;
-        distance += k * 0.90;
     }
 }
 
-#define HWRT_BOUNDS_ACCEL
 
 
 TraceRes trace(float3 ray_pos, float3 ray_dir) {
 #ifdef HWRT_BOUNDS_ACCEL
-    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_TRIANGLES> sq;
-    let flags = RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_TRIANGLES;
+    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_TRIANGLES | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> sq;
+    let flags = RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_TRIANGLES | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER;
 
     RayDesc desc;		
 
@@ -207,14 +178,14 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
     desc.TMax = MAX_DISTANCE;
     desc.TMin = 0.0;
 
+
     sq.TraceRayInline(acceleration_structures[0], flags, 0xFF, desc);
 
     int i = 0;
-    float distance = 0.0;
     while (sq.Proceed()) {
         if(sq.CandidateType() == CANDIDATE_PROCEDURAL_PRIMITIVE) {
-            trace_inner(sq, i, distance);
-            if (i == MAX_ITERS || distance >= MAX_DISTANCE) {
+            trace_inner(sq, i);
+            if (i == MAX_ITERS) {
                 sq.Abort();
             }
         }

@@ -6,6 +6,8 @@ pub struct Samplers {
     pub nearest: vk::Sampler,
 }
 
+const MIP_LOD_BIAS: f32 = 0f32;
+
 impl Samplers {
     pub unsafe fn create_samplers(device: &ash::Device) -> Self {
         let linear_unclamped_create_info = vk::SamplerCreateInfo::default()
@@ -15,6 +17,7 @@ impl Samplers {
             .min_filter(vk::Filter::LINEAR)
             .mag_filter(vk::Filter::LINEAR)
             .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
+            .mip_lod_bias(MIP_LOD_BIAS)
             .max_lod(100f32)
             .min_lod(0f32);
         let linear_unclamped = device.create_sampler(&linear_unclamped_create_info, None).unwrap();
@@ -26,17 +29,19 @@ impl Samplers {
             .min_filter(vk::Filter::LINEAR)
             .mag_filter(vk::Filter::LINEAR)
             .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
+            .mip_lod_bias(MIP_LOD_BIAS)
             .max_lod(100f32)
             .min_lod(0f32);
         let linear_clamped = device.create_sampler(&linear_clamped_create_info, None).unwrap();
 
         let nearest_create_info = vk::SamplerCreateInfo::default()
-        .address_mode_u(vk::SamplerAddressMode::REPEAT)
-        .address_mode_v(vk::SamplerAddressMode::REPEAT)
-        .address_mode_w(vk::SamplerAddressMode::REPEAT)
+            .address_mode_u(vk::SamplerAddressMode::REPEAT)
+            .address_mode_v(vk::SamplerAddressMode::REPEAT)
+            .address_mode_w(vk::SamplerAddressMode::REPEAT)
             .mag_filter(vk::Filter::NEAREST)
             .min_filter(vk::Filter::NEAREST)
             .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
+            .mip_lod_bias(MIP_LOD_BIAS)
             .max_lod(100f32)
             .min_lod(0f32);
 

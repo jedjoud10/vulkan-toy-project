@@ -60,3 +60,17 @@ float snoise(float2 v)
   return 130.0 * dot(m, g);
 }
 
+
+
+
+[BackwardDerivativeOf(snoise)]
+void bwd_snoise(inout DifferentialPair<float2> p_pair, float dOut)
+{
+    float eps = 0.001;
+    float x = snoise(p_pair.p - float2(eps, 0));
+    float y = snoise(p_pair.p - float2(0, eps));
+    float b = snoise(p_pair.p);
+
+
+    p_pair = diffPair<float2>(p_pair.p, float2(b-x, b-y));
+}

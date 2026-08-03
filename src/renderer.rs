@@ -569,8 +569,8 @@ impl InternalApp {
         };
 
         if add {
-            //self.blases_instances.push(ray_tracing::instantiate_blas(vek::Quaternion::identity(), position, 1.0, &self.blases[0], 0));
-            //self.scene_representation_for_sdf.push(position);
+            self.blases_instances.push(ray_tracing::instantiate_blas(vek::Quaternion::identity(), position, vek::Vec3::one() * 5.0f32, &self.blases[0], 1));
+            self.scene_representation_for_sdf.push(position);
         }
     }
 

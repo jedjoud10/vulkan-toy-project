@@ -372,7 +372,6 @@ impl ScratchBuffer {
     }
 
     /// Returns the GPU buffer start address range of the written data  
-    // TODO: make this more type safe by implementing "BufferDeviceAddress" instead of returning a raw u64
     pub unsafe fn write_bytes(&mut self, bytes: &[u8]) -> WrittenBytes {
         assert!(bytes.len() > 0);
         assert!(bytes.len() + self.bytes_written < SCRATCH_BUFFER_SIZE, "scratch buffer overrun. bytes written already: {}    num bytes: {}", self.bytes_written, bytes.len());
@@ -391,7 +390,6 @@ impl ScratchBuffer {
     }
 
     /// Returns the GPU buffer start address range of the written data. This WILL be aligned to 16 bytes for now
-    // TODO: make this more type safe by implementing "BufferDeviceAddress" instead of returning a raw u64
     pub unsafe fn write_bytes_aligned(&mut self, bytes: &[u8]) -> WrittenBytes {
         assert!(bytes.len() > 0);
         assert!(bytes.len() + self.bytes_written < SCRATCH_BUFFER_SIZE, "scratch buffer overrun. bytes written already: {}    num bytes: {}", self.bytes_written, bytes.len());
