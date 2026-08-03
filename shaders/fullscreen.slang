@@ -6,9 +6,10 @@
 
 
 [shader("compute")]
-[numthreads(8, 8, 1)]
-void main(uint3 id: SV_DispatchThreadID) {
-
+[numthreads(32, 32, 1)]
+void main(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID) {
+    thread_id = lid.xy;
+    wave_id_in_group = lid.xy / 8;
 
     uniforms = load_per_frame_uniforms();
     float2 screen_uvs = (id.xy / uniforms.screen_resolution);
@@ -34,6 +35,9 @@ void main(uint3 id: SV_DispatchThreadID) {
                 break;
             case 2: 
                 col = max(res.normal, 0);
+                break;
+            case 3: 
+                col = res.sdf_calls / 256.0;
                 break;
             default:
                 col = 0.0; 

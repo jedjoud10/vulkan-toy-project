@@ -678,6 +678,8 @@ impl InternalApp {
         if self.input.get_button(Button::Keyboard(KeyCode::KeyT)).pressed() {
             self.wireframe = !self.wireframe; 
         }
+
+        // TODO: make this better rofl
         if self.input.get_button(Button::Keyboard(KeyCode::Digit1)).pressed() {
             self.toggles_bitmask ^= 1;
         }
@@ -687,6 +689,14 @@ impl InternalApp {
         if self.input.get_button(Button::Keyboard(KeyCode::Digit3)).pressed() {
             self.toggles_bitmask ^= 4;
         }
+        if self.input.get_button(Button::Keyboard(KeyCode::Digit4)).pressed() {
+            self.toggles_bitmask ^= 8;
+        }
+        if self.input.get_button(Button::Keyboard(KeyCode::Digit5)).pressed() {
+            self.toggles_bitmask ^= 16;
+        }
+
+
         if self.input.get_button(Button::Keyboard(KeyCode::KeyJ)).pressed() {
             let report = self.allocator.generate_report();
             log::debug!("{:?}", report);
@@ -1210,7 +1220,7 @@ impl InternalApp {
             self.compute_pipelines[COMPUTE_FULLSCREEN_SPV]["main"],
         );
 
-        self.device.cmd_dispatch(cmd, size.x.div_ceil(8), size.y.div_ceil(8), 1);
+        self.device.cmd_dispatch(cmd, size.x.div_ceil(32), size.y.div_ceil(32), 1);
 
 
 
