@@ -6,11 +6,8 @@
 
 
 [shader("compute")]
-[numthreads(32, 32, 1)]
+[numthreads(8, 8, 1)]
 void main(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID) {
-    thread_id = lid.xy;
-    wave_id_in_group = lid.xy / 8;
-
     uniforms = load_per_frame_uniforms();
     float2 screen_uvs = (id.xy / uniforms.screen_resolution);
     

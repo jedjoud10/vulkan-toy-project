@@ -50,7 +50,8 @@ const static uint STORAGE_BUFFER_TESTING_BUFFER = -1;
 const static uint SKYBOX_SAMPLER_IMAGE_IDX = 0;
 const static uint AMBIENT_SKYBOX_SAMPLER_IMAGE_IDX = 1;
 const static uint CLOUDS_SAMPLER_IMAGE_IDX = 2;
-const static uint ENTIRE_BLOOM_SAMPLED_IMAGE_IDX = 4;
+const static uint SDF_TEXTURE_IMAGE_IDX = 4;
+const static uint ENTIRE_BLOOM_SAMPLED_IMAGE_IDX = 5;
 
 const static uint NEAREST_SAMPLER_IDX = 0;
 const static uint LINEAR_UNCAMPLED_SAMPLER_IDX = 1;
@@ -80,6 +81,9 @@ ByteAddressBuffer storage_buffers_readonly[];
 
 [[vk::binding(2, 0)]]
 Texture2D<float4> sampled_images[];
+
+[[vk::binding(2, 0)]]
+Texture3D<float4> sampled_images_3d[];
 
 [[vk::binding(2, 0)]]
 TextureCube<float4> sampled_images_cube[];

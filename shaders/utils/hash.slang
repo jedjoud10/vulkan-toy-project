@@ -190,7 +190,7 @@ void bwd_test(inout DifferentialPair<float3> p_pair, float dOut)
     float b = noise(p_pair.p);
 
 
-    p_pair = diffPair<float3>(p_pair.p, float3(b-x, b-y, b-z));
+    p_pair = diffPair<float3>(p_pair.p, float3(b-x, b-y, b-z) / eps);
 }
 
 [BackwardDerivativeOf(noise)]
@@ -202,7 +202,7 @@ void bwd_test(inout DifferentialPair<float2> p_pair, float dOut)
     float b = noise(p_pair.p);
 
 
-    p_pair = diffPair<float2>(p_pair.p, float2(b-x, b-y));
+    p_pair = diffPair<float2>(p_pair.p, float2(b-x, b-y) / eps);
 }
 
 

@@ -9,6 +9,7 @@ use rayon::iter::ParallelIterator;
 use smallvec::SmallVec;
 use crate::material::GpuMaterialInfo;
 use crate::ray_tracing;
+use crate::sdf_texture;
 use crate::statistics;
 use crate::debug_text;
 use crate::input::Button;
@@ -143,6 +144,8 @@ pub struct InternalApp {
     tlas: crate::ray_tracing::TopLevelAccelerationStructure,
     blases: Vec<crate::ray_tracing::AccelerationStructureData>,
     blases_instances: Vec<vk::AccelerationStructureInstanceKHR>,
+
+    texture: sdf_texture::SdfImage,
 
     scene_representation_for_sdf: Vec<vek::Vec3<f32>>,
     scene_representation_for_sdf_buffer: buffer::Buffer,
@@ -489,6 +492,17 @@ impl InternalApp {
             0)
         );
 
+        // sphere 2
+        blases_instances.push(ray_tracing::instantiate_blas(
+            vek::Quaternion::default(),
+            vek::Vec3::new(0f32,10f32, 0f32),
+            vek::Vec3::new(6f32, 6f32, 6f32),
+            &blases[0],
+            0)
+        );
+
+        let texture = sdf_texture::create_voxel_image(&mut ctx);
+
         Self {
             materials_buffer,
             materials,
@@ -498,6 +512,8 @@ impl InternalApp {
 
             scene_representation_for_sdf: Vec::new(),
             scene_representation_for_sdf_buffer,
+
+            texture,
             // voxels,
             // voxels2,
             last_frame_cpu_cmd_record_duration: Default::default(),
@@ -800,7 +816,17 @@ impl InternalApp {
         let clouds_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
             .image_view(self.skybox.clouds_image_view)
             .image_layout(vk::ImageLayout::GENERAL);
-        let mut storage_image_infos = vec![swapchain_image_view_descriptor_image_info, rendered_image_view_descriptor_image_info, skybox_image_view_descriptor_image_info, ambient_skybox_image_view_descriptor_image_info, clouds_image_view_descriptor_image_info];
+        let voxel_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
+            .image_view(self.texture.image_view)
+            .image_layout(vk::ImageLayout::GENERAL);
+        let mut storage_image_infos = vec![
+            swapchain_image_view_descriptor_image_info,
+            rendered_image_view_descriptor_image_info,
+            skybox_image_view_descriptor_image_info,
+            ambient_skybox_image_view_descriptor_image_info,
+            clouds_image_view_descriptor_image_info,
+            voxel_image_view_descriptor_image_info
+        ];
         
         // add bloom storage image views
         for bloom_storage_image_view in render_targets.bloom_mip_image_views.iter() {
@@ -861,7 +887,17 @@ impl InternalApp {
         let entire_bloom_sampled_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
             .image_view(render_targets.entire_bloom_image_view)
             .image_layout(vk::ImageLayout::GENERAL);
-        let mut sampled_image_infos = vec![skybox_sampled_image_view_descriptor_image_info, ambient_skybox_sampled_image_view_descriptor_image_info, clouds_sampled_image_view_descriptor_image_info, rendered_sampled_image_view_descriptor_image_info, entire_bloom_sampled_image_view_descriptor_image_info];
+        let voxel_sampled_image_view_descriptor_write_info = vk::DescriptorImageInfo::default()
+            .image_view(self.texture.image_view)
+            .image_layout(vk::ImageLayout::GENERAL);
+        let mut sampled_image_infos = vec![
+            skybox_sampled_image_view_descriptor_image_info,
+            ambient_skybox_sampled_image_view_descriptor_image_info,
+            clouds_sampled_image_view_descriptor_image_info,
+            rendered_sampled_image_view_descriptor_image_info,
+            voxel_sampled_image_view_descriptor_write_info,
+            entire_bloom_sampled_image_view_descriptor_image_info,
+        ];
 
         // add bloom sampled image views
         for bloom_sampled_image_view in render_targets.bloom_mip_image_views.iter() {
@@ -914,9 +950,9 @@ impl InternalApp {
         // TODO: ideally, these would:
         // 1. be dynamically allocated using some sort of per-frame arena with indexing
         // 2. be passed to the shader either using a uniform buffer (since these are constant anyways)
-        const BLOOM_MIPS_STORAGE_IMAGE_START_IDX: u32 = 5; // bloom needs to be last since it is dynamically allocated (can have a dynamic number of bloom mips, depending on screen res)
+        const BLOOM_MIPS_STORAGE_IMAGE_START_IDX: u32 = 6; // bloom needs to be last since it is dynamically allocated (can have a dynamic number of bloom mips, depending on screen res)
         const RENDERED_SAMPLER_IMAGE_IDX: u32 = 3;
-        const BLOOM_MIPS_SAMPLED_IMAGE_START_IDX: u32 = 5; // bloom needs to be last since it is dynamically allocated (can have a dynamic number of bloom mips, depending on screen res)
+        const BLOOM_MIPS_SAMPLED_IMAGE_START_IDX: u32 = 6; // bloom needs to be last since it is dynamically allocated (can have a dynamic number of bloom mips, depending on screen res)
 
         let cmd_buffer_begin_info = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
@@ -1220,7 +1256,7 @@ impl InternalApp {
             self.compute_pipelines[COMPUTE_FULLSCREEN_SPV]["main"],
         );
 
-        self.device.cmd_dispatch(cmd, size.x.div_ceil(32), size.y.div_ceil(32), 1);
+        self.device.cmd_dispatch(cmd, size.x.div_ceil(8), size.y.div_ceil(8), 1);
 
 
 
@@ -1470,13 +1506,9 @@ impl InternalApp {
     pub unsafe fn destroy(mut self) {
         self.device.device_wait_idle().unwrap();
 
-        /*
-        self.voxels.destroy(&self.device, &mut self.allocator);
-        log::info!("destroyed sparse voxel octree");
+        self.texture.destroy(&self.device, &mut self.allocator);
+        log::info!("destroyed sdf texture");
 
-        self.voxels2.destroy(&self.device, &mut self.allocator);
-        log::info!("destroyed sfasdfafdsa");
-        */
         self.materials_buffer.destroy(&self.device, &mut self.allocator);
         for material in self.materials {
             material.destroy(&self.device, &mut self.allocator);

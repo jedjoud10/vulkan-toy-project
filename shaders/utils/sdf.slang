@@ -64,6 +64,23 @@ float sdRoundBox( vec3 p, vec3 b, float r )
   return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0) - r;
 }
 
+float tex_sample(float3 p) {
+    return sampled_images_3d[SDF_TEXTURE_IMAGE_IDX].Sample(samplers[LINEAR_CLAMPED_SAMPLER_IDX], p / 32.0 + 0.5).x;
+}
+
+[BackwardDerivativeOf(tex_sample)]
+void bwd_tex_sample(inout DifferentialPair<float3> p_pair, float dOut)
+{
+    float eps = 0.1;
+    float x = tex_sample(p_pair.p - float3(eps, 0, 0));
+    float y = tex_sample(p_pair.p - float3(0, eps, 0));
+    float z = tex_sample(p_pair.p - float3(0, 0, eps));
+    float b = tex_sample(p_pair.p);
+
+
+    p_pair = diffPair<float3>(p_pair.p, float3(b-x, b-y, b-z));
+}
+
 [Differentiable]
 float d(float3 p) {
     float t = uniforms.time;
@@ -86,6 +103,7 @@ float d(float3 p) {
 
     float sdf = min(sphere, min(ground, min(min(octa, cyl), min(hex, tor))));
 
+    /*
     float k = 1000;
 
     // TODO: fix this lolz
@@ -97,6 +115,9 @@ float d(float3 p) {
     }
 
     sdf = max(sdf, -k);
+    */
+
+    sdf = min(sdf, tex_sample(p));
     return sdf;
 }
 
@@ -140,61 +161,12 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls)
     float2 tmin_tmax = ray_box_get_tmin_tmax(sq.CandidateRayObjectRayOrigin(), sq.CandidateObjectRayDirection(), -1.0, 1.0);
     float distance = max(tmin_tmax.x, 0);
     
-    // tried implement a wave-based optimization, but due to the highly divergent rays this actually causes performance degradation (since there's overhead for nothing)
-    // even with the primary rays (which are highly convergent) this still isn't helping 
-    /*
-    if (is_bit_set(uniforms.toggles_bitmask, 3)) {
-        if (WaveActiveAllEqual(sq.CandidateInstanceIndex())) {
-            float closest_ever = 2;
-            float max_dist = 0;
-            for (int quick=0; quick < 4; quick++) {
-                let dquick = lerp(max(tmin_tmax.x, 0), max(tmin_tmax.y, 0), (float)quick / 3.0);
-                float3 pquick = WaveActiveSum(sq.WorldRayOrigin() + sq.WorldRayDirection() * dquick) / (float)WaveActiveCountBits(true);
-                float ev = d(pquick);
-                sdf_calls += 1;
-            
-                if (ev < closest_ever) {
-                    closest_ever = ev;
-
-                    if (closest_ever > 0.0) {
-                        distance = max(max(dquick, 0), tmin_tmax.x);
-                    } else {
-                        break;
-                    }
-                }
-            }
-
-            if (closest_ever > 0.4) {
-                return;
-            }
-        }
-    }
-    */
-
     float3 point = sq.WorldRayOrigin() + sq.WorldRayDirection() * distance;
     for (; i < MAX_ITERS; i++) {
         float k = d(point);
         sdf_calls += 1;
         
-        
-        /*
-        // 2nd test optimization
-        float k = 0;
-        if (is_bit_set(uniforms.toggles_bitmask, 3)) {
-            if (!read_lds_cache(point, k)) {
-                k = d(point);
-                sdf_calls += 1;
-
-                if (k > 0.5) {
-                    store_lds_cache(point, k);
-                }
-            }
-        } else {
-            k = d(point);
-            sdf_calls += 1;
-        }
-        */
-        
+                
         // check if we got close enough to the surface
         if (k < THRESHOLD_DISTANCE) {
             sq.CommitProceduralPrimitiveHit(distance); 
@@ -217,65 +189,6 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls)
 }
 
 
-
-// 32x32
-static uint2 thread_id;
-
-// 4x4
-static uint2 wave_id_in_group;
-
-// tried implementing some sort of SDF caching strategy so that coherent rays that access the SDF at similar points have a quick access cache instead of having to evaluate the SDF again
-// works on the basis that the SDF can also be used as a lower bound to accelerating traversal 
-// I have realized something
-// this doesn't really help us because adjacent rays will STALL to wait to read the LDS cache (through read_lds_cache). They stall while they wait for a thread to compute the SDF for them. since wave size = group size in our case,
-// this doesn't help for shit since the wave already executes in lockstep 
-const static int cachesize = 32;
-
-// uint stores x,y,z positions (int8, and floored distance as uint8)
-groupshared uint lds_data[cachesize];
-
-groupshared float lds_data2[cachesize];
-
-int8_t3 discretize_position (float3 p) {
-    return int8_t3(round(p));
-}
-
-uint index_hash(int8_t3 p) {
-    return ((int)p.x * 6767 + (int)p.y * 51 + (int)p.z * 17) & (cachesize-1);
-}
-
-bool read_lds_cache(float3 position, out float distance) {
-    GroupMemoryBarrierWithGroupSync();
-
-    int8_t3 p = discretize_position(position);
-
-    uint data = lds_data[index_hash(p)];
-    
-    int8_t4 loaded_p = (int8_t4)unpackInt4x8ToInt16(data);
-
-    if (all(p.xyz == loaded_p.xyz)) {
-        distance = lds_data2[index_hash(p)];
-        //distance = 1000;
-        return true;
-    }
-
-    return false;
-}
-
-void store_lds_cache(float3 position, float distance) {
-    int8_t3 p = discretize_position(position);
-    int8_t d = (int8_t)clamp(floor(distance * 4), 0, 255);
-    int8_t4 l = int8_t4(p, d);
-
-    GroupMemoryBarrierWithGroupSync();
-
-    lds_data[index_hash(p)] = packInt4x8((int16_t4)l);
-    lds_data2[index_hash(p)] = distance;
-
-    GroupMemoryBarrierWithGroupSync();
-}
-
-
 TraceRes trace(float3 ray_pos, float3 ray_dir) {
 #ifdef HWRT_BOUNDS_ACCEL
     RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_TRIANGLES | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> sq;
@@ -287,11 +200,6 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
     desc.Direction = ray_dir;
     desc.TMax = MAX_DISTANCE;
     desc.TMin = 0.0;
-
-    if (all(thread_id == 0)) {
-        lds_data = {};
-        GroupMemoryBarrierWithGroupSync();
-    }
 
     sq.TraceRayInline(acceleration_structures[0], flags, 0xFF, desc);
 

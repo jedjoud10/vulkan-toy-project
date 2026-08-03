@@ -193,7 +193,7 @@ public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) 
 			float3 normal = res.normal;
 
 			float3 diffuse = 1.0; 
-			float3 arm = float3(1, 1, 0);
+			float3 arm = float3(1, 0.05, 0);
 
 			if ((uniforms.toggles_bitmask & 4) == 0) {
 				// TODO: file a bug report SOMEWHERE because these NonUniformResourceIndex are not doing anything
@@ -221,7 +221,7 @@ public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) 
 			float3 ks = fresnelRoughness(f0, surface.normal, camera.view, surface.arm.roughness);
 			float3 kd = (1 - ks) * (1 - surface.arm.metallic);
 			
-			
+			// TODO: there's still a problem here. plasticy materials (roughness~0, metallic~0) look like metals. I'm forgetting to account for something here. I don't know my PBR
 			col += mask * radiance;
 			float3 ambient = surface.albedo * kd * surface.arm.ao;
 			mask *= lerp(fresnelRoughness(surface.albedo, surface.normal, camera.view, surface.arm.roughness), surface.albedo, surface.arm.metallic);
@@ -229,6 +229,7 @@ public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) 
 			float3 randomized_ray_dir = normal + GetRandomSphereDir();
 			float3 reflected_ray_dir = reflect(ray_dir, normal);
 
+			// TODO: this is also wrong. instead of shooting *one* ray for the surface we need to shoot the ambient and reflection rays separately. we cannot just shoot one to approximate both effect
 			ray_dir = normalize(lerp(reflected_ray_dir, randomized_ray_dir, surface.arm.roughness));
 			ray_pos = res.pos + ray_dir * 0.01;
 			camera_view = -ray_dir;
