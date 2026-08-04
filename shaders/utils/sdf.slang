@@ -137,8 +137,11 @@ struct TraceRes {
     float3 pos;
     float3 dir;
     float3 normal;
-    float shadow;
     int sdf_calls;
+};
+
+struct ShadowTraceRes {
+    float shadow;
 };
 
 
@@ -250,16 +253,13 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
         
         bwd_diff(d)(dp_a, 1.0);  
         float3 normal = normalize(dp_a.d);
-        return TraceRes(i, true, point, ray_dir, normal, 1.0, sdf_calls);
+        return TraceRes(i, true, point, ray_dir, normal, sdf_calls);
     } else {
-        return TraceRes(i, false, ray_pos, ray_dir, 0.0, 1.0, sdf_calls);
+        return TraceRes(i, false, ray_pos, ray_dir, 0.0, sdf_calls);
     }
 #else
-    #define SDF_SOFT_SHADOWS_SUPPORTED
-    float shadow = 1.0;
     float3 point = ray_pos;
     int i = 0;
-    float distance = 0.0;
 
     // neat trick: threshold increase proportionally to distance AND pixel "factor" which takes partial derivative of ray dir (to give a sense of how "large" a ray is)
     // float pixel_thing = max(length(ddx(ray_dir)), length(ddy(ray_dir)));
@@ -276,20 +276,85 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
             
             bwd_diff(d)(dp_a, 1.0);  
             float3 normal = normalize(dp_a.d);
-            return TraceRes(i, true, point, ray_dir, normal, 0.0, i);
+            return TraceRes(i, true, point, ray_dir, normal, i);
         }
 
         if (k > MAX_DISTANCE) {
             break;
         }
 
-        // https://iquilezles.org/articles/rmshadows/
-        shadow = min(shadow, k * 8.0 / distance);
-        distance += k;
-        point += ray_dir * k * 0.90;
+        point += ray_dir * k;
     }
 
-    return TraceRes(i, false, ray_pos, ray_dir, 0.0, shadow, i);
+    return TraceRes(i, false, ray_pos, ray_dir, 0.0, i);
+#endif
+}
+
+
+ShadowTraceRes shadow_trace(float3 ray_pos, float3 ray_dir) {
+    capture_performance_query_trace_ray();
+
+#ifdef HWRT_BOUNDS_ACCEL
+    // 7.7ms vs 7.3ms when using RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH at 480p, 1 bounce, default scene
+    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_TRIANGLES | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> sq;
+    let flags = RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_TRIANGLES | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;
+
+    RayDesc desc;		
+
+    desc.Origin = ray_pos;
+    desc.Direction = ray_dir;
+    desc.TMax = MAX_DISTANCE;
+    desc.TMin = 0.0;
+
+    sq.TraceRayInline(acceleration_structures[0], flags, 0xFF, desc);
+
+    int i = 0;
+    int sdf_calls = 0;
+    while (sq.Proceed()) {
+        if(sq.CandidateType() == CANDIDATE_PROCEDURAL_PRIMITIVE) {
+            trace_inner(sq, i, sdf_calls);
+            if (i == MAX_ITERS) {
+                sq.Abort();
+            }
+        }
+    }
+
+    if (sq.CommittedStatus() != COMMITTED_NOTHING) {
+        return ShadowTraceRes(0.0);
+    } else {
+        return ShadowTraceRes(1.0);
+    }
+#else
+    #define SDF_SOFT_SHADOWS_SUPPORTED
+    float shadow = 1.0;
+    float distance = 0.05;
+
+    for (int i = 0; i < MAX_ITERS; i++) {
+        capture_performance_sdf_call();
+    
+
+        let k = d(ray_pos + ray_dir * distance);
+
+        if (k < THRESHOLD_DISTANCE) {
+            return ShadowTraceRes(0.0);
+        }
+
+        // I have no idea why using `distance` here instead of `k` fixes the issue with the "overcast" issue (where there seemed to be penumbra everywhere)
+        // if I had to guess, distance reaches MAX_DISTANCE much more quicker than k reaches MAX_DISTANCE, and breaks from the loop earlier
+        // if the loop were to continue, at some point, the map itself would be "casting" a shadow upon itself because it would consider it as part of a very big penumbra (even though the map is *behind* the shadow ray,
+        // something I thought would be fixable by taking gradient each step and comparing it with the sun direction)
+        
+        // this is a much easier fix though
+        if (distance > MAX_DISTANCE) {
+            break;
+        }
+
+        // https://iquilezles.org/articles/rmshadows/
+        shadow = min(shadow, saturate(k * 8.0 / distance));
+        distance += k;
+    }
+
+    return ShadowTraceRes(shadow);
 #endif
 }
 

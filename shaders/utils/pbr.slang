@@ -122,22 +122,20 @@ void InitRandom(uint2 pos, uint frameNo) {
 #define SHADOWS
 
 float3 get_sun_shadow(float3 world, float3 normal, float3 sun) {
-	float3 sun_direction = normalize(sun + GetRandomSphereDir() * 0.02);
-	let clouds_shadow = 1-clouds(sun_direction, world).a;
+	float3 randomized_sun_direction = normalize(sun + GetRandomSphereDir() * 0.02);
+	let clouds_shadow = 1-clouds(randomized_sun_direction, world).a;
 
 	if (clouds_shadow == 0) {
 		return 0.0;
 	}
 
 #ifdef SDF_SOFT_SHADOWS_SUPPORTED
-	// https://iquilezles.org/articles/rmshadows/
-	let res = trace(world + normal * 0.01 + sun * 0.01, sun);
-	return min(res.shadow, clouds_shadow);
+	let res = shadow_trace(world, sun);
 #else
-	let res = trace(world + normal * 0.01 + sun_direction * 0.01, sun_direction);
-
-	return res.hit ? 0.0 : 1.0;
-#endif
+	let res = shadow_trace(world + normal * 0.01 + randomized_sun_direction * 0.01, randomized_sun_direction);
+#endif	
+	
+	return min(res.shadow, clouds_shadow);
 }
 
 
