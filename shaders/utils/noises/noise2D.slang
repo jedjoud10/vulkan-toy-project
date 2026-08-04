@@ -72,5 +72,5 @@ void bwd_snoise(inout DifferentialPair<float2> p_pair, float dOut)
     float b = snoise(p_pair.p);
 
 
-    p_pair = diffPair<float2>(p_pair.p, float2(b-x, b-y));
+    p_pair = diffPair<float2>(p_pair.p, (float2(b-x, b-y) / eps) * dOut);
 }

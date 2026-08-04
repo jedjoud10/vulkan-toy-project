@@ -2,11 +2,13 @@ use ash::vk;
 use bytemuck::cast_slice;
 use gpu_allocator::vulkan::{Allocation, Allocator};
 use half::f16;
+use rand::{RngExt, SeedableRng};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
-use crate::{renderer::GraphicsContext, voxel::offset_to_index};
+use crate::{renderer::GraphicsContext, voxel::{index_to_offset, offset_to_index}};
 
 
-pub const SIZE: u32 = 32;
+pub const SIZE: u32 = 128;
 pub const _SIZE: usize = SIZE as usize;
 pub const FORMAT: vk::Format = vk::Format::R16_SFLOAT;
 
@@ -78,19 +80,83 @@ pub unsafe fn create_voxel_image(
         .mip_level(0)
         .layer_count(1)
         .base_array_layer(0);
+        
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(1234);
     
-    let mut texels = vec![f16::ZERO; (SIZE*SIZE*SIZE) as usize];
+    // use an iterative process to generate smaller spheres on larger spheres (resembling fBm)
+    let mut src_points = Vec::<(vek::Vec4::<f32>)>::new();
+    let mut stack = Vec::<(usize, vek::Vec4::<f32>)>::new();
 
-    for x in 0..SIZE {
-        for y in 0..SIZE {
-            for z in 0..SIZE {
-                let p = vek::Vec3::new(x,y,z).as_::<usize>();
-                let fp = p.as_::<f32>() - (SIZE as f32 * 0.5);
-                let distance = (fp + vek::Vec3::new(0f32, -10f32, 0f32)).magnitude() - 5.0f32;
-                texels[offset_to_index(p, SIZE as usize)] = f16::from_f32(distance);
-            }
-        }    
+    // create seeds
+    for _ in 0..5 {
+        stack.push((0, vek::Vec4::new(
+            rng.random_range(0f32..(SIZE as f32)),
+            rng.random_range(0f32..(SIZE as f32)),
+            rng.random_range(0f32..(SIZE as f32)),
+            rng.random_range(15f32..40f32)        
+        )));
     }
+
+    log::info!("generating points using iteration");
+
+    while let Some((depth, node)) = stack.pop() {
+        src_points.push(node);
+
+        if depth < 2 {
+            // pick new random seed spheres on the surface of this sphere
+            for _ in 0..6 {
+                let phi = rng.random_range(0f32..std::f32::consts::TAU);
+                //let theta = rng.random_range(0f32..std::f32::consts::PI);
+                let theta = std::f32::consts::PI * 0.5f32;
+                
+                let new_point = vek::Vec3::new(phi.sin() * theta.sin() , theta.cos(), phi.cos() * theta.sin()) * node.w + node.xyz();
+                stack.push((depth + 1, new_point.with_w(node.w * rng.random_range(0.1f32..0.3f32))));
+            }
+        }
+    }
+
+    //stack.push((0, vek::Vec4::new(4f32, 9f32, 3f32, 16f32)));
+
+    /*
+    let mut src_points = vec![vek::Vec4::<f32>::default(); 32];
+    // simple random spheres naive implementation
+    for point in src_points.iter_mut() {
+        *point = vek::Vec4::new(
+            rng.random_range(0f32..(SIZE as f32)),
+            rng.random_range(0f32..(SIZE as f32)),
+            rng.random_range(0f32..(SIZE as f32)),
+            rng.random_range(15f32..30f32)        
+        );
+    }
+    */
+
+    log::info!("tilings points in 3D");
+    
+    // tiled in 3D (26 neighbours)
+    let mut points = Vec::<vek::Vec4::<f32>>::with_capacity(src_points.len() * 27);
+    for x in -1..=1 {
+        for y in -1..=1 {
+            for z in -1..=1 {
+                points.extend(src_points.iter().map(|point| point + vek::Vec4::new(x as f32 * SIZE as f32, y as f32 * SIZE as f32, z as f32 * SIZE as f32, 0f32)));
+            }
+        }
+    }    
+
+    log::info!("calculating SDF");
+
+    let texels = (0..(SIZE*SIZE*SIZE)).into_par_iter().map(|i| {
+        let p = index_to_offset(i as usize, SIZE as usize);
+        let fp = p.as_::<f32>();
+        
+        //let distance = (fp + vek::Vec3::new(0f32, -10f32, 0f32)).magnitude() - 5.0f32;
+        let mut distance = 1000f32;
+
+        for point in points.iter() {
+            distance = distance.min((fp - point.xyz()).magnitude() - point.w); 
+        }
+
+        f16::from_f32(distance)
+    }).collect::<Vec<_>>();
 
     let bytes = cast_slice::<f16, u8>(&texels);
     

@@ -453,8 +453,9 @@ impl InternalApp {
             -vek::Vec3::unit_y(),
             vek::Vec3::new(1000.0, 1.0, 1000.0),
             &blases[0],
-            0)
-        );
+            0,
+            0xFF,
+        ));
 
         // sphere
         blases_instances.push(ray_tracing::instantiate_blas(
@@ -462,8 +463,9 @@ impl InternalApp {
             vek::Vec3::unit_y(),
             vek::Vec3::broadcast(2f32),
             &blases[0],
-            0)
-        );
+            0,
+            0xFF,
+        ));
 
         // hex
         blases_instances.push(ray_tracing::instantiate_blas(
@@ -471,8 +473,9 @@ impl InternalApp {
             vek::Vec3::new(10f32, 2f32, 0f32),
             vek::Vec3::new(2.6, 2.1, 4.1),
             &blases[0],
-            0)
-        );
+            0,
+            0xFF,
+        ));
 
         // torus
         blases_instances.push(ray_tracing::instantiate_blas(
@@ -480,8 +483,9 @@ impl InternalApp {
             vek::Vec3::new(2f32, 2f32, 5f32),
             vek::Vec3::new(7f32, 2f32, 7f32),
             &blases[0],
-            0)
-        );
+            0,
+            0xFF,
+        ));
 
         // cylinder
         blases_instances.push(ray_tracing::instantiate_blas(
@@ -489,8 +493,9 @@ impl InternalApp {
             vek::Vec3::new(-10f32,0f32, -0f32),
             vek::Vec3::new(2f32, 400f32, 2f32),
             &blases[0],
-            0)
-        );
+            0,
+            0xFF,
+        ));
 
         // sphere 2
         blases_instances.push(ray_tracing::instantiate_blas(
@@ -498,8 +503,9 @@ impl InternalApp {
             vek::Vec3::new(0f32,10f32, 0f32),
             vek::Vec3::new(6f32, 6f32, 6f32),
             &blases[0],
-            0)
-        );
+            0,
+            0xFF,
+        ));
 
         let texture = sdf_texture::create_voxel_image(&mut ctx);
 
@@ -585,7 +591,7 @@ impl InternalApp {
         };
 
         if add {
-            self.blases_instances.push(ray_tracing::instantiate_blas(vek::Quaternion::identity(), position, vek::Vec3::one() * 5.0f32, &self.blases[0], 1));
+            self.blases_instances.push(ray_tracing::instantiate_blas(vek::Quaternion::identity(), position, vek::Vec3::one() * 5.0f32, &self.blases[0], 1, 0xFF));
             self.scene_representation_for_sdf.push(position);
         }
     }

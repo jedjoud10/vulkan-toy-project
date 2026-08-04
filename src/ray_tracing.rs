@@ -133,14 +133,14 @@ pub unsafe fn create_blas(
     }
 }
 
-pub fn instantiate_blas(rotation: vek::Quaternion<f32>, position: vek::Vec3<f32>, scale: vek::Vec3<f32>, data: &AccelerationStructureData, instance_index_low_24: u32) -> vk::AccelerationStructureInstanceKHR {
+pub fn instantiate_blas(rotation: vek::Quaternion<f32>, position: vek::Vec3<f32>, scale: vek::Vec3<f32>, data: &AccelerationStructureData, instance_index_low_24: u32, mask: u8) -> vk::AccelerationStructureInstanceKHR {
     let matrix: vek::Mat4::<f32> = vek::Mat4::<f32>::translation_3d(position) * vek::Mat4::from(rotation) * vek::Mat4::<f32>::scaling_3d(scale);
     let row_arrays = &matrix.into_row_arrays()[0..3];
     let matrix: [f32; 12] = cast_slice::<[f32;4],f32>(row_arrays).try_into().unwrap();
 
     vk::AccelerationStructureInstanceKHR {
         transform: vk::TransformMatrixKHR { matrix },
-        instance_custom_index_and_mask: vk::Packed24_8::new(instance_index_low_24, 0xFF),
+        instance_custom_index_and_mask: vk::Packed24_8::new(instance_index_low_24, mask),
         instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(0, vk::GeometryInstanceFlagsKHR::FORCE_OPAQUE.as_raw() as u8),
         acceleration_structure_reference: vk::AccelerationStructureReferenceKHR { device_handle: data.acceleration_structure_address, },
     }

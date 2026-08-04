@@ -64,8 +64,9 @@ float sdRoundBox( vec3 p, vec3 b, float r )
   return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0) - r;
 }
 
+const static int TEXTURE_SIZE = 128;
 float tex_sample(float3 p) {
-    return sampled_images_3d[SDF_TEXTURE_IMAGE_IDX].Sample(samplers[LINEAR_CLAMPED_SAMPLER_IDX], p / 32.0 + 0.5).x;
+    return sampled_images_3d[SDF_TEXTURE_IMAGE_IDX].Sample(samplers[LINEAR_UNCAMPLED_SAMPLER_IDX], p / TEXTURE_SIZE + 0.5).x;
 }
 
 [BackwardDerivativeOf(tex_sample)]
@@ -78,7 +79,23 @@ void bwd_tex_sample(inout DifferentialPair<float3> p_pair, float dOut)
     float b = tex_sample(p_pair.p);
 
 
-    p_pair = diffPair<float3>(p_pair.p, float3(b-x, b-y, b-z));
+    p_pair = diffPair<float3>(p_pair.p, (float3(b-x, b-y, b-z) / eps) * dOut);
+}
+
+[Differentiable]
+float d2(float3 p) {
+
+    float k = 1000;
+
+    // TODO: fix this lolz
+    uint count = storage_buffers_readonly[STORAGE_BUFFER_SCENE_REPR_BUFFER].Load<uint32_t>(0);
+    [MaxIters(3)]
+    for (int element = 0; element < 3; element++) {
+        float3 origin = storage_buffers_readonly[STORAGE_BUFFER_SCENE_REPR_BUFFER].Load<float3>(4 + element * 12);
+        k = smin(k, length(origin-p) - 2, 3);
+    }
+
+    return k;
 }
 
 [Differentiable]
@@ -100,24 +117,14 @@ float d(float3 p) {
     float tor = sdTorus(mul(p - torus_origin, rot), float2(5, 2)) + sin(p.y * 20.0) * 0.05 + 0.05;
 
     float ground = p.y /* + snoise(p.xz * 2.0) * 0.2 + 0.1 */;
+    ground = max(ground, -tex_sample(p * 50.0 - 4.2312) / 50.0);
+    ground = min(ground, p.y+0.8);
 
     float sdf = min(sphere, min(ground, min(min(octa, cyl), min(hex, tor))));
 
-    /*
-    float k = 1000;
 
-    // TODO: fix this lolz
-    uint count = storage_buffers_readonly[STORAGE_BUFFER_SCENE_REPR_BUFFER].Load<uint32_t>(0);
-    [MaxIters(3)]
-    for (int element = 0; element < 3; element++) {
-        float3 origin = storage_buffers_readonly[STORAGE_BUFFER_SCENE_REPR_BUFFER].Load<float3>(4 + element * 12);
-        k = smin(k, sdRoundBox(origin-p, 3.0, 1.0), 2);
-    }
-
-    sdf = max(sdf, -k);
-    */
-
-    sdf = min(sdf, tex_sample(p));
+    sdf = smin(sdf, d2(p), 1);
+    // sdf = min(sdf, tex_sample(p - float3(0, 10, 0)));
     return sdf;
 }
 
@@ -165,8 +172,7 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls)
     for (; i < MAX_ITERS; i++) {
         float k = d(point);
         sdf_calls += 1;
-        
-                
+                        
         // check if we got close enough to the surface
         if (k < THRESHOLD_DISTANCE) {
             sq.CommitProceduralPrimitiveHit(distance); 

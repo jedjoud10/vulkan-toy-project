@@ -135,6 +135,7 @@ float3 get_sun_shadow(float3 world, float3 normal, float3 sun) {
 	return min(res.shadow, clouds_shadow);
 #else
 	let res = trace(world + normal * 0.01 + sun_direction * 0.01, sun_direction);
+
 	return res.hit ? 0.0 : 1.0;
 #endif
 }
@@ -178,6 +179,21 @@ public float3 lighting2(
 	return radiance + ambient * 0.1;
 }
 
+// TODO: better way to do this? maybe by using some BLAS mask flags we can let HWRT to ignore specific objects for us
+float3 move_point_to_surface(float3 p, float3 d) {
+	for (int i =0; i < 64; i++) {
+		float k = d2(p);
+
+		if (k > THRESHOLD_DISTANCE*2.0) {
+			return p;
+		}
+
+		p += d;
+	}
+
+	return p;
+}
+
 public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) {
 	float3 col = 0.0;
 	float3 mask = 1.0;
@@ -187,13 +203,14 @@ public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) 
 
 	// https://dubiousconst282.github.io/2024/10/03/voxel-ray-tracing/
 	for (int bounce = 0; bounce < 2; bounce++) {
-		let res = trace(ray_pos, ray_dir);
-    	if (res.hit) {    
+		TraceRes res = trace(ray_pos, ray_dir);
+
+    	if (res.hit) {  
 			float3 world = res.pos;
 			float3 normal = res.normal;
 
 			float3 diffuse = 1.0; 
-			float3 arm = float3(1, 0.05, 0);
+			float3 arm = float3(1, 0.0, 0);
 
 			if ((uniforms.toggles_bitmask & 4) == 0) {
 				// TODO: file a bug report SOMEWHERE because these NonUniformResourceIndex are not doing anything
@@ -209,30 +226,49 @@ public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) 
 
 			
 			PbrSurfaceData surface = PbrSurfaceData(res.pos, diffuse, normal, AoRoughnessMetallic(arm));
-    	    CameraData camera = CameraData(camera_view);
-    	    float3 sun = uniforms.sun.xyz;
-    	    float3 sun_colour = sun_colour(sun.xyz);
-    	    SunData light = SunData(sun.xyz, 16.0);
-
-			float3 radiance = radiance_sun(surface, camera, light);
-
-			// IBL diffuse term
-			float3 f0 = lerp(0.04, surface.albedo, surface.arm.metallic);
-			float3 ks = fresnelRoughness(f0, surface.normal, camera.view, surface.arm.roughness);
-			float3 kd = (1 - ks) * (1 - surface.arm.metallic);
+			CameraData camera = CameraData(camera_view);
 			
-			// TODO: there's still a problem here. plasticy materials (roughness~0, metallic~0) look like metals. I'm forgetting to account for something here. I don't know my PBR
-			col += mask * radiance;
-			float3 ambient = surface.albedo * kd * surface.arm.ao;
-			mask *= lerp(fresnelRoughness(surface.albedo, surface.normal, camera.view, surface.arm.roughness), surface.albedo, surface.arm.metallic);
+			bool trace_refractive_ray = d2(world) < THRESHOLD_DISTANCE;
+			if (!trace_refractive_ray) {
+				// opaque surface, non refractive
+				float3 sun = uniforms.sun.xyz;
+    	    	float3 sun_colour = sun_colour(sun.xyz);
+    	    	SunData light = SunData(sun.xyz, 16.0);
 
-			float3 randomized_ray_dir = normal + GetRandomSphereDir();
-			float3 reflected_ray_dir = reflect(ray_dir, normal);
+				float3 radiance = radiance_sun(surface, camera, light);
 
-			// TODO: this is also wrong. instead of shooting *one* ray for the surface we need to shoot the ambient and reflection rays separately. we cannot just shoot one to approximate both effect
-			ray_dir = normalize(lerp(reflected_ray_dir, randomized_ray_dir, surface.arm.roughness));
-			ray_pos = res.pos + ray_dir * 0.01;
-			camera_view = -ray_dir;
+				// IBL diffuse term
+				float3 f0 = lerp(0.04, surface.albedo, surface.arm.metallic);
+				float3 ks = fresnelRoughness(f0, surface.normal, camera.view, surface.arm.roughness);
+				float3 kd = (1 - ks) * (1 - surface.arm.metallic);
+				
+				// TODO: there's still a problem here. plasticy materials (roughness~0, metallic~0) look like metals. I'm forgetting to account for something here. I don't know my PBR
+				col += mask * radiance;
+				float3 ambient = surface.albedo * kd * surface.arm.ao;
+				mask *= lerp(fresnelRoughness(surface.albedo, surface.normal, camera.view, surface.arm.roughness), surface.albedo, surface.arm.metallic);
+
+				float3 random_normal = normal + GetRandomSphereDir();
+				float3 reflected_ray_dir = reflect(ray_dir, normal);
+
+				// TODO: this is also wrong. instead of shooting *one* ray for the surface we need to shoot the ambient and reflection rays separately. we cannot just shoot one to approximate both effect
+				ray_dir = normalize(lerp(reflected_ray_dir, random_normal, surface.arm.roughness));
+				ray_pos = res.pos + ray_dir * 0.01;
+				camera_view = -ray_dir;
+			} else {
+				// refractive surface, just change mask and next ray params
+				mask *= 0.5;
+
+				float3 random_normal = normal + GetRandomSphereDir();
+				float3 normal_for_refraction = normalize(lerp(normal, random_normal, 0.1));
+				
+
+				ray_dir = normalize(refract(ray_dir, normal_for_refraction, 0.95));
+				ray_pos = move_point_to_surface(world, ray_dir) + ray_dir * 0.01;
+				camera_view = -ray_dir;
+			}
+
+
+
     	} else {
     	    col += mask * sample_skybox_and_clouds(res.pos, res.dir);
 			break;
