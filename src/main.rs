@@ -17,7 +17,7 @@ mod others;
 mod render_targets_data;
 mod per_frame_data;
 mod samplers;
-mod statistics;
+mod query_pool_statistics;
 mod voxel;
 mod material;
 mod texture;
@@ -40,16 +40,22 @@ use renderer::InternalApp;
 #[command(about = "Vulkan Experiments", long_about = None)]
 struct Args {
     /// Factor to use to decrease the screen resolution
-    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=4))]
+    #[arg(long, short, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=4))]
     downscale_factor: u32,
 
     /// Setting to start in fullscreen from the start. This can be toggled in-game using F5
-    #[arg(long, default_value_t = false)]
+    #[arg(long, short, default_value_t = false)]
     fullscreen: bool,
 
     /// Enable validation layers and debug stuff even when debug_assertions are disabled
-    #[arg(long, default_value_t = false)]
+    #[arg(long, short, default_value_t = false)]
     validate: bool,
+
+    /// Use a readback buffer to capture some performance queries from the shaders
+    /// This does incur a performance hit (1-2ms extra, at least on my hardware)
+    /// I'm writing the data to the buffer in the shader very inefficiently. Just used for quick profiling.
+    #[arg(long, short, action = clap::ArgAction::SetFalse, default_value_t = true)]
+    readback_performance_queries: bool,
 }
 
 struct App {

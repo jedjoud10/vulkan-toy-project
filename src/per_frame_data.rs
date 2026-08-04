@@ -1,6 +1,6 @@
 use ash::vk;
 use gpu_allocator::vulkan::{Allocation, Allocator};
-use crate::{buffer, others, pipeline::{self, PerFrameUniformData}, renderer::GraphicsContext};
+use crate::{buffer, others, pipeline::{self, PerFrameUniformData}, query_pool_statistics, renderer::GraphicsContext};
 
 pub const FRAMES_IN_FLIGHT: usize = 3;
 
@@ -12,6 +12,7 @@ pub struct PerFrameData {
     pub query_pool: vk::QueryPool,
     pub pipeline_statistics_query_pool: vk::QueryPool,
     pub scratch_buffer: buffer::ScratchBuffer,
+    pub readback_buffer: buffer::Buffer,
 }
 
 impl PerFrameData {
@@ -42,8 +43,11 @@ impl PerFrameData {
             .unwrap()[0];
 
         
-        let query_pool = others::create_query_pool(&ctx.device);
+        let query_pool = query_pool_statistics::create_query_pool(&ctx.device);
         let pipeline_statistics_query_pool = others::create_pipeline_stats_pool(&ctx.device);
+
+        let readback_buffer = buffer::create_buffer_with_location(ctx, size_of::<u32>() * 10, "debug readback buffer", vk::BufferUsageFlags::STORAGE_BUFFER, gpu_allocator::MemoryLocation::GpuToCpu);
+
         
         Self {
             present_complete_semaphore,
@@ -53,6 +57,7 @@ impl PerFrameData {
             query_pool,
             pipeline_statistics_query_pool,
             scratch_buffer: buffer::ScratchBuffer::new(ctx),
+            readback_buffer,
         }
     }
     
@@ -69,5 +74,6 @@ impl PerFrameData {
         log::info!("destroyed query pools frame data");
 
         self.scratch_buffer.destroy(device, allocator);
+        self.readback_buffer.destroy(device, allocator);
     }
 }

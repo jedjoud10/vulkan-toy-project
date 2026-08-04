@@ -10,7 +10,7 @@ use smallvec::SmallVec;
 use crate::material::GpuMaterialInfo;
 use crate::ray_tracing;
 use crate::sdf_texture;
-use crate::statistics;
+use crate::query_pool_statistics;
 use crate::debug_text;
 use crate::input::Button;
 use crate::input::Input;
@@ -19,7 +19,7 @@ use crate::movement::Movement;
 use crate::per_frame_data;
 use crate::physical_device::PhysicalDeviceAndScore;
 use crate::samplers;
-use crate::statistics::Statistics;
+use crate::query_pool_statistics::QueryPoolStatistics;
 use crate::voxel;
 use crate::voxel::SparseVoxelOctree;
 use crate::voxel::TestingStructure;
@@ -170,7 +170,7 @@ pub struct InternalApp {
     frame_count: u64,
     sun: vek::Vec3<f32>,
     args: crate::Args,
-    stats: Statistics,
+    stats: QueryPoolStatistics,
 }
 
 impl InternalApp {
@@ -312,18 +312,23 @@ impl InternalApp {
         let mut graphics_pipelines = HashMap::<&'static str, pipeline::GenericGraphicsPipeline>::new();
         let mut compute_pipelines = HashMap::<&'static str, pipeline::GenericComputePipeline>::new();
 
+        let spec_constants_bitflags = if args.readback_performance_queries { 1u32 } else { 0 };  
+
         let spec_constants = [
+            spec_constants_bitflags,
+            skybox::SKYBOX_RESOLUTION, skybox::CLOUDS_RESOLUTION, skybox::AMBIENT_SKYBOX_RESOLUTION,
+            args.downscale_factor,
         ];
 
         let settings = [pipeline::PipelineCreateSettings {
             pipeline_debug_name: "post process compute pipeline",
             wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &[WRITE_SWAPCHAIN_IMAGE_ENTRY_POINT, BLOOM_DOWNSAMPLE_ENTRY_POINT, BLOOM_UPSAMPLE_ENTRY_POINT] },
-            spec_constants: Some(&[args.downscale_factor]),
+            spec_constants: Some(&spec_constants),
             spv_file_name: COMPUTE_POST_PROCESS_SPV,
         }, pipeline::PipelineCreateSettings {
             pipeline_debug_name: "sky compute pipeline",
             wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &[WRITE_SKYBOX_ENTRY_POINT, WRITE_CLOUDS_ENTRY_POINT, BLUR_AMBIENT_SKYBOX_ENTRY_POINT] },
-            spec_constants: Some(&[skybox::SKYBOX_RESOLUTION, skybox::CLOUDS_RESOLUTION, skybox::AMBIENT_SKYBOX_RESOLUTION]),
+            spec_constants: Some(&spec_constants),
             spv_file_name: COMPUTE_SKY_SPV,
         }, pipeline::PipelineCreateSettings {
             pipeline_debug_name: "compute fullscreen shader",
@@ -520,8 +525,6 @@ impl InternalApp {
             scene_representation_for_sdf_buffer,
 
             texture,
-            // voxels,
-            // voxels2,
             last_frame_cpu_cmd_record_duration: Default::default(),
             frame_count: 0,
             input: Default::default(),
@@ -550,7 +553,7 @@ impl InternalApp {
             frames_in_flight,
             sun: vek::Vec3::new(1f32, 0.3f32,0.5f32).normalized(),
             debug_type: 0,
-            stats: Default::default(),
+            stats: query_pool_statistics::QueryPoolStatistics::new(),
             args,
             samplers,
             swapchain_images,
@@ -683,14 +686,6 @@ impl InternalApp {
         if left || right {
             self.click(left);
         }
-        if self.input.get_button(Button::Keyboard(KeyCode::KeyP)).pressed() {
-            let render_time_avg = self.stats.get_average_in_ms();
-            let delta_ms = delta * 1000f32;
-            log::info!("CPU delta: {delta_ms:.3}, Main Compute Render Time Average: {render_time_avg:.3}");
-        }
-        if self.input.get_button(Button::Keyboard(KeyCode::KeyL)).pressed() {
-            self.stats.start_benchmarking(self.frame_count);
-        }
         if self.input.get_button(Button::Keyboard(KeyCode::KeyH)).pressed() {
             self.debug_type = (self.debug_type as i32 + 1).rem_euclid(8) as u32;
         }
@@ -744,6 +739,7 @@ impl InternalApp {
             query_pool,
             pipeline_statistics_query_pool,
             ref mut scratch_buffer,
+            ref mut readback_buffer,
             ..
         } = &mut self.frames_in_flight[frame_in_flight_index as usize];
 
@@ -753,29 +749,10 @@ impl InternalApp {
         let pre_wait_for_fence = Instant::now();
         if let Err(err) = self.device.wait_for_fences(&[end_fence], true, u64::MAX) {
             log::error!("wait on fence err: {:?}", err);
-            // return;
         } else {
-            // wait for a few frames so that the queries get populated
-            if self.frame_count > per_frame_data::FRAMES_IN_FLIGHT as u64 {
-                // try to fetch timestamp queries
-                let mut timestamps = [0u64; 2];
-                let okay = self.device.get_query_pool_results(query_pool, 0, &mut timestamps, vk::QueryResultFlags::TYPE_64 | vk::QueryResultFlags::WAIT).is_ok();
-                if okay {
-                    let delta_in_ms = ((timestamps[1].saturating_sub(timestamps[0])) as f64 * self.timestamp_period as f64) / 1000000.0f64;
-                    self.stats.push_query_timings(delta_in_ms);
-                }
-            }
-
-
-            /*
-            // try to fetch pipeline statistics queriy
-            let mut data = [0u64; 1];
-            let okay = self.device.get_query_pool_results(self.pipeline_statistics_query_pool, 0, &mut data, vk::QueryResultFlags::TYPE_64).is_ok();
-            if okay {
-                dbg!(data);
-            }
-            */
+            self.stats.import_data(self.frame_count, &self.device, query_pool, self.timestamp_period);
         }
+
         let post_wait_for_fence = Instant::now();
 
         let pre_acquire_swapchain = Instant::now();
@@ -858,6 +835,10 @@ impl InternalApp {
                 .range(vk::WHOLE_SIZE),
             vk::DescriptorBufferInfo::default()
                 .buffer(self.debug_text.buffer.buffer)
+                .offset(0)
+                .range(vk::WHOLE_SIZE),
+            vk::DescriptorBufferInfo::default()
+                .buffer(readback_buffer.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
             vk::DescriptorBufferInfo::default()
@@ -967,9 +948,9 @@ impl InternalApp {
             .begin_command_buffer(cmd, &cmd_buffer_begin_info)
             .unwrap();
         let cpu_cmd_record_start = Instant::now();
-        self.device.cmd_reset_query_pool(cmd, query_pool, 0, 2);
+        self.device.cmd_reset_query_pool(cmd, query_pool, 0, query_pool_statistics::NUM_TIMESTAMP_QUERIES as u32);
         self.device.cmd_reset_query_pool(cmd, pipeline_statistics_query_pool, 0, 1);
-        self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, query_pool, 0);
+                
         scratch_buffer.begin_of_cmd_recording(self.queue_family_index, &self.device, cmd);
         
         let mut ctx = GraphicsContext {
@@ -997,7 +978,9 @@ impl InternalApp {
         dbgtext_writeln!(&mut self.debug_text, "CPU command buffer record duration: {:.2}ms", self.last_frame_cpu_cmd_record_duration.as_micros() as f32 / 1000.0f32);
         dbgtext_writeln!(&mut self.debug_text, "CPU fence wait duration: {:.2}ms", (post_wait_for_fence - pre_wait_for_fence).as_micros() as f32 / 1000.0f32);
         dbgtext_writeln!(&mut self.debug_text, "CPU fence acquire swapchain duration: {:.2}ms", (post_acquire_swapchain - pre_acquire_swapchain).as_micros() as f32 / 1000.0f32);
-        dbgtext_writeln!(&mut self.debug_text, "GPU main frame: {:.2}ms", self.stats.get_average_in_ms());
+
+        self.stats.add_to_debug_text(&mut self. debug_text);
+
         dbgtext_writeln!(&mut self.debug_text, "pos: {:.2}", self.movement.position);
         dbgtext_writeln!(&mut self.debug_text, "debug type: {}", self.debug_type);
         dbgtext_writeln!(&mut self.debug_text, "toggles bitmask: {:#032b}", self.toggles_bitmask);
@@ -1009,6 +992,37 @@ impl InternalApp {
         let allocated_bytes = ByteSize::b(report.total_reserved_bytes).display().iec();
         dbgtext_writeln!(&mut self.debug_text, "reserved bytes: {}", reserved_bytes);
         dbgtext_writeln!(&mut self.debug_text, "allocated bytes: {}", allocated_bytes);
+
+        if self.args.readback_performance_queries {
+            let readback_buffer_readback_barrier = vk::BufferMemoryBarrier2::default()
+                .buffer(readback_buffer.buffer)
+                .src_access_mask(vk::AccessFlags2::MEMORY_WRITE | vk::AccessFlags2::MEMORY_READ)
+                .dst_access_mask(vk::AccessFlags2::MEMORY_WRITE | vk::AccessFlags2::MEMORY_READ)
+                .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+                .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+                .src_queue_family_index(self.queue_family_index)
+                .dst_queue_family_index(self.queue_family_index)
+                .size(vk::WHOLE_SIZE);
+            let buffer_memory_barriers = [readback_buffer_readback_barrier];
+            let dep = vk::DependencyInfo::default().buffer_memory_barriers(&buffer_memory_barriers);
+            self.device.cmd_pipeline_barrier2(cmd, &dep);
+
+            let data = readback_buffer.allocation.mapped_slice_mut().unwrap();
+            let readback_debug_buffer_data = cast_slice::<u8, u32>(data); 
+            
+            let million_sdf_calls = readback_debug_buffer_data[0] as f64 / 1_000_000f64;
+            dbgtext_writeln!(&mut self.debug_text, "SDF calls (millions): {:.2}", million_sdf_calls);
+            
+            let million_traced_rays = readback_debug_buffer_data[1] as f64 / 1_000_000f64;
+            dbgtext_writeln!(&mut self.debug_text, "rays traced (millions): {:.2}", million_traced_rays);
+
+            dbgtext_writeln!(&mut self.debug_text, "million rays per second: {:.2}", million_traced_rays / (self.stats.get_compute_region_duration()));
+
+            // clear data for next frame
+            data.fill(0);
+        }
+
+
         
         self.debug_text.update_debug_text(&ctx.device, cmd);        
 
@@ -1019,6 +1033,7 @@ impl InternalApp {
         let cnt = self.scene_representation_for_sdf.len() as u32;
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, bytes_of(&cnt), self.scene_representation_for_sdf_buffer.buffer, 0);
 
+        // write actual scene repr data
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene_representation_for_sdf), self.scene_representation_for_sdf_buffer.buffer, size_of::<u32>() as u64);
 
         // rebuild TLAS
@@ -1123,8 +1138,7 @@ impl InternalApp {
         let dep = vk::DependencyInfo::default().buffer_memory_barriers(&buffer_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
-        
-
+        self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, 0);
 
         self.device.cmd_bind_pipeline(
             cmd,
@@ -1262,9 +1276,11 @@ impl InternalApp {
             self.compute_pipelines[COMPUTE_FULLSCREEN_SPV]["main"],
         );
 
+        self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, 1);
+
         self.device.cmd_dispatch(cmd, size.x.div_ceil(8), size.y.div_ceil(8), 1);
 
-
+        self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, 2);
 
         // transition rendered image from color attachment to sampled shader read (for bloom passes)
         let rendered_image_barrier = vk::ImageMemoryBarrier2::default()
@@ -1473,7 +1489,7 @@ impl InternalApp {
         let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
-        self.device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::BOTTOM_OF_PIPE, query_pool, 1);
+        self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, 3);
         self.device.end_command_buffer(cmd).unwrap();
         let now = Instant::now();
         self.last_frame_cpu_cmd_record_duration = now - cpu_cmd_record_start;
@@ -1501,8 +1517,6 @@ impl InternalApp {
             .queue_present(self.queue, &present_info)
             .unwrap();
 
-
-        self.stats.end_of_frame(self.frame_count);
         self.frame_count += 1;
         if suboptimal {
             self.recreate_swapchain();

@@ -5,11 +5,14 @@
 #include "noises.slang"
 #include "bindless.slang"
 
-// https://iquilezles.org/articles/distfunctions/
+// https://iquilezles.org/articles/smin/
 [Differentiable]
-float smin(float a, float b, float k) {
-    float h = max(0., k-abs(b-a))/k;
-    return min(a,b)-h*h*h*k/6.;
+// cubic polynomial
+float smin( float a, float b, float k )
+{
+    k *= 6.0;
+    float h = max( k-abs(a-b), 0.0 )/k;
+    return min(a,b) - h*h*h*k*(1.0/6.0);
 }
 
 // https://iquilezles.org/articles/distfunctions/
@@ -92,7 +95,7 @@ float d2(float3 p) {
     [MaxIters(3)]
     for (int element = 0; element < 3; element++) {
         float3 origin = storage_buffers_readonly[STORAGE_BUFFER_SCENE_REPR_BUFFER].Load<float3>(4 + element * 12);
-        k = smin(k, length(origin-p) - 2, 3);
+        k = smin(k, length(origin-p) - 4.0, 0.5);
     }
 
     return k;
@@ -123,7 +126,7 @@ float d(float3 p) {
     float sdf = min(sphere, min(ground, min(min(octa, cyl), min(hex, tor))));
 
 
-    sdf = smin(sdf, d2(p), 1);
+    sdf = smin(sdf, d2(p), 0.5);
     // sdf = min(sdf, tex_sample(p - float3(0, 10, 0)));
     return sdf;
 }
@@ -137,6 +140,21 @@ struct TraceRes {
     float shadow;
     int sdf_calls;
 };
+
+
+
+void capture_performance_query_trace_ray() {
+    if (is_bit_set(SPEC_CONSTANTS_BITFIELD, 0)) {
+        storage_buffers[STORAGE_BUFFER_READBACK_BUFFER].InterlockedAdd(READBACK_BUFFER_RAYS_TRACED_QUERY_INDEX * 4, 1);
+    }
+}
+
+void capture_performance_sdf_call() {
+    if (is_bit_set(SPEC_CONSTANTS_BITFIELD, 0)) {
+        storage_buffers[STORAGE_BUFFER_READBACK_BUFFER].InterlockedAdd(READBACK_BUFFER_SDF_CALLS_QUERY_INDEX, 1);
+    }
+}
+
 
 #define HWRT_BOUNDS_ACCEL
 
@@ -170,6 +188,9 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls)
     
     float3 point = sq.WorldRayOrigin() + sq.WorldRayDirection() * distance;
     for (; i < MAX_ITERS; i++) {
+
+        capture_performance_sdf_call();
+    
         float k = d(point);
         sdf_calls += 1;
                         
@@ -196,7 +217,10 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls)
 
 
 TraceRes trace(float3 ray_pos, float3 ray_dir) {
+    capture_performance_query_trace_ray();
+
 #ifdef HWRT_BOUNDS_ACCEL
+
     RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_TRIANGLES | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> sq;
     let flags = RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_TRIANGLES | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER;
 
@@ -240,6 +264,10 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
     // neat trick: threshold increase proportionally to distance AND pixel "factor" which takes partial derivative of ray dir (to give a sense of how "large" a ray is)
     // float pixel_thing = max(length(ddx(ray_dir)), length(ddy(ray_dir)));
     for (; i < MAX_ITERS; i++) {
+        
+        capture_performance_sdf_call();
+    
+
         let k = d(point);
 
         if (k < THRESHOLD_DISTANCE) {

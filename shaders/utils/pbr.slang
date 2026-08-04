@@ -184,11 +184,13 @@ float3 move_point_to_surface(float3 p, float3 d) {
 	for (int i =0; i < 64; i++) {
 		float k = d2(p);
 
+		capture_performance_sdf_call();
+
 		if (k > THRESHOLD_DISTANCE*2.0) {
 			return p;
 		}
 
-		p += d;
+		p += d * max(-k, 3.35);
 	}
 
 	return p;

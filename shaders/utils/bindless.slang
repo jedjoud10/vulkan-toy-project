@@ -36,9 +36,14 @@ const static uint VOXEL_STORAGE_IMAGE_IDX = -1;
 const static uint UNIFORM_BUFFER_THINGY_IDX = 0;
 const static uint STORAGE_BUFFER_DEBUG_TEXT_LINES = 1;
 
-const static uint STORAGE_BUFFER_MATERIALS_BUFFER = 2;
+const static uint STORAGE_BUFFER_READBACK_BUFFER = 2;
+const static uint READBACK_BUFFER_SDF_CALLS_QUERY_INDEX = 0;
+const static uint READBACK_BUFFER_RAYS_TRACED_QUERY_INDEX = 1;
 
-const static uint STORAGE_BUFFER_SCENE_REPR_BUFFER = 3;
+
+
+const static uint STORAGE_BUFFER_MATERIALS_BUFFER = 3;
+const static uint STORAGE_BUFFER_SCENE_REPR_BUFFER = 4;
 
 
 const static uint STORAGE_BUFFER_SVO_INDEX = -1;
@@ -102,5 +107,16 @@ UniformThing load_per_frame_uniforms() {
 }
 
 public static UniformThing uniforms;
+
+// booleans here packed as bitfield
+[SpecializationConstant] const uint SPEC_CONSTANTS_BITFIELD = 0;
+
+// sky spec constants
+[SpecializationConstant] const uint SKYBOX_RESOLUTION = 32;
+[SpecializationConstant] const uint CLOUDS_RESOLUTION = 32;
+[SpecializationConstant] const uint AMBIENT_SKYBOX_RESOLUTION = 32;
+
+// fullscreen pass spec constants
+[SpecializationConstant] const uint DOWNSCALE_FACTOR = 1;
 
 #endif
