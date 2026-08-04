@@ -210,9 +210,9 @@ public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) 
 			float3 normal = res.normal;
 
 			float3 diffuse = 1.0; 
-			float3 arm = float3(1, 0.0, 0);
+			float3 arm = float3(1, 1.0, 0);
 
-			if ((uniforms.toggles_bitmask & 4) == 0) {
+			if ((uniforms.toggles_bitmask & 4) == 0 && res.data.custom_instance_index == 0) {
 				// TODO: file a bug report SOMEWHERE because these NonUniformResourceIndex are not doing anything
 				// (even tried with a simpler setup that uses NonUniformResourceIndex into a texture sample, still does not work) 
 				uint material_index = NonUniformResourceIndex(floor((snoise(world.xz * 0.03) * 0.5 + 0.5) * 4));

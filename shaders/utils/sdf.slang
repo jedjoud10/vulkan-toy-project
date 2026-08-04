@@ -90,6 +90,7 @@ float d2(float3 p) {
 
     float k = 1000;
 
+    /*
     // TODO: fix this lolz
     uint count = storage_buffers_readonly[STORAGE_BUFFER_SCENE_REPR_BUFFER].Load<uint32_t>(0);
     [MaxIters(3)]
@@ -97,6 +98,7 @@ float d2(float3 p) {
         float3 origin = storage_buffers_readonly[STORAGE_BUFFER_SCENE_REPR_BUFFER].Load<float3>(4 + element * 12);
         k = smin(k, length(origin-p) - 4.0, 0.5);
     }
+    */
 
     return k;
 }
@@ -120,15 +122,19 @@ float d(float3 p) {
     float tor = sdTorus(mul(p - torus_origin, rot), float2(5, 2)) + sin(p.y * 20.0) * 0.05 + 0.05;
 
     float ground = p.y /* + snoise(p.xz * 2.0) * 0.2 + 0.1 */;
-    ground = max(ground, -tex_sample(p * 50.0 - 4.2312) / 50.0);
-    ground = min(ground, p.y+0.8);
+    ground = max(ground, -tex_sample(p * 50.0) / 50.0);
+    //ground = min(ground, p.y+0.8);
 
     float sdf = min(sphere, min(ground, min(min(octa, cyl), min(hex, tor))));
 
 
-    sdf = smin(sdf, d2(p), 0.5);
+    //sdf = smin(sdf, d2(p), 0.5);
     // sdf = min(sdf, tex_sample(p - float3(0, 10, 0)));
     return sdf;
+}
+
+struct TraceResObjectData {
+    uint custom_instance_index;
 }
 
 struct TraceRes {
@@ -138,6 +144,7 @@ struct TraceRes {
     float3 dir;
     float3 normal;
     int sdf_calls;
+    TraceResObjectData data;
 };
 
 struct ShadowTraceRes {
@@ -224,8 +231,8 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
 
 #ifdef HWRT_BOUNDS_ACCEL
 
-    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_TRIANGLES | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> sq;
-    let flags = RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_TRIANGLES | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER;
+    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> sq;
+    let flags = RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER;
 
     RayDesc desc;		
 
@@ -241,9 +248,10 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
     while (sq.Proceed()) {
         if(sq.CandidateType() == CANDIDATE_PROCEDURAL_PRIMITIVE) {
             trace_inner(sq, i, sdf_calls);
-            if (i == MAX_ITERS) {
-                sq.Abort();
-            }
+        }
+
+        if (i == MAX_ITERS) {
+            sq.Abort();
         }
     }
 
@@ -251,11 +259,24 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
         float3 point = sq.WorldRayOrigin() + sq.WorldRayDirection() * sq.CommittedRayT();
         DifferentialPair<float3> dp_a = diffPair(point);
         
-        bwd_diff(d)(dp_a, 1.0);  
-        float3 normal = normalize(dp_a.d);
-        return TraceRes(i, true, point, ray_dir, normal, sdf_calls);
+        float3 normal = 0;
+        
+        if (sq.CommittedRayInstanceCustomIndex() == 0) {
+            bwd_diff(d)(dp_a, 1.0);  
+            normal = normalize(dp_a.d);
+        } else {
+            // https://github.com/jedjoud10/vulkan-toy-project/blob/main/shaders/utils/pbr.slang#L337C1-L346
+            float3[3] tris = sq.CommittedGetIntersectionTriangleVertexPositions();
+            float3 dp1 = tris[1] - tris[0];
+            float3 dp2 = tris[2] - tris[0];
+            float3 object_normal = normalize(cross(dp1, dp2));
+        
+            normal = mul(sq.CommittedObjectToWorld3x4(), float4(object_normal, 0)).xyz;
+        }
+        
+        return TraceRes(i, true, point, ray_dir, normal, sdf_calls, TraceResObjectData(sq.CommittedRayInstanceCustomIndex()));
     } else {
-        return TraceRes(i, false, ray_pos, ray_dir, 0.0, sdf_calls);
+        return TraceRes(i, false, ray_pos, ray_dir, 0.0, sdf_calls, TraceResObjectData());
     }
 #else
     float3 point = ray_pos;
@@ -296,8 +317,8 @@ ShadowTraceRes shadow_trace(float3 ray_pos, float3 ray_dir) {
 
 #ifdef HWRT_BOUNDS_ACCEL
     // 7.7ms vs 7.3ms when using RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH at 480p, 1 bounce, default scene
-    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_TRIANGLES | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> sq;
-    let flags = RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_TRIANGLES | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;
+    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> sq;
+    let flags = RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;
 
     RayDesc desc;		
 

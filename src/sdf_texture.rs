@@ -83,6 +83,7 @@ pub unsafe fn create_voxel_image(
         
     let mut rng = rand::rngs::SmallRng::seed_from_u64(1234);
     
+    /*
     // use an iterative process to generate smaller spheres on larger spheres (resembling fBm)
     let mut src_points = Vec::<(vek::Vec4::<f32>)>::new();
     let mut stack = Vec::<(usize, vek::Vec4::<f32>)>::new();
@@ -114,28 +115,27 @@ pub unsafe fn create_voxel_image(
             }
         }
     }
+    */
 
     //stack.push((0, vek::Vec4::new(4f32, 9f32, 3f32, 16f32)));
 
-    /*
     let mut src_points = vec![vek::Vec4::<f32>::default(); 32];
     // simple random spheres naive implementation
     for point in src_points.iter_mut() {
         *point = vek::Vec4::new(
             rng.random_range(0f32..(SIZE as f32)),
+            rng.random_range(60f32..120f32),
             rng.random_range(0f32..(SIZE as f32)),
-            rng.random_range(0f32..(SIZE as f32)),
-            rng.random_range(15f32..30f32)        
+            rng.random_range(15f32..45f32)        
         );
     }
-    */
 
     log::info!("tilings points in 3D");
     
     // tiled in 3D (26 neighbours)
     let mut points = Vec::<vek::Vec4::<f32>>::with_capacity(src_points.len() * 27);
     for x in -1..=1 {
-        for y in -1..=1 {
+        for y in 0..=0 {
             for z in -1..=1 {
                 points.extend(src_points.iter().map(|point| point + vek::Vec4::new(x as f32 * SIZE as f32, y as f32 * SIZE as f32, z as f32 * SIZE as f32, 0f32)));
             }
@@ -146,7 +146,8 @@ pub unsafe fn create_voxel_image(
 
     let texels = (0..(SIZE*SIZE*SIZE)).into_par_iter().map(|i| {
         let p = index_to_offset(i as usize, SIZE as usize);
-        let fp = p.as_::<f32>();
+        let mut fp = p.as_::<f32>();
+        //fp.y = -fp.y;
         
         //let distance = (fp + vek::Vec3::new(0f32, -10f32, 0f32)).magnitude() - 5.0f32;
         let mut distance = 1000f32;

@@ -4,6 +4,8 @@ use bytemuck::Zeroable;
 use bytemuck::bytes_of;
 use bytemuck::cast_slice;
 use bytesize::ByteSize;
+use rand::RngExt;
+use rand::SeedableRng;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
 use smallvec::SmallVec;
@@ -429,10 +431,13 @@ impl InternalApp {
         };
 
         let blas = ray_tracing::create_blas(&mut ctx, cmd, geometry);
-        let blases = vec![blas];
-
+        
+        let models = crate::model::Model::new("bunny_subdivided.obj", &mut ctx, cmd, &mut writer);
+            
         others::end_recording_and_submit(&mut ctx, cmd);
         buffer::end_buffer_writer(&mut ctx, writer);
+            
+        let blases = vec![blas, models.destroy(&device, ctx.allocator)];
 
         let debug_text = debug_text::DebugText::new(&mut ctx);
 
@@ -511,6 +516,13 @@ impl InternalApp {
             0,
             0xFF,
         ));
+
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(432);
+        for x in -50..50 {
+            for z in -50..50 {
+                blases_instances.push(ray_tracing::instantiate_blas(vek::Quaternion::rotation_y(rng.random_range(0f32..std::f32::consts::TAU)), vek::Vec3::new(x as f32 * 10f32, 2f32, z as f32 * 10f32), vek::Vec3::one() * 1.0f32, &blases[1], 1, 0xFF));
+            }
+        }
 
         let texture = sdf_texture::create_voxel_image(&mut ctx);
 
@@ -594,8 +606,8 @@ impl InternalApp {
         };
 
         if add {
-            self.blases_instances.push(ray_tracing::instantiate_blas(vek::Quaternion::identity(), position, vek::Vec3::one() * 5.0f32, &self.blases[0], 1, 0xFF));
-            self.scene_representation_for_sdf.push(position);
+            self.blases_instances.push(ray_tracing::instantiate_blas(vek::Quaternion::identity(), position, vek::Vec3::one() * 1.0f32, &self.blases[1], 1, 0xFF));
+            //self.scene_representation_for_sdf.push(position);
         }
     }
 
