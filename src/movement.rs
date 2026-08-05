@@ -4,7 +4,7 @@ use smallvec::SmallVec;
 use vek::Clamp;
 use winit::keyboard::KeyCode;
 
-const DEFAULT_STARTING_SNAPSHOT: Option<usize> = Some(0);
+const DEFAULT_STARTING_SNAPSHOT: Option<usize> = None;
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub struct Snapshot {

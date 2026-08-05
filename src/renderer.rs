@@ -4,6 +4,8 @@ use bytemuck::Zeroable;
 use bytemuck::bytes_of;
 use bytemuck::cast_slice;
 use bytesize::ByteSize;
+use rand::RngExt;
+use rand::SeedableRng;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
 use smallvec::SmallVec;
@@ -428,8 +430,23 @@ impl InternalApp {
             max_count: 1
         };
 
-        let blas = ray_tracing::create_blas(&mut ctx, cmd, geometry);
-        let blases = vec![blas];
+        let blas1 = ray_tracing::create_blas(&mut ctx, cmd, geometry);
+
+        let aabbs = [ray_tracing::AccelerationStructureAabb {
+            min: -vek::Vec3::new(4f32, 10f32,4f32),
+            max: vek::Vec3::new(4f32, 10f32, 4f32),
+        }];
+
+        let written = writer.write_bytes(cast_slice(&aabbs));
+
+        let geometry = ray_tracing::BlasGeometry::AABBs {
+            aabb_buffer_address: written.buffer_device_address_start,
+            max_count: 1
+        };
+
+        let blas2 = ray_tracing::create_blas(&mut ctx, cmd, geometry);
+
+        let blases = vec![blas1, blas2];
 
         others::end_recording_and_submit(&mut ctx, cmd);
         buffer::end_buffer_writer(&mut ctx, writer);
@@ -449,6 +466,7 @@ impl InternalApp {
 
         let tlas = ray_tracing::pre_create_tlas(&mut ctx);
         let scene_representation_for_sdf_buffer = buffer::create_buffer_default_flags(&mut ctx, size_of::<u32>() + size_of::<vek::Vec3<f32>>() * 100, "a");
+        let scene_representation_for_sdf = vec![vek::Vec3::<f32>::one(), vek::Vec3::new(4f32, 10f32, 4f32)];
 
         let mut blases_instances = Vec::new();
 
@@ -514,6 +532,23 @@ impl InternalApp {
 
         let texture = sdf_texture::create_voxel_image(&mut ctx);
 
+
+
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(432);
+        for x in -20..20 {
+            for z in -20..20 {
+                blases_instances.push(ray_tracing::instantiate_blas(
+                    vek::Quaternion::rotation_y(rng.random_range(0f32..std::f32::consts::TAU)),
+                    vek::Vec3::new(rng.random_range(-300f32..300f32), 8f32, rng.random_range(-300f32..300f32)),
+                    vek::Vec3::one(), // cannot do non-uniform scale! cannot do scale in general unless we account for it in the shader side!
+                    &blases[1],
+                    1,
+                    0xFF
+                ));
+            }
+        }
+
+
         Self {
             materials_buffer,
             materials,
@@ -521,7 +556,7 @@ impl InternalApp {
             blases,
             blases_instances,
 
-            scene_representation_for_sdf: Vec::new(),
+            scene_representation_for_sdf,
             scene_representation_for_sdf_buffer,
 
             texture,
@@ -565,7 +600,7 @@ impl InternalApp {
             graphics_pipelines,
             compute_pipelines,
             wireframe: false,
-            toggles_bitmask: 0,
+            toggles_bitmask: 1u32 | 2u32,
             debug_text,
             render_finished_semaphores,
             uniform_buffer,
@@ -594,8 +629,8 @@ impl InternalApp {
         };
 
         if add {
-            self.blases_instances.push(ray_tracing::instantiate_blas(vek::Quaternion::identity(), position, vek::Vec3::one() * 5.0f32, &self.blases[0], 1, 0xFF));
-            self.scene_representation_for_sdf.push(position);
+            self.blases_instances.push(ray_tracing::instantiate_blas(vek::Quaternion::identity(), position, vek::Vec3::one(), &self.blases[1], 1, 0xFF));
+            //self.scene_representation_for_sdf.push(position);
         }
     }
 
@@ -1029,12 +1064,17 @@ impl InternalApp {
         let gpu_material_data = self.materials.iter().map(|x| GpuMaterialInfo { base_index: x.base_index }).collect::<Vec<_>>();
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&gpu_material_data), self.materials_buffer.buffer, 0);
 
+        /*
         // write count
         let cnt = self.scene_representation_for_sdf.len() as u32;
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, bytes_of(&cnt), self.scene_representation_for_sdf_buffer.buffer, 0);
 
         // write actual scene repr data
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene_representation_for_sdf), self.scene_representation_for_sdf_buffer.buffer, size_of::<u32>() as u64);
+        */
+
+        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene_representation_for_sdf), self.scene_representation_for_sdf_buffer.buffer, 0);
+        
 
         // rebuild TLAS
         ray_tracing::rebuild_tlas(

@@ -67,6 +67,8 @@ float sdRoundBox( vec3 p, vec3 b, float r )
   return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0) - r;
 }
 
+
+
 const static int TEXTURE_SIZE = 128;
 float tex_sample(float3 p) {
     return sampled_images_3d[SDF_TEXTURE_IMAGE_IDX].Sample(samplers[LINEAR_UNCAMPLED_SAMPLER_IDX], p / TEXTURE_SIZE + 0.5).x;
@@ -87,7 +89,8 @@ void bwd_tex_sample(inout DifferentialPair<float3> p_pair, float dOut)
 
 [Differentiable]
 float d2(float3 p) {
-
+    return 0;
+    /*
     float k = 1000;
 
     // TODO: fix this lolz
@@ -99,6 +102,7 @@ float d2(float3 p) {
     }
 
     return k;
+    */
 }
 
 [Differentiable]
@@ -120,15 +124,40 @@ float d(float3 p) {
     float tor = sdTorus(mul(p - torus_origin, rot), float2(5, 2)) + sin(p.y * 20.0) * 0.05 + 0.05;
 
     float ground = p.y /* + snoise(p.xz * 2.0) * 0.2 + 0.1 */;
-    ground = max(ground, -tex_sample(p * 50.0 - 4.2312) / 50.0);
-    ground = min(ground, p.y+0.8);
+    //ground = max(ground, tex_sample(p * 50.0 - 4.2312) / 50.0);
+    //ground = min(ground, p.y+0.8);
 
     float sdf = min(sphere, min(ground, min(min(octa, cyl), min(hex, tor))));
 
 
-    sdf = smin(sdf, d2(p), 0.5);
+    //sdf = smin(sdf, d2(p), 0.5);
     // sdf = min(sdf, tex_sample(p - float3(0, 10, 0)));
     return sdf;
+}
+
+
+static float3x3 matmulme;
+
+[Differentiable]
+float tree(float3 lp) {
+
+    float3 rotated = mul(matmulme, lp.xzy);
+    
+    // base trunk
+    float d = sdHexPrism(rotated - float3(0, 0, -3.0), float2(0.5, 5));
+    
+    d = min(d, sdHexPrism(rotated - float3(0, 0, 0.5) + float3(sin(uniforms.time - 3.213), cos(uniforms.time + 4.534), 0) * 0.1, float2(2.0, 0.5)));
+    d = min(d, sdHexPrism(rotated - float3(0, 0, 4.5) + float3(sin(uniforms.time), cos(uniforms.time), 0) * 0.1, float2(1.5, 3.5)));
+    
+    // d = min(d, sdHexPrism(rotated - float3(0, 0, 1.1), float2(0.6, 2.0)));
+
+    // d += noise(rotated * 2.2) * 0.1;
+
+    return d;
+}
+
+struct TraceResHitObj {
+    int instance_custom_index;
 }
 
 struct TraceRes {
@@ -138,6 +167,7 @@ struct TraceRes {
     float3 dir;
     float3 normal;
     int sdf_calls;
+    TraceResHitObj data;
 };
 
 struct ShadowTraceRes {
@@ -185,8 +215,10 @@ float2 ray_box_get_tmin_tmax(
 }
 
 void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls) {    
+    float3 aabb_symmetric_bounds = storage_buffers_readonly[STORAGE_BUFFER_SCENE_REPR_BUFFER].Load<float3>(sq.CandidateRayInstanceCustomIndex() * 12);
+
     // software AABB test lmao to get min and max dists of ray into  AABB
-    float2 tmin_tmax = ray_box_get_tmin_tmax(sq.CandidateRayObjectRayOrigin(), sq.CandidateObjectRayDirection(), -1.0, 1.0);
+    float2 tmin_tmax = ray_box_get_tmin_tmax(sq.CandidateRayObjectRayOrigin(), sq.CandidateObjectRayDirection(), -aabb_symmetric_bounds, aabb_symmetric_bounds);
     float distance = max(tmin_tmax.x, 0);
     
     float3 point = sq.WorldRayOrigin() + sq.WorldRayDirection() * distance;
@@ -194,8 +226,18 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls)
 
         capture_performance_sdf_call();
     
-        float k = d(point);
+        float k = 0;
+        if (sq.CandidateRayInstanceCustomIndex() == 0) {
+            k = d(point);
+        } else {
+            // TODO: it would be smarter to convert the point to object space first and trace using that
+            // atp just duplicate trace_inner to a "local" version that takes in a local SDF instead of global one
+            matmulme = AngleAxis3x3(hash11(sq.CandidateInstanceIndex() * 100) * 6.143, float3(0, 0, 1));
+            k = tree(mul(sq.CandidateWorldToObject3x4(), float4(point, 1)).xyz);
+        }
         sdf_calls += 1;
+
+        // k = max(k, -(length(point - (uniforms.position.xyz + uniforms.forward.xyz * 10)) - 2));
                         
         // check if we got close enough to the surface
         if (k < THRESHOLD_DISTANCE) {
@@ -235,12 +277,13 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
     desc.TMin = 0.0;
 
     sq.TraceRayInline(acceleration_structures[0], flags, 0xFF, desc);
-
     int i = 0;
     int sdf_calls = 0;
     while (sq.Proceed()) {
         if(sq.CandidateType() == CANDIDATE_PROCEDURAL_PRIMITIVE) {
+            
             trace_inner(sq, i, sdf_calls);
+            
             if (i == MAX_ITERS) {
                 sq.Abort();
             }
@@ -249,15 +292,27 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
 
     if (sq.CommittedStatus() != COMMITTED_NOTHING) {
         float3 point = sq.WorldRayOrigin() + sq.WorldRayDirection() * sq.CommittedRayT();
-        DifferentialPair<float3> dp_a = diffPair(point);
         
-        bwd_diff(d)(dp_a, 1.0);  
-        float3 normal = normalize(dp_a.d);
-        return TraceRes(i, true, point, ray_dir, normal, sdf_calls);
+        float3 normal = 0.0;
+        if (sq.CommittedRayInstanceCustomIndex() == 0) {
+            DifferentialPair<float3> dp_a = diffPair(point);
+            bwd_diff(d)(dp_a, 1.0);
+            normal = normalize(dp_a.d); 
+        } else {
+            matmulme = AngleAxis3x3(hash11(sq.CommittedInstanceIndex() * 100) * 6.143, float3(0, 0, 1));
+            DifferentialPair<float3> dp_a = diffPair(mul(sq.CommittedWorldToObject3x4(), float4(point, 1)).xyz);
+            bwd_diff(tree)(dp_a, 1.0);  
+            
+            float3 object_normal = normalize(dp_a.d);
+            normal = mul(sq.CommittedObjectToWorld3x4(), float4(object_normal, 0)).xyz;
+        }
+
+        return TraceRes(i, true, point, ray_dir, normal, sdf_calls, TraceResHitObj(sq.CommittedRayInstanceCustomIndex()));
     } else {
-        return TraceRes(i, false, ray_pos, ray_dir, 0.0, sdf_calls);
+        return TraceRes(i, false, ray_pos, ray_dir, 0.0, sdf_calls, TraceResHitObj());
     }
 #else
+    /*
     float3 point = ray_pos;
     int i = 0;
 
@@ -287,6 +342,7 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
     }
 
     return TraceRes(i, false, ray_pos, ray_dir, 0.0, i);
+    */
 #endif
 }
 
@@ -295,7 +351,7 @@ ShadowTraceRes shadow_trace(float3 ray_pos, float3 ray_dir) {
     capture_performance_query_trace_ray();
 
 #ifdef HWRT_BOUNDS_ACCEL
-    // 7.7ms vs 7.3ms when using RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH at 480p, 1 bounce, default scene
+    // 7.7ms vs 7.3ms when using RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH at 800x600, 1 bounce, default scene
     RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_TRIANGLES | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> sq;
     let flags = RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_TRIANGLES | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;
 

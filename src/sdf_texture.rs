@@ -102,9 +102,9 @@ pub unsafe fn create_voxel_image(
     while let Some((depth, node)) = stack.pop() {
         src_points.push(node);
 
-        if depth < 2 {
+        if depth < 1 {
             // pick new random seed spheres on the surface of this sphere
-            for _ in 0..6 {
+            for _ in 0..12 {
                 let phi = rng.random_range(0f32..std::f32::consts::TAU);
                 //let theta = rng.random_range(0f32..std::f32::consts::PI);
                 let theta = std::f32::consts::PI * 0.5f32;

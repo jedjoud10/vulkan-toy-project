@@ -212,7 +212,7 @@ public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) 
 			float3 diffuse = 1.0; 
 			float3 arm = float3(1, 0.0, 0);
 
-			if ((uniforms.toggles_bitmask & 4) == 0) {
+			if ((uniforms.toggles_bitmask & 4) == 0 && res.data.instance_custom_index != 1) {
 				// TODO: file a bug report SOMEWHERE because these NonUniformResourceIndex are not doing anything
 				// (even tried with a simpler setup that uses NonUniformResourceIndex into a texture sample, still does not work) 
 				uint material_index = NonUniformResourceIndex(floor((snoise(world.xz * 0.03) * 0.5 + 0.5) * 4));
@@ -228,7 +228,8 @@ public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) 
 			PbrSurfaceData surface = PbrSurfaceData(res.pos, diffuse, normal, AoRoughnessMetallic(arm));
 			CameraData camera = CameraData(camera_view);
 			
-			bool trace_refractive_ray = d2(world) < THRESHOLD_DISTANCE;
+			//bool trace_refractive_ray = d2(world) < THRESHOLD_DISTANCE;
+			bool trace_refractive_ray = false;
 			if (!trace_refractive_ray) {
 				// opaque surface, non refractive
 				float3 sun = uniforms.sun.xyz;
