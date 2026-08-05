@@ -150,5 +150,9 @@ float3x3 AngleAxis3x3(float angle, float3 axis)
     );
 }
 
+float3 hex2col(uint hex) {
+	uint3 rgb = uint3((hex >> 16) & 0xFF, (hex >> 8) & 0xFF, hex & 0xFF);
+	return pow(((float3)rgb) / 255.0, 2.2);
+}
 
 #endif

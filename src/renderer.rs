@@ -432,9 +432,10 @@ impl InternalApp {
 
         let blas1 = ray_tracing::create_blas(&mut ctx, cmd, geometry);
 
+        let symm_bounds = vek::Vec3::new(9f32, 15f32, 9f32);
         let aabbs = [ray_tracing::AccelerationStructureAabb {
-            min: -vek::Vec3::new(4f32, 10f32,4f32),
-            max: vek::Vec3::new(4f32, 10f32, 4f32),
+            min: -symm_bounds,
+            max: symm_bounds,
         }];
 
         let written = writer.write_bytes(cast_slice(&aabbs));
@@ -466,7 +467,7 @@ impl InternalApp {
 
         let tlas = ray_tracing::pre_create_tlas(&mut ctx);
         let scene_representation_for_sdf_buffer = buffer::create_buffer_default_flags(&mut ctx, size_of::<u32>() + size_of::<vek::Vec3<f32>>() * 100, "a");
-        let scene_representation_for_sdf = vec![vek::Vec3::<f32>::one(), vek::Vec3::new(4f32, 10f32, 4f32)];
+        let scene_representation_for_sdf = vec![vek::Vec3::<f32>::one(), symm_bounds];
 
         let mut blases_instances = Vec::new();
 
@@ -534,6 +535,7 @@ impl InternalApp {
 
 
 
+        /*
         let mut rng = rand::rngs::SmallRng::seed_from_u64(432);
         for x in -20..20 {
             for z in -20..20 {
@@ -547,6 +549,7 @@ impl InternalApp {
                 ));
             }
         }
+        */
 
 
         Self {
@@ -1052,6 +1055,10 @@ impl InternalApp {
             dbgtext_writeln!(&mut self.debug_text, "rays traced (millions): {:.2}", million_traced_rays);
 
             dbgtext_writeln!(&mut self.debug_text, "million rays per second: {:.2}", million_traced_rays / (self.stats.get_compute_region_duration()));
+
+            let duration = (self.stats.get_compute_region_duration()) / million_sdf_calls;
+            dbgtext_writeln!(&mut self.debug_text, "ms per million SDF call: {:.2}", duration * 1000f64);
+
 
             // clear data for next frame
             data.fill(0);

@@ -67,6 +67,14 @@ float sdRoundBox( vec3 p, vec3 b, float r )
   return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0) - r;
 }
 
+// https://iquilezles.org/articles/distfunctions/
+[Differentiable]
+float sdBox( vec3 p, vec3 b )
+{
+  vec3 q = abs(p) - b;
+  return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0);
+}
+
 
 
 const static int TEXTURE_SIZE = 128;
@@ -85,24 +93,6 @@ void bwd_tex_sample(inout DifferentialPair<float3> p_pair, float dOut)
 
 
     p_pair = diffPair<float3>(p_pair.p, (float3(b-x, b-y, b-z) / eps) * dOut);
-}
-
-[Differentiable]
-float d2(float3 p) {
-    return 0;
-    /*
-    float k = 1000;
-
-    // TODO: fix this lolz
-    uint count = storage_buffers_readonly[STORAGE_BUFFER_SCENE_REPR_BUFFER].Load<uint32_t>(0);
-    [MaxIters(3)]
-    for (int element = 0; element < 3; element++) {
-        float3 origin = storage_buffers_readonly[STORAGE_BUFFER_SCENE_REPR_BUFFER].Load<float3>(4 + element * 12);
-        k = smin(k, length(origin-p) - 4.0, 0.5);
-    }
-
-    return k;
-    */
 }
 
 [Differentiable]
@@ -136,9 +126,7 @@ float d(float3 p) {
 }
 
 [Differentiable]
-float tree(float3 lp) {
-
-    // no need for rotation, we already do it on the ray-tracing side by transforming the BLAS instance
+float tree1(float3 lp) {
     float3 rotated = lp.xzy;
     
     // base trunk
@@ -147,15 +135,57 @@ float tree(float3 lp) {
     d = min(d, sdHexPrism(rotated - float3(0, 0, 0.5) + float3(sin(uniforms.time - 3.213), cos(uniforms.time + 4.534), 0) * 0.1, float2(2.0, 0.5)));
     d = min(d, sdHexPrism(rotated - float3(0, 0, 4.5) + float3(sin(uniforms.time), cos(uniforms.time), 0) * 0.1, float2(1.5, 3.5)));
     
-    // d = min(d, sdHexPrism(rotated - float3(0, 0, 1.1), float2(0.6, 2.0)));
-
-    // d += noise(rotated * 2.2) * 0.1;
-
     return d;
+}
+
+[Differentiable]
+float2 tree2(float3 lp, float instance_index) {
+    
+    // half extent
+    float box_height = 4;
+    
+    // branch space
+    float3 bp = lp - float3(0, -2.0 * box_height, 0);
+    float d = 10000;
+    float thickness = 0.7;
+    
+    //float hash_like = sin(i * 432.34 + 4.32) * 4.324;
+    float3x3 local_rot = AngleAxis3x3(0.2 + sin(instance_index) * 0.03, float3(1, 0, -1));
+
+    for (int i = 0; i < 4; i++) {
+        bp.xz = abs(bp.xz);
+
+        // box is center at (0, 1, 0) in local branch space
+        // the origin (bp = (0, 0, 0)) is the BOTTOM of the box
+        d = min(d, sdBox(bp - float3(0, box_height, 0), float3(thickness, box_height, thickness)));
+
+        // move UP to reach end of box
+        bp -= float3(0, 2 * box_height, 0);
+
+        // rotate space
+        bp = mul(bp, local_rot);
+        
+        // make next branches smaller and shorter
+        thickness *= 0.8  + cos(34.2 * instance_index) * 0.1;
+        box_height *= 0.6 + cos(3.2  * instance_index) * 0.1;
+    }
+
+    float id = 0;
+
+    float sphere = length(bp) - 2.0;
+    if (sphere < d) {
+        d = sphere;
+        id = 1;
+    }
+    
+    //d = smin(d, , 0.2);
+
+    return float2(d, id);
 }
 
 struct TraceResHitObj {
     int instance_custom_index;
+    float material;
 }
 
 struct TraceRes {
@@ -230,7 +260,9 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls)
         } else {
             // TODO: it would be smarter to convert the point to object space first and trace using that
             // atp just duplicate trace_inner to a "local" version that takes in a local SDF instead of global one
-            k = tree(mul(sq.CandidateWorldToObject3x4(), float4(point, 1)).xyz);
+            float3 local_position = mul(sq.CandidateWorldToObject3x4(), float4(point, 1)).xyz;
+            float instance_index = sq.CandidateInstanceIndex();
+            k = tree2(local_position, instance_index).x;
         }
         sdf_calls += 1;
 
@@ -289,6 +321,8 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
 
     if (sq.CommittedStatus() != COMMITTED_NOTHING) {
         float3 point = sq.WorldRayOrigin() + sq.WorldRayDirection() * sq.CommittedRayT();
+
+        float material = 0;
         
         float3 normal = 0.0;
         if (sq.CommittedRayInstanceCustomIndex() == 0) {
@@ -297,18 +331,20 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
             normal = normalize(dp_a.d); 
         } else {
             DifferentialPair<float3> dp_a = diffPair(mul(sq.CommittedWorldToObject3x4(), float4(point, 1)).xyz);
-            bwd_diff(tree)(dp_a, 1.0);  
+            DifferentialPair<float> dp_i = diffPair(sq.CommittedInstanceIndex());
+            bwd_diff(tree2)(dp_a, dp_i, 1.0);  
+
+            material = tree2(dp_a.p, dp_i.p).y;
             
             float3 object_normal = normalize(dp_a.d);
             normal = mul(sq.CommittedObjectToWorld3x4(), float4(object_normal, 0)).xyz;
         }
 
-        return TraceRes(i, true, point, ray_dir, normal, sdf_calls, TraceResHitObj(sq.CommittedRayInstanceCustomIndex()));
+        return TraceRes(i, true, point, ray_dir, normal, sdf_calls, TraceResHitObj(sq.CommittedRayInstanceCustomIndex(), material));
     } else {
         return TraceRes(i, false, ray_pos, ray_dir, 0.0, sdf_calls, TraceResHitObj());
     }
 #else
-    /*
     float3 point = ray_pos;
     int i = 0;
 
@@ -338,7 +374,6 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
     }
 
     return TraceRes(i, false, ray_pos, ray_dir, 0.0, i);
-    */
 #endif
 }
 

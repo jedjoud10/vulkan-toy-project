@@ -179,6 +179,8 @@ public float3 lighting2(
 
 // TODO: better way to do this? maybe by using some BLAS mask flags we can let HWRT to ignore specific objects for us
 float3 move_point_to_surface(float3 p, float3 d) {
+	return p;
+	/*
 	for (int i =0; i < 64; i++) {
 		float k = d2(p);
 
@@ -192,6 +194,7 @@ float3 move_point_to_surface(float3 p, float3 d) {
 	}
 
 	return p;
+	*/
 }
 
 public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) {
@@ -212,6 +215,15 @@ public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) 
 			float3 diffuse = 1.0; 
 			float3 arm = float3(1, 0.0, 0);
 
+			if (res.data.instance_custom_index == 1) {
+				arm = float3(1, 0.8, 0);
+
+				float3 trunk = hex2col(0x564631) * (noise(world * 20.2) * 0.2 + 0.9);
+				float3 leaf = hex2col(0x588732) * (noise(world * 10.0) * 0.2 + 0.9);
+
+				diffuse = lerp(trunk, leaf, res.data.material);
+			}
+
 			if ((uniforms.toggles_bitmask & 4) == 0 && res.data.instance_custom_index != 1) {
 				// TODO: file a bug report SOMEWHERE because these NonUniformResourceIndex are not doing anything
 				// (even tried with a simpler setup that uses NonUniformResourceIndex into a texture sample, still does not work) 
@@ -224,11 +236,12 @@ public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) 
 				normal = sample_triplanar_normal(index+2, world, normal);
 			}
 
+
+
 			
 			PbrSurfaceData surface = PbrSurfaceData(res.pos, diffuse, normal, AoRoughnessMetallic(arm));
 			CameraData camera = CameraData(camera_view);
 			
-			//bool trace_refractive_ray = d2(world) < THRESHOLD_DISTANCE;
 			bool trace_refractive_ray = false;
 			if (!trace_refractive_ray) {
 				// opaque surface, non refractive
