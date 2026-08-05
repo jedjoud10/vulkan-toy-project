@@ -25,6 +25,7 @@ mod physical_device_vulkan_14_features;
 mod debug_text;
 mod ray_tracing;
 mod sdf_texture;
+mod shader_compiler;
 
 use clap::Parser;
 use std::ops::ControlFlow;

@@ -22,10 +22,12 @@ use crate::per_frame_data;
 use crate::physical_device::PhysicalDeviceAndScore;
 use crate::samplers;
 use crate::query_pool_statistics::QueryPoolStatistics;
+use crate::shader_compiler;
 use crate::voxel;
 use crate::voxel::SparseVoxelOctree;
 use crate::voxel::TestingStructure;
 use winit::event::MouseButton;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ops::ControlFlow;
 use std::time::Duration;
@@ -48,16 +50,16 @@ use crate::others;
 use crate::per_frame_data::PerFrameData;
 use crate::render_targets_data::RenderTargetsData;
 
-const COMPUTE_POST_PROCESS_SPV: &'static str = "compute_post_process.spv";
+const COMPUTE_POST_PROCESS: &'static str = "compute_post_process";
 const BLOOM_UPSAMPLE_ENTRY_POINT: &'static str = "bloom_upsample";
 const BLOOM_DOWNSAMPLE_ENTRY_POINT: &'static str = "bloom_downsample";
 const WRITE_SWAPCHAIN_IMAGE_ENTRY_POINT: &'static str = "write_swapchain_image";
-const COMPUTE_SKY_SPV: &str = "compute_sky.spv";
+const COMPUTE_SKY: &str = "compute_sky";
 const WRITE_CLOUDS_ENTRY_POINT: &str = "write_clouds";
 const WRITE_SKYBOX_ENTRY_POINT: &str = "write_skybox";
 const BLUR_AMBIENT_SKYBOX_ENTRY_POINT: &str = "blur_skybox_ambient";
 
-const COMPUTE_FULLSCREEN_SPV: &str = "fullscreen.spv";
+const COMPUTE_FULLSCREEN: &str = "fullscreen";
 
 pub struct GraphicsContext<'a> {
     pub device: &'a ash::Device,
@@ -326,26 +328,28 @@ impl InternalApp {
             pipeline_debug_name: "post process compute pipeline",
             wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &[WRITE_SWAPCHAIN_IMAGE_ENTRY_POINT, BLOOM_DOWNSAMPLE_ENTRY_POINT, BLOOM_UPSAMPLE_ENTRY_POINT] },
             spec_constants: Some(&spec_constants),
-            spv_file_name: COMPUTE_POST_PROCESS_SPV,
+            file_name_without_extension: COMPUTE_POST_PROCESS,
         }, pipeline::PipelineCreateSettings {
             pipeline_debug_name: "sky compute pipeline",
             wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &[WRITE_SKYBOX_ENTRY_POINT, WRITE_CLOUDS_ENTRY_POINT, BLUR_AMBIENT_SKYBOX_ENTRY_POINT] },
             spec_constants: Some(&spec_constants),
-            spv_file_name: COMPUTE_SKY_SPV,
+            file_name_without_extension: COMPUTE_SKY,
         }, pipeline::PipelineCreateSettings {
             pipeline_debug_name: "compute fullscreen shader",
             wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["main"] },
             spec_constants: Some(&spec_constants),
-            spv_file_name: COMPUTE_FULLSCREEN_SPV,
+            file_name_without_extension: COMPUTE_FULLSCREEN,
         }];
+
+        let mut compiled = HashMap::<String, Cow<[u8]>>::default(); 
+        shader_compiler::compile_all_shaders(&mut compiled);
 
         // compile the pipelines in parallel
         // ouug shii :eyes:
         log::info!("creating pipelines...");
         let generic_pipelines = settings.into_par_iter().map(|setting| {
-            let spv_file_name = setting.spv_file_name;
-            let raw_bytes = others::load_compiled_shader(spv_file_name).unwrap();
-
+            let spv_file_name = setting.file_name_without_extension;
+            let raw_bytes = &compiled[spv_file_name];
             
             let len = raw_bytes.len();
             assert!(len.is_multiple_of(4));
@@ -1183,7 +1187,7 @@ impl InternalApp {
         self.device.cmd_bind_pipeline(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
-            self.compute_pipelines[COMPUTE_SKY_SPV][WRITE_CLOUDS_ENTRY_POINT],
+            self.compute_pipelines[COMPUTE_SKY][WRITE_CLOUDS_ENTRY_POINT],
         );
 
         self.device.cmd_dispatch(cmd, skybox::CLOUDS_RESOLUTION.div_ceil(8), skybox::CLOUDS_RESOLUTION.div_ceil(8), 1);
@@ -1191,7 +1195,7 @@ impl InternalApp {
         self.device.cmd_bind_pipeline(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
-            self.compute_pipelines[COMPUTE_SKY_SPV][WRITE_SKYBOX_ENTRY_POINT]
+            self.compute_pipelines[COMPUTE_SKY][WRITE_SKYBOX_ENTRY_POINT]
         );
 
         self.device.cmd_dispatch(cmd, skybox::SKYBOX_RESOLUTION.div_ceil(8), skybox::SKYBOX_RESOLUTION.div_ceil(8), 6);
@@ -1233,7 +1237,7 @@ impl InternalApp {
         self.device.cmd_bind_pipeline(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
-            self.compute_pipelines[COMPUTE_SKY_SPV][BLUR_AMBIENT_SKYBOX_ENTRY_POINT]
+            self.compute_pipelines[COMPUTE_SKY][BLUR_AMBIENT_SKYBOX_ENTRY_POINT]
         );
 
         self.device.cmd_dispatch(cmd, skybox::AMBIENT_SKYBOX_RESOLUTION, skybox::AMBIENT_SKYBOX_RESOLUTION, 6);
@@ -1313,7 +1317,7 @@ impl InternalApp {
         self.device.cmd_bind_pipeline(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
-            self.compute_pipelines[COMPUTE_FULLSCREEN_SPV]["main"],
+            self.compute_pipelines[COMPUTE_FULLSCREEN]["main"],
         );
 
         self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, 1);
@@ -1367,7 +1371,7 @@ impl InternalApp {
         self.device.cmd_bind_pipeline(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
-            self.compute_pipelines[COMPUTE_POST_PROCESS_SPV][BLOOM_DOWNSAMPLE_ENTRY_POINT],
+            self.compute_pipelines[COMPUTE_POST_PROCESS][BLOOM_DOWNSAMPLE_ENTRY_POINT],
         );
 
         // there is no need to go down to the largest mip since we will be sampling from a smaller mip anyways
@@ -1434,7 +1438,7 @@ impl InternalApp {
         self.device.cmd_bind_pipeline(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
-            self.compute_pipelines[COMPUTE_POST_PROCESS_SPV][BLOOM_UPSAMPLE_ENTRY_POINT],
+            self.compute_pipelines[COMPUTE_POST_PROCESS][BLOOM_UPSAMPLE_ENTRY_POINT],
         );
 
         for mip in (minimum_upsampling_mip..(render_targets.bloom_mip_image_views.len() as u32 - 1)).rev() {
@@ -1508,7 +1512,7 @@ impl InternalApp {
         self.device.cmd_bind_pipeline(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
-            self.compute_pipelines[COMPUTE_POST_PROCESS_SPV][WRITE_SWAPCHAIN_IMAGE_ENTRY_POINT],
+            self.compute_pipelines[COMPUTE_POST_PROCESS][WRITE_SWAPCHAIN_IMAGE_ENTRY_POINT],
         );
 
         self.device.cmd_dispatch(cmd, window_size_no_downscale.x.div_ceil(8), window_size_no_downscale.y.div_ceil(8), 1);
