@@ -135,13 +135,11 @@ float d(float3 p) {
     return sdf;
 }
 
-
-static float3x3 matmulme;
-
 [Differentiable]
 float tree(float3 lp) {
 
-    float3 rotated = mul(matmulme, lp.xzy);
+    // no need for rotation, we already do it on the ray-tracing side by transforming the BLAS instance
+    float3 rotated = lp.xzy;
     
     // base trunk
     float d = sdHexPrism(rotated - float3(0, 0, -3.0), float2(0.5, 5));
@@ -232,7 +230,6 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls)
         } else {
             // TODO: it would be smarter to convert the point to object space first and trace using that
             // atp just duplicate trace_inner to a "local" version that takes in a local SDF instead of global one
-            matmulme = AngleAxis3x3(hash11(sq.CandidateInstanceIndex() * 100) * 6.143, float3(0, 0, 1));
             k = tree(mul(sq.CandidateWorldToObject3x4(), float4(point, 1)).xyz);
         }
         sdf_calls += 1;
@@ -299,7 +296,6 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
             bwd_diff(d)(dp_a, 1.0);
             normal = normalize(dp_a.d); 
         } else {
-            matmulme = AngleAxis3x3(hash11(sq.CommittedInstanceIndex() * 100) * 6.143, float3(0, 0, 1));
             DifferentialPair<float3> dp_a = diffPair(mul(sq.CommittedWorldToObject3x4(), float4(point, 1)).xyz);
             bwd_diff(tree)(dp_a, 1.0);  
             
