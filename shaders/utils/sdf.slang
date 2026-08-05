@@ -149,7 +149,6 @@ float tree(float3 lp) {
     d = min(d, sdRoundBox(rotated - float3(0, 0, 0.5) + float3(sin(uniforms.time - 3.213), cos(uniforms.time + 4.534), 0) * 0.1, float3(2.0, 2.0, 0.5), 0.2));
     
     d = min(d, sdRoundBox(rotated - float3(0, 0, 4.2) + float3(sin(uniforms.time), cos(uniforms.time), 0) * 0.1, float3(1.5, 1.5, 3.5), 0.2));
-
     /*
     d = min(d, sdHexPrism(rotated - float3(0, 0, 0.5) + float3(sin(uniforms.time - 3.213), cos(uniforms.time + 4.534), 0) * 0.1, float2(2.0, 0.5)));
     d = min(d, sdHexPrism(rotated - float3(0, 0, 4.5) + float3(sin(uniforms.time), cos(uniforms.time), 0) * 0.1, float2(1.5, 3.5)));
