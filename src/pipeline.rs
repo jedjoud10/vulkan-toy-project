@@ -85,7 +85,7 @@ impl GenericGraphicsPipeline {
 
 pub struct PipelineCreateSettings<'a> {
     pub pipeline_debug_name: &'static str,
-    pub spv_file_name: &'static str,
+    pub file_name_without_extension: &'static str,
     pub wtf_kind_of_pipeline_is_this: PipelineCreateType<'a>,
     pub spec_constants: Option<&'a [u32]>
 } 

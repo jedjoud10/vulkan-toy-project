@@ -213,7 +213,7 @@ public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) 
 			float3 normal = res.normal;
 
 			float3 diffuse = 1.0; 
-			float3 arm = float3(1, 0.0, 0);
+			float3 arm = float3(1, 0.1, 1);
 
 			if (res.data.instance_custom_index == 1) {
 				arm = float3(1, 0.8, 0);

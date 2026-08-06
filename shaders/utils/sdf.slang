@@ -132,9 +132,17 @@ float tree1(float3 lp) {
     // base trunk
     float d = sdHexPrism(rotated - float3(0, 0, -3.0), float2(0.5, 5));
     
+    d = min(d, sdRoundBox(rotated - float3(0, 0, 0.5) + float3(sin(uniforms.time - 3.213), cos(uniforms.time + 4.534), 0) * 0.1, float3(2.0, 2.0, 0.5), 0.2));
+    
+    d = min(d, sdRoundBox(rotated - float3(0, 0, 4.2) + float3(sin(uniforms.time), cos(uniforms.time), 0) * 0.1, float3(1.5, 1.5, 3.5), 0.2));
+    /*
     d = min(d, sdHexPrism(rotated - float3(0, 0, 0.5) + float3(sin(uniforms.time - 3.213), cos(uniforms.time + 4.534), 0) * 0.1, float2(2.0, 0.5)));
     d = min(d, sdHexPrism(rotated - float3(0, 0, 4.5) + float3(sin(uniforms.time), cos(uniforms.time), 0) * 0.1, float2(1.5, 3.5)));
-    
+    */
+    // d = min(d, sdHexPrism(rotated - float3(0, 0, 1.1), float2(0.6, 2.0)));
+
+    // d += noise(rotated * 2.2) * 0.1;
+
     return d;
 }
 
@@ -248,7 +256,6 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls)
     // software AABB test lmao to get min and max dists of ray into  AABB
     float2 tmin_tmax = ray_box_get_tmin_tmax(sq.CandidateRayObjectRayOrigin(), sq.CandidateObjectRayDirection(), -aabb_symmetric_bounds, aabb_symmetric_bounds);
     float distance = max(tmin_tmax.x, 0);
-    
     float3 point = sq.WorldRayOrigin() + sq.WorldRayDirection() * distance;
     for (; i < MAX_ITERS; i++) {
 

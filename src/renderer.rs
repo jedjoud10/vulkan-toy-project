@@ -22,10 +22,12 @@ use crate::per_frame_data;
 use crate::physical_device::PhysicalDeviceAndScore;
 use crate::samplers;
 use crate::query_pool_statistics::QueryPoolStatistics;
+use crate::shader_compiler;
 use crate::voxel;
 use crate::voxel::SparseVoxelOctree;
 use crate::voxel::TestingStructure;
 use winit::event::MouseButton;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ops::ControlFlow;
 use std::time::Duration;
@@ -48,16 +50,16 @@ use crate::others;
 use crate::per_frame_data::PerFrameData;
 use crate::render_targets_data::RenderTargetsData;
 
-const COMPUTE_POST_PROCESS_SPV: &'static str = "compute_post_process.spv";
+const COMPUTE_POST_PROCESS: &'static str = "compute_post_process";
 const BLOOM_UPSAMPLE_ENTRY_POINT: &'static str = "bloom_upsample";
 const BLOOM_DOWNSAMPLE_ENTRY_POINT: &'static str = "bloom_downsample";
 const WRITE_SWAPCHAIN_IMAGE_ENTRY_POINT: &'static str = "write_swapchain_image";
-const COMPUTE_SKY_SPV: &str = "compute_sky.spv";
+const COMPUTE_SKY: &str = "compute_sky";
 const WRITE_CLOUDS_ENTRY_POINT: &str = "write_clouds";
 const WRITE_SKYBOX_ENTRY_POINT: &str = "write_skybox";
 const BLUR_AMBIENT_SKYBOX_ENTRY_POINT: &str = "blur_skybox_ambient";
 
-const COMPUTE_FULLSCREEN_SPV: &str = "fullscreen.spv";
+const COMPUTE_FULLSCREEN: &str = "fullscreen";
 
 pub struct GraphicsContext<'a> {
     pub device: &'a ash::Device,
@@ -314,59 +316,7 @@ impl InternalApp {
         let mut graphics_pipelines = HashMap::<&'static str, pipeline::GenericGraphicsPipeline>::new();
         let mut compute_pipelines = HashMap::<&'static str, pipeline::GenericComputePipeline>::new();
 
-        let spec_constants_bitflags = if args.readback_performance_queries { 1u32 } else { 0 };  
-
-        let spec_constants = [
-            spec_constants_bitflags,
-            skybox::SKYBOX_RESOLUTION, skybox::CLOUDS_RESOLUTION, skybox::AMBIENT_SKYBOX_RESOLUTION,
-            args.downscale_factor,
-        ];
-
-        let settings = [pipeline::PipelineCreateSettings {
-            pipeline_debug_name: "post process compute pipeline",
-            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &[WRITE_SWAPCHAIN_IMAGE_ENTRY_POINT, BLOOM_DOWNSAMPLE_ENTRY_POINT, BLOOM_UPSAMPLE_ENTRY_POINT] },
-            spec_constants: Some(&spec_constants),
-            spv_file_name: COMPUTE_POST_PROCESS_SPV,
-        }, pipeline::PipelineCreateSettings {
-            pipeline_debug_name: "sky compute pipeline",
-            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &[WRITE_SKYBOX_ENTRY_POINT, WRITE_CLOUDS_ENTRY_POINT, BLUR_AMBIENT_SKYBOX_ENTRY_POINT] },
-            spec_constants: Some(&spec_constants),
-            spv_file_name: COMPUTE_SKY_SPV,
-        }, pipeline::PipelineCreateSettings {
-            pipeline_debug_name: "compute fullscreen shader",
-            wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["main"] },
-            spec_constants: Some(&spec_constants),
-            spv_file_name: COMPUTE_FULLSCREEN_SPV,
-        }];
-
-        // compile the pipelines in parallel
-        // ouug shii :eyes:
-        log::info!("creating pipelines...");
-        let generic_pipelines = settings.into_par_iter().map(|setting| {
-            let spv_file_name = setting.spv_file_name;
-            let raw_bytes = others::load_compiled_shader(spv_file_name).unwrap();
-
-            
-            let len = raw_bytes.len();
-            assert!(len.is_multiple_of(4));
-
-            // align to word sizes
-            // previous assertion upholds that the number of bytes is a multiple of word size
-            let mut vec = vec![0u32; len / 4];
-            let dst_slice = bytemuck::cast_slice_mut::<u32, u8>(vec.as_mut_slice());
-            dst_slice.copy_from_slice(&raw_bytes);
-
-            let raw_words = &vec;
-            let pipeline = pipeline::create_generic_pipeline(raw_words, &device, &debug_marker, main_pipeline_layout, setting);
-            (spv_file_name, pipeline)
-        }).collect::<Vec<_>>();
-
-        for (spv_file_name, pipeline) in generic_pipelines {
-            match pipeline {
-                pipeline::GenericPipeline::Graphics(generic_graphics_pipeline) => { graphics_pipelines.insert(spv_file_name, generic_graphics_pipeline); },
-                pipeline::GenericPipeline::Compute(generic_compute_pipeline) => { compute_pipelines.insert(spv_file_name, generic_compute_pipeline); },
-            }
-        }
+        compile_all_shaders(&args, &device, &debug_marker, main_pipeline_layout, &mut graphics_pipelines, &mut compute_pipelines);
 
         let samplers = samplers::Samplers::create_samplers(&device);
         log::info!("created samplers");        
@@ -750,6 +700,11 @@ impl InternalApp {
         if self.input.get_button(Button::Keyboard(KeyCode::Digit5)).pressed() {
             self.toggles_bitmask ^= 16;
         }
+
+        if self.input.get_button(Button::Keyboard(KeyCode::KeyR)).pressed() {
+            compile_all_shaders(&self.args, &self.device, &self.debug_marker, self.main_pipeline_layout, &mut self.graphics_pipelines, &mut self.compute_pipelines);
+        }
+
 
 
         if self.input.get_button(Button::Keyboard(KeyCode::KeyJ)).pressed() {
@@ -1190,7 +1145,7 @@ impl InternalApp {
         self.device.cmd_bind_pipeline(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
-            self.compute_pipelines[COMPUTE_SKY_SPV][WRITE_CLOUDS_ENTRY_POINT],
+            self.compute_pipelines[COMPUTE_SKY][WRITE_CLOUDS_ENTRY_POINT],
         );
 
         self.device.cmd_dispatch(cmd, skybox::CLOUDS_RESOLUTION.div_ceil(8), skybox::CLOUDS_RESOLUTION.div_ceil(8), 1);
@@ -1198,7 +1153,7 @@ impl InternalApp {
         self.device.cmd_bind_pipeline(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
-            self.compute_pipelines[COMPUTE_SKY_SPV][WRITE_SKYBOX_ENTRY_POINT]
+            self.compute_pipelines[COMPUTE_SKY][WRITE_SKYBOX_ENTRY_POINT]
         );
 
         self.device.cmd_dispatch(cmd, skybox::SKYBOX_RESOLUTION.div_ceil(8), skybox::SKYBOX_RESOLUTION.div_ceil(8), 6);
@@ -1240,7 +1195,7 @@ impl InternalApp {
         self.device.cmd_bind_pipeline(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
-            self.compute_pipelines[COMPUTE_SKY_SPV][BLUR_AMBIENT_SKYBOX_ENTRY_POINT]
+            self.compute_pipelines[COMPUTE_SKY][BLUR_AMBIENT_SKYBOX_ENTRY_POINT]
         );
 
         self.device.cmd_dispatch(cmd, skybox::AMBIENT_SKYBOX_RESOLUTION, skybox::AMBIENT_SKYBOX_RESOLUTION, 6);
@@ -1320,7 +1275,7 @@ impl InternalApp {
         self.device.cmd_bind_pipeline(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
-            self.compute_pipelines[COMPUTE_FULLSCREEN_SPV]["main"],
+            self.compute_pipelines[COMPUTE_FULLSCREEN]["main"],
         );
 
         self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, 1);
@@ -1374,7 +1329,7 @@ impl InternalApp {
         self.device.cmd_bind_pipeline(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
-            self.compute_pipelines[COMPUTE_POST_PROCESS_SPV][BLOOM_DOWNSAMPLE_ENTRY_POINT],
+            self.compute_pipelines[COMPUTE_POST_PROCESS][BLOOM_DOWNSAMPLE_ENTRY_POINT],
         );
 
         // there is no need to go down to the largest mip since we will be sampling from a smaller mip anyways
@@ -1441,7 +1396,7 @@ impl InternalApp {
         self.device.cmd_bind_pipeline(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
-            self.compute_pipelines[COMPUTE_POST_PROCESS_SPV][BLOOM_UPSAMPLE_ENTRY_POINT],
+            self.compute_pipelines[COMPUTE_POST_PROCESS][BLOOM_UPSAMPLE_ENTRY_POINT],
         );
 
         for mip in (minimum_upsampling_mip..(render_targets.bloom_mip_image_views.len() as u32 - 1)).rev() {
@@ -1515,7 +1470,7 @@ impl InternalApp {
         self.device.cmd_bind_pipeline(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
-            self.compute_pipelines[COMPUTE_POST_PROCESS_SPV][WRITE_SWAPCHAIN_IMAGE_ENTRY_POINT],
+            self.compute_pipelines[COMPUTE_POST_PROCESS][WRITE_SWAPCHAIN_IMAGE_ENTRY_POINT],
         );
 
         self.device.cmd_dispatch(cmd, window_size_no_downscale.x.div_ceil(8), window_size_no_downscale.y.div_ceil(8), 1);
@@ -1668,5 +1623,88 @@ impl InternalApp {
 
         drop(self.entry); // DO NOT REMOVE ENTRY FROM STRUCT. NEEDED!!!
         log::info!("everything is done!");
+    }
+}
+
+
+unsafe fn compile_all_shaders(
+    args: &crate::Args,
+    device: &ash::Device,
+    debug_marker: &Option<ash::ext::debug_utils::Device>,
+    main_pipeline_layout: vk::PipelineLayout,
+    graphics_pipelines: &mut HashMap<&str, pipeline::GenericGraphicsPipeline>,
+    compute_pipelines: &mut HashMap<&str, pipeline::GenericComputePipeline>
+) {
+    let spec_constants_bitflags = if args.readback_performance_queries { 1u32 } else { 0 };
+
+    let spec_constants = [
+        spec_constants_bitflags,
+        skybox::SKYBOX_RESOLUTION, skybox::CLOUDS_RESOLUTION, skybox::AMBIENT_SKYBOX_RESOLUTION,
+        args.downscale_factor,
+    ];
+
+    let settings = [pipeline::PipelineCreateSettings {
+        pipeline_debug_name: "post process compute pipeline",
+        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &[WRITE_SWAPCHAIN_IMAGE_ENTRY_POINT, BLOOM_DOWNSAMPLE_ENTRY_POINT, BLOOM_UPSAMPLE_ENTRY_POINT] },
+        spec_constants: Some(&spec_constants),
+        file_name_without_extension: COMPUTE_POST_PROCESS,
+    }, pipeline::PipelineCreateSettings {
+        pipeline_debug_name: "sky compute pipeline",
+        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &[WRITE_SKYBOX_ENTRY_POINT, WRITE_CLOUDS_ENTRY_POINT, BLUR_AMBIENT_SKYBOX_ENTRY_POINT] },
+        spec_constants: Some(&spec_constants),
+        file_name_without_extension: COMPUTE_SKY,
+    }, pipeline::PipelineCreateSettings {
+        pipeline_debug_name: "compute fullscreen shader",
+        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["main"] },
+        spec_constants: Some(&spec_constants),
+        file_name_without_extension: COMPUTE_FULLSCREEN,
+    }];
+
+    let compiled = shader_compiler::compile_all_shaders();
+
+    let compiled = match compiled {
+        Ok(data) => data,
+        Err(_) => {
+            return;
+        },
+    };
+
+    device.device_wait_idle().unwrap();
+
+    for (_, graphic_pipeline) in graphics_pipelines.drain() {
+        graphic_pipeline.destroy(&device);
+    }
+
+    for (_, compute_pipeline) in compute_pipelines.drain() {
+        compute_pipeline.destroy(&device);
+    }
+
+
+    // compile the pipelines in parallel
+    // ouug shii :eyes:
+    log::info!("creating pipelines...");
+    let generic_pipelines = settings.into_par_iter().map(|setting| {
+        let spv_file_name = setting.file_name_without_extension;
+        let raw_bytes = &compiled[spv_file_name];
+    
+        let len = raw_bytes.len();
+        assert!(len.is_multiple_of(4));
+
+        // align to word sizes
+        // previous assertion upholds that the number of bytes is a multiple of word size
+        let mut vec = vec![0u32; len / 4];
+        let dst_slice = bytemuck::cast_slice_mut::<u32, u8>(vec.as_mut_slice());
+        dst_slice.copy_from_slice(&raw_bytes);
+
+        let raw_words = &vec;
+        let pipeline = pipeline::create_generic_pipeline(raw_words, device, debug_marker, main_pipeline_layout, setting);
+        (spv_file_name, pipeline)
+    }).collect::<Vec<_>>();
+
+    for (spv_file_name, pipeline) in generic_pipelines {
+        match pipeline {
+            pipeline::GenericPipeline::Graphics(generic_graphics_pipeline) => { graphics_pipelines.insert(spv_file_name, generic_graphics_pipeline); },
+            pipeline::GenericPipeline::Compute(generic_compute_pipeline) => { compute_pipelines.insert(spv_file_name, generic_compute_pipeline); },
+        }
     }
 }
