@@ -154,24 +154,31 @@ float2 tree2(float3 lp, float instance_index) {
     
     // branch space
     float3 bp = lp - float3(0, -2.0 * box_height, 0);
-    float d = 10000;
-    float thickness = 0.7;
+    float3 bp2 = lp - float3(0, -2.0 * box_height, 0);
     
-    //float hash_like = sin(i * 432.34 + 4.32) * 4.324;
+    float d = 10000;
+    float thickness = 0.8;
+    
     float3x3 local_rot = AngleAxis3x3(0.2 + sin(instance_index) * 0.03, float3(1, 0, -1));
 
     for (int i = 0; i < 4; i++) {
+        // non smooth abs for branches
         bp.xz = abs(bp.xz);
+
+        // smooth abs for leaves
+        bp2.xz = sqrt(pow(bp2.xz, 2.0) + 0.35);
 
         // box is center at (0, 1, 0) in local branch space
         // the origin (bp = (0, 0, 0)) is the BOTTOM of the box
-        d = min(d, sdBox(bp - float3(0, box_height, 0), float3(thickness, box_height, thickness)));
+        d = min(d, sdBox(bp - float3(0, box_height, 0), float3(thickness, box_height, thickness))) - noise(bp * 2.0 * float3(1, 3, 1)) * 0.02;
 
         // move UP to reach end of box
         bp -= float3(0, 2 * box_height, 0);
+        bp2 -= float3(0, 2 * box_height, 0);
 
         // rotate space
         bp = mul(bp, local_rot);
+        bp2 = mul(bp2, local_rot);
         
         // make next branches smaller and shorter
         thickness *= 0.8  + cos(34.2 * instance_index) * 0.1;
@@ -180,7 +187,7 @@ float2 tree2(float3 lp, float instance_index) {
 
     float id = 0;
 
-    float sphere = length(bp) - 2.0;
+    float sphere = length(bp2 - float3(0, 2, 0)) - 2.0;
     if (sphere < d) {
         d = sphere;
         id = 1;
