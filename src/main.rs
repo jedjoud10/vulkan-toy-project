@@ -18,7 +18,6 @@ mod render_targets_data;
 mod per_frame_data;
 mod samplers;
 mod query_pool_statistics;
-mod voxel;
 mod material;
 mod texture;
 mod physical_device_vulkan_14_features;

@@ -218,10 +218,15 @@ public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) 
 			if (res.data.instance_custom_index == 1) {
 				arm = float3(1, 0.8, 0);
 
+				/*
+				// tree colours
 				float3 trunk = hex2col(0x564631) * (noise(world * 20.2) * 0.2 + 0.9);
 				float3 leaf = hex2col(0x588732) * (noise(world * 10.0) * 0.2 + 0.9);
-
 				diffuse = lerp(trunk, leaf, res.data.material);
+				*/
+
+				// cheese colours
+				diffuse = hex2col(0xf7de51) * (noise(world * 10.0) * 0.3 + 0.5);
 			}
 
 			if ((uniforms.toggles_bitmask & 4) == 0 && res.data.instance_custom_index != 1) {

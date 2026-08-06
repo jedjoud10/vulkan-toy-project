@@ -23,9 +23,6 @@ use crate::physical_device::PhysicalDeviceAndScore;
 use crate::samplers;
 use crate::query_pool_statistics::QueryPoolStatistics;
 use crate::shader_compiler;
-use crate::voxel;
-use crate::voxel::SparseVoxelOctree;
-use crate::voxel::TestingStructure;
 use winit::event::MouseButton;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -60,6 +57,8 @@ const WRITE_SKYBOX_ENTRY_POINT: &str = "write_skybox";
 const BLUR_AMBIENT_SKYBOX_ENTRY_POINT: &str = "blur_skybox_ambient";
 
 const COMPUTE_FULLSCREEN: &str = "fullscreen";
+
+const COMPUTE_SDF: &'static str = "compute_sdf";
 
 pub struct GraphicsContext<'a> {
     pub device: &'a ash::Device,
@@ -382,8 +381,20 @@ impl InternalApp {
 
         let blas1 = ray_tracing::create_blas(&mut ctx, cmd, geometry);
 
-        let symm_bounds = vek::Vec3::new(9f32, 15f32, 9f32);
+        let symm_bounds = vek::Vec3::new(64f32, 64f32, 64f32);
         let aabbs = [ray_tracing::AccelerationStructureAabb {
+            min: -symm_bounds,
+            max: symm_bounds,
+        }, ray_tracing::AccelerationStructureAabb {
+            min: -symm_bounds + vek::Vec3::unit_y() * 200f32,
+            max: symm_bounds+ vek::Vec3::unit_y() * 200f32,
+        }, ray_tracing::AccelerationStructureAabb {
+            min: -symm_bounds+ vek::Vec3::unit_y() * 500f32,
+            max: symm_bounds + vek::Vec3::unit_y() * 500f32,
+        } ,ray_tracing::AccelerationStructureAabb {
+            min: -symm_bounds  + vek::Vec3::unit_y() * 500f32,
+            max: symm_bounds  + -vek::Vec3::unit_y() * 500f32,
+        } ,ray_tracing::AccelerationStructureAabb {
             min: -symm_bounds,
             max: symm_bounds,
         }];
@@ -392,7 +403,7 @@ impl InternalApp {
 
         let geometry = ray_tracing::BlasGeometry::AABBs {
             aabb_buffer_address: written.buffer_device_address_start,
-            max_count: 1
+            max_count: 5
         };
 
         let blas2 = ray_tracing::create_blas(&mut ctx, cmd, geometry);
@@ -484,14 +495,13 @@ impl InternalApp {
         let texture = sdf_texture::create_voxel_image(&mut ctx);
 
 
-
         /*
         let mut rng = rand::rngs::SmallRng::seed_from_u64(432);
         for x in -20..20 {
             for z in -20..20 {
                 blases_instances.push(ray_tracing::instantiate_blas(
                     vek::Quaternion::rotation_y(rng.random_range(0f32..std::f32::consts::TAU)),
-                    vek::Vec3::new(rng.random_range(-300f32..300f32), 8f32, rng.random_range(-300f32..300f32)),
+                    vek::Vec3::new(rng.random_range(-600f32..600f32), 8f32, rng.random_range(-600f32..600f32)),
                     vek::Vec3::one(), // cannot do non-uniform scale! cannot do scale in general unless we account for it in the shader side!
                     &blases[1],
                     1,
@@ -792,7 +802,7 @@ impl InternalApp {
         let clouds_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
             .image_view(self.skybox.clouds_image_view)
             .image_layout(vk::ImageLayout::GENERAL);
-        let voxel_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
+        let sdf_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
             .image_view(self.texture.image_view)
             .image_layout(vk::ImageLayout::GENERAL);
         let mut storage_image_infos = vec![
@@ -801,7 +811,7 @@ impl InternalApp {
             skybox_image_view_descriptor_image_info,
             ambient_skybox_image_view_descriptor_image_info,
             clouds_image_view_descriptor_image_info,
-            voxel_image_view_descriptor_image_info
+            sdf_image_view_descriptor_image_info
         ];
         
         // add bloom storage image views
@@ -867,7 +877,7 @@ impl InternalApp {
         let entire_bloom_sampled_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
             .image_view(render_targets.entire_bloom_image_view)
             .image_layout(vk::ImageLayout::GENERAL);
-        let voxel_sampled_image_view_descriptor_write_info = vk::DescriptorImageInfo::default()
+        let sdf_sampled_image_view_descriptor_write_info = vk::DescriptorImageInfo::default()
             .image_view(self.texture.image_view)
             .image_layout(vk::ImageLayout::GENERAL);
         let mut sampled_image_infos = vec![
@@ -875,7 +885,7 @@ impl InternalApp {
             ambient_skybox_sampled_image_view_descriptor_image_info,
             clouds_sampled_image_view_descriptor_image_info,
             rendered_sampled_image_view_descriptor_image_info,
-            voxel_sampled_image_view_descriptor_write_info,
+            sdf_sampled_image_view_descriptor_write_info,
             entire_bloom_sampled_image_view_descriptor_image_info,
         ];
 
@@ -1158,11 +1168,23 @@ impl InternalApp {
 
         self.device.cmd_dispatch(cmd, skybox::SKYBOX_RESOLUTION.div_ceil(8), skybox::SKYBOX_RESOLUTION.div_ceil(8), 6);
 
+        self.device.cmd_bind_pipeline(
+            cmd,
+            vk::PipelineBindPoint::COMPUTE,
+            self.compute_pipelines[COMPUTE_SDF]["main"]
+        );
+
+        self.device.cmd_dispatch(cmd, sdf_texture::SIZE.div_ceil(4), sdf_texture::SIZE.div_ceil(4), sdf_texture::SIZE.div_ceil(4));
+
         let skybox_subresource_range = vk::ImageSubresourceRange::default()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
             .level_count(1)
             .layer_count(6);
         let clouds_subresource_range = vk::ImageSubresourceRange::default()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .level_count(1)
+            .layer_count(1);
+        let sdf_subresource_range = vk::ImageSubresourceRange::default()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
             .level_count(1)
             .layer_count(1);
@@ -1188,7 +1210,18 @@ impl InternalApp {
             .dst_queue_family_index(self.queue_family_index)
             .image(self.skybox.clouds_image)
             .subresource_range(clouds_subresource_range);
-        let image_memory_barriers = [skybox_image_barrier, clouds_image_barrier];
+        let sdf_image_barrier = vk::ImageMemoryBarrier2::default()
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .image(self.texture.image)
+            .subresource_range(sdf_subresource_range);
+        let image_memory_barriers = [skybox_image_barrier, clouds_image_barrier, sdf_image_barrier];
         let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
@@ -1658,6 +1691,11 @@ unsafe fn compile_all_shaders(
         wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["main"] },
         spec_constants: Some(&spec_constants),
         file_name_without_extension: COMPUTE_FULLSCREEN,
+    }, pipeline::PipelineCreateSettings {
+        pipeline_debug_name: "compute SDF shader",
+        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["main"] },
+        spec_constants: Some(&spec_constants),
+        file_name_without_extension: COMPUTE_SDF,
     }];
 
     let compiled = shader_compiler::compile_all_shaders();

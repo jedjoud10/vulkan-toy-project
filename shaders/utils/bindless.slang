@@ -31,7 +31,7 @@ const static uint RENDERED_STORAGE_IMAGE_IDX = 1;
 const static uint SKYBOX_STORAGE_IMAGE_IDX = 2;
 const static uint AMBIENT_SKYBOX_STORAGE_IMAGE_IDX = 3;
 const static uint CLOUDS_STORAGE_IMAGE_IDX = 4;
-const static uint VOXEL_STORAGE_IMAGE_IDX = -1;
+const static uint SDF_TEXTURE_STORAGE_IMAGE_IDX = 5;
 
 const static uint UNIFORM_BUFFER_THINGY_IDX = 0;
 const static uint STORAGE_BUFFER_DEBUG_TEXT_LINES = 1;
@@ -55,7 +55,7 @@ const static uint STORAGE_BUFFER_TESTING_BUFFER = -1;
 const static uint SKYBOX_SAMPLER_IMAGE_IDX = 0;
 const static uint AMBIENT_SKYBOX_SAMPLER_IMAGE_IDX = 1;
 const static uint CLOUDS_SAMPLER_IMAGE_IDX = 2;
-const static uint SDF_TEXTURE_IMAGE_IDX = 4;
+const static uint SDF_TEXTURE_SAMPLED_IMAGE_IDX = 4;
 const static uint ENTIRE_BLOOM_SAMPLED_IMAGE_IDX = 5;
 
 const static uint NEAREST_SAMPLER_IDX = 0;

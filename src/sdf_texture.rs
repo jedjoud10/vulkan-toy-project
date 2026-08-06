@@ -5,7 +5,7 @@ use half::f16;
 use rand::{RngExt, SeedableRng};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
-use crate::{renderer::GraphicsContext, voxel::{index_to_offset, offset_to_index}};
+use crate::{renderer::GraphicsContext, utils::{index_to_offset, offset_to_index}};
 
 
 pub const SIZE: u32 = 128;
@@ -45,12 +45,12 @@ pub unsafe fn create_voxel_image(
         .array_layers(1);
 
     let image = device.create_image(&image_create_info, None).unwrap();
-    crate::debug::set_object_name(image, debug_marker, "Texture");
+    crate::debug::set_object_name(image, debug_marker, "SDF texture");
 
     let requirements = device.get_image_memory_requirements(image);
     let allocation = allocator
         .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
-            name: "",
+            name: "SDF texture",
             requirements,
             linear: false,
             allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
@@ -74,7 +74,37 @@ pub unsafe fn create_voxel_image(
 
     host_image_copy_device.transition_image_layout(&[transition]).unwrap();
 
+    // generate_write_cpu_sdf_to_image(host_image_copy_device, image);
 
+    let image_view_create_info = vk::ImageViewCreateInfo::default()
+        .components(vk::ComponentMapping::default())
+        .flags(vk::ImageViewCreateFlags::empty())
+        .format(FORMAT)
+        .image(image)
+        .subresource_range(image_subresource_range)
+        .view_type(vk::ImageViewType::TYPE_3D);
+    let image_view = device
+        .create_image_view(&image_view_create_info, None)
+        .unwrap();
+
+    /*
+    let transition = vk::HostImageLayoutTransitionInfoEXT::default()
+        .image(image)
+        .old_layout(vk::ImageLayout::GENERAL)
+        .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+        .subresource_range(image_subresource_range);
+
+    host_image_copy_device.transition_image_layout(&[transition]).unwrap();
+    */
+
+    SdfImage {
+        image,
+        allocation,
+        image_view,
+    }
+}
+
+unsafe fn generate_write_cpu_sdf_to_image(host_image_copy_device: &mut &ash::ext::host_image_copy::Device, image: vk::Image) {
     let image_subresource_layers = vk::ImageSubresourceLayers::default()
         .aspect_mask(vk::ImageAspectFlags::COLOR)
         .mip_level(0)
@@ -108,7 +138,7 @@ pub unsafe fn create_voxel_image(
                 let phi = rng.random_range(0f32..std::f32::consts::TAU);
                 //let theta = rng.random_range(0f32..std::f32::consts::PI);
                 let theta = std::f32::consts::PI * 0.5f32;
-                
+            
                 let new_point = vek::Vec3::new(phi.sin() * theta.sin() , theta.cos(), phi.cos() * theta.sin()) * node.w + node.xyz();
                 stack.push((depth + 1, new_point.with_w(node.w * rng.random_range(0.1f32..0.3f32))));
             }
@@ -140,14 +170,14 @@ pub unsafe fn create_voxel_image(
                 points.extend(src_points.iter().map(|point| point + vek::Vec4::new(x as f32 * SIZE as f32, y as f32 * SIZE as f32, z as f32 * SIZE as f32, 0f32)));
             }
         }
-    }    
+    }
 
     log::info!("calculating SDF");
 
     let texels = (0..(SIZE*SIZE*SIZE)).into_par_iter().map(|i| {
         let p = index_to_offset(i as usize, SIZE as usize);
         let fp = p.as_::<f32>();
-        
+    
         //let distance = (fp + vek::Vec3::new(0f32, -10f32, 0f32)).magnitude() - 5.0f32;
         let mut distance = 1000f32;
 
@@ -173,31 +203,6 @@ pub unsafe fn create_voxel_image(
         .regions(&regions);
     
     host_image_copy_device.copy_memory_to_image(&copy_memory_to_image_info).unwrap();
-
-    let image_view_create_info = vk::ImageViewCreateInfo::default()
-        .components(vk::ComponentMapping::default())
-        .flags(vk::ImageViewCreateFlags::empty())
-        .format(FORMAT)
-        .image(image)
-        .subresource_range(image_subresource_range)
-        .view_type(vk::ImageViewType::TYPE_3D);
-    let image_view = device
-        .create_image_view(&image_view_create_info, None)
-        .unwrap();
-
-    let transition = vk::HostImageLayoutTransitionInfoEXT::default()
-        .image(image)
-        .old_layout(vk::ImageLayout::GENERAL)
-        .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-        .subresource_range(image_subresource_range);
-
-    host_image_copy_device.transition_image_layout(&[transition]).unwrap();
-
-    SdfImage {
-        image,
-        allocation,
-        image_view,
-    }
 }
 
 pub struct SdfImage {

@@ -5,6 +5,11 @@
 #include "noises.slang"
 #include "bindless.slang"
 
+// The MIT License
+// Copyright © 2019 Inigo Quilez
+// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions: The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+
 // https://iquilezles.org/articles/smin/
 [Differentiable]
 // cubic polynomial
@@ -79,7 +84,7 @@ float sdBox( vec3 p, vec3 b )
 
 const static int TEXTURE_SIZE = 128;
 float tex_sample(float3 p) {
-    return sampled_images_3d[SDF_TEXTURE_IMAGE_IDX].Sample(samplers[LINEAR_UNCAMPLED_SAMPLER_IDX], p / TEXTURE_SIZE + 0.5).x;
+    return sampled_images_3d[SDF_TEXTURE_SAMPLED_IMAGE_IDX].Sample(samplers[LINEAR_UNCAMPLED_SAMPLER_IDX], p / TEXTURE_SIZE + 0.5).x;
 }
 
 [BackwardDerivativeOf(tex_sample)]
@@ -148,7 +153,6 @@ float tree1(float3 lp) {
 
 [Differentiable]
 float2 tree2(float3 lp, float instance_index) {
-    
     // half extent
     float box_height = 4;
     
@@ -196,6 +200,23 @@ float2 tree2(float3 lp, float instance_index) {
     //d = smin(d, , 0.2);
 
     return float2(d, id);
+}
+
+
+[Differentiable]
+float2 cheese(float3 lp, float instance_index) {
+    float scale = abs(sin(instance_index * 432.32)) * 10;
+    /*
+    float d = sdRoundBox(lp, float3(9, 15, 9), 1.5);
+    d = max(d, -tex_sample(lp * scale + uniforms.time) / scale);
+    return float2(d, 1.0);
+    */
+    return float2(tex_sample(lp * scale + uniforms.time) / scale, 0);
+}
+
+[Differentiable]
+float2 terrain(float3 lp, float instance_index) {
+    return float2(tex_sample(lp - float3(0, +4, 0)), 0);
 }
 
 struct TraceResHitObj {
@@ -257,39 +278,42 @@ float2 ray_box_get_tmin_tmax(
     return float2(tmin,tmax);
 }
 
-void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls) {    
+void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls, inout float material) {    
     float3 aabb_symmetric_bounds = storage_buffers_readonly[STORAGE_BUFFER_SCENE_REPR_BUFFER].Load<float3>(sq.CandidateRayInstanceCustomIndex() * 12);
 
     // software AABB test lmao to get min and max dists of ray into  AABB
     float2 tmin_tmax = ray_box_get_tmin_tmax(sq.CandidateRayObjectRayOrigin(), sq.CandidateObjectRayDirection(), -aabb_symmetric_bounds, aabb_symmetric_bounds);
     float distance = max(tmin_tmax.x, 0);
     float3 point = sq.WorldRayOrigin() + sq.WorldRayDirection() * distance;
+
     for (; i < MAX_ITERS; i++) {
 
         capture_performance_sdf_call();
     
-        float k = 0;
+        float2 closest_distance_and_material = 0;
         if (sq.CandidateRayInstanceCustomIndex() == 0) {
-            k = d(point);
+            closest_distance_and_material = float2(d(point), 0);
         } else {
             // TODO: it would be smarter to convert the point to object space first and trace using that
             // atp just duplicate trace_inner to a "local" version that takes in a local SDF instead of global one
             float3 local_position = mul(sq.CandidateWorldToObject3x4(), float4(point, 1)).xyz;
             float instance_index = sq.CandidateInstanceIndex();
-            k = tree2(local_position, instance_index).x;
+            closest_distance_and_material = terrain(local_position, instance_index);
         }
         sdf_calls += 1;
 
-        // k = max(k, -(length(point - (uniforms.position.xyz + uniforms.forward.xyz * 10)) - 2));
+        // closest_distance_and_material.x = max(closest_distance_and_material.x, -(length(point - (uniforms.position.xyz + uniforms.forward.xyz * 10)) - 2));
                         
         // check if we got close enough to the surface
-        if (k < THRESHOLD_DISTANCE) {
+        if (closest_distance_and_material.x < max(THRESHOLD_DISTANCE * distance, THRESHOLD_DISTANCE)) {
             sq.CommitProceduralPrimitiveHit(distance); 
+            material = closest_distance_and_material.y;
             return;
         }
 
-        point += sq.WorldRayDirection() * k * DISTANCE_SCALING_FACTOR;
-        distance += k * DISTANCE_SCALING_FACTOR;
+        float step_size = closest_distance_and_material.x * DISTANCE_SCALING_FACTOR;
+        point += sq.WorldRayDirection() * step_size;
+        distance += step_size;
     
         // check if we left the bounds of the AABB (tmax is calculated using software ray-AABB test)
         if (distance > tmin_tmax.y) {
@@ -322,10 +346,11 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
     sq.TraceRayInline(acceleration_structures[0], flags, 0xFF, desc);
     int i = 0;
     int sdf_calls = 0;
+    float material = 0;
     while (sq.Proceed()) {
         if(sq.CandidateType() == CANDIDATE_PROCEDURAL_PRIMITIVE) {
             
-            trace_inner(sq, i, sdf_calls);
+            trace_inner(sq, i, sdf_calls, material);
             
             if (i == MAX_ITERS) {
                 sq.Abort();
@@ -336,8 +361,6 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
     if (sq.CommittedStatus() != COMMITTED_NOTHING) {
         float3 point = sq.WorldRayOrigin() + sq.WorldRayDirection() * sq.CommittedRayT();
 
-        float material = 0;
-        
         float3 normal = 0.0;
         if (sq.CommittedRayInstanceCustomIndex() == 0) {
             DifferentialPair<float3> dp_a = diffPair(point);
@@ -346,9 +369,7 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
         } else {
             DifferentialPair<float3> dp_a = diffPair(mul(sq.CommittedWorldToObject3x4(), float4(point, 1)).xyz);
             DifferentialPair<float> dp_i = diffPair(sq.CommittedInstanceIndex());
-            bwd_diff(tree2)(dp_a, dp_i, 1.0);  
-
-            material = tree2(dp_a.p, dp_i.p).y;
+            bwd_diff(terrain)(dp_a, dp_i, 1.0);  
             
             float3 object_normal = normalize(dp_a.d);
             normal = mul(sq.CommittedObjectToWorld3x4(), float4(object_normal, 0)).xyz;
@@ -411,9 +432,10 @@ ShadowTraceRes shadow_trace(float3 ray_pos, float3 ray_dir) {
 
     int i = 0;
     int sdf_calls = 0;
+    float material = 0;
     while (sq.Proceed()) {
         if(sq.CandidateType() == CANDIDATE_PROCEDURAL_PRIMITIVE) {
-            trace_inner(sq, i, sdf_calls);
+            trace_inner(sq, i, sdf_calls, material);
             if (i == MAX_ITERS) {
                 sq.Abort();
             }

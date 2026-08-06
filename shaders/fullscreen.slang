@@ -24,6 +24,8 @@ void main(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID) {
     if (uniforms.debug_type == 0) {
         col = trace_scene_multibounce(id.xy, ray_pos, ray_dir);
     } else {
+        uint64_t clock = clockARB();
+
         TraceRes res = trace(ray_pos, ray_dir);
     
         switch (uniforms.debug_type) {
@@ -35,6 +37,10 @@ void main(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID) {
                 break;
             case 3: 
                 col = res.sdf_calls / 256.0;
+                break;
+            case 4: 
+                uint64_t clock2 = clockARB();
+                col = min((float64_t)(clock2-clock) / ((float64_t)100000.0), 1);
                 break;
             default:
                 col = 0.0; 
@@ -50,6 +56,9 @@ void main(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID) {
     if (any(isnan(last))) {
         last = 0;
     }
+
+    float sdf = storage_images_3d_float[SDF_TEXTURE_STORAGE_IMAGE_IDX].Load(uint3(id.xy, 2) / 10);
+    //col = abs(fract(sdf));
 
     storage_images[RENDERED_STORAGE_IMAGE_IDX].Store(id.xy, float4(lerp(last, col, lerp_factor), 1));
 }
