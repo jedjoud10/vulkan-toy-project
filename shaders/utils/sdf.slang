@@ -258,7 +258,9 @@ void capture_performance_sdf_call() {
 static const uint MAX_ITERS = 256;
 static const float MAX_DISTANCE = 10000;
 static const float THRESHOLD_DISTANCE = 0.001;
-static const float DISTANCE_SCALING_FACTOR = 0.9;
+static const float DISTANCE_SCALING_FACTOR = 1.0;
+static const bool LOD = false;
+
 
 float2 ray_box_get_tmin_tmax(
     float3 ray_pos,
@@ -279,7 +281,7 @@ float2 ray_box_get_tmin_tmax(
 }
 
 void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls, inout float material) {    
-    //float3 aabb_symmetric_bounds = storage_buffers_readonly[STORAGE_BUFFER_SCENE_REPR_BUFFER].Load<float3>(sq.CandidateRayInstanceCustomIndex() * 12);
+    float3 aabb_symmetric_bounds = storage_buffers_readonly[STORAGE_BUFFER_SCENE_REPR_BUFFER].Load<float3>(sq.CandidateRayInstanceCustomIndex() * 12);
 
     /*
     if (!WaveActiveAllEqual(sq.CandidateInstanceIndex())) {
@@ -290,13 +292,11 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls,
     */
 
     // software AABB test lmao to get min and max dists of ray into  AABB
-    float3 min_bounds = storage_buffers_readonly[STORAGE_BUFFER_TERRAIN_AABB_BOUNDS].Load<float3>(sq.CandidatePrimitiveIndex() * 3*4*2);
-    float3 max_bounds = storage_buffers_readonly[STORAGE_BUFFER_TERRAIN_AABB_BOUNDS].Load<float3>(sq.CandidatePrimitiveIndex() * 3*4*2 + 3*4);
-    // float2 tmin_tmax = ray_box_get_tmin_tmax(sq.CandidateRayObjectRayOrigin(), sq.CandidateObjectRayDirection(), -aabb_symmetric_bounds, aabb_symmetric_bounds);
-    float2 tmin_tmax = ray_box_get_tmin_tmax(sq.CandidateRayObjectRayOrigin(), sq.CandidateObjectRayDirection(), min_bounds, max_bounds);
+    //float3 min_bounds = storage_buffers_readonly[STORAGE_BUFFER_TERRAIN_AABB_BOUNDS].Load<float3>(sq.CandidatePrimitiveIndex() * 3*4*2);
+    //float3 max_bounds = storage_buffers_readonly[STORAGE_BUFFER_TERRAIN_AABB_BOUNDS].Load<float3>(sq.CandidatePrimitiveIndex() * 3*4*2 + 3*4);
+    float2 tmin_tmax = ray_box_get_tmin_tmax(sq.CandidateRayObjectRayOrigin(), sq.CandidateObjectRayDirection(), -aabb_symmetric_bounds, aabb_symmetric_bounds);
+    //float2 tmin_tmax = ray_box_get_tmin_tmax(sq.CandidateRayObjectRayOrigin(), sq.CandidateObjectRayDirection(), min_bounds, max_bounds);
     float distance = max(tmin_tmax.x, 0);
-    //float distance = 0.0;
-    //float2 tmin_tmax = float2(distance, 100000000);
 
     // cache ray data
     float3 ro = sq.WorldRayOrigin();
@@ -329,7 +329,7 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls,
 
         // closest_distance_and_material.x = max(closest_distance_and_material.x, -(length(point - (uniforms.position.xyz + uniforms.forward.xyz * 10)) - 2));
         // check if we got close enough to the surface
-        if (closest_distance_and_material.x < max(THRESHOLD_DISTANCE * distance, THRESHOLD_DISTANCE)) {
+        if (closest_distance_and_material.x < select(LOD, max(THRESHOLD_DISTANCE * distance, THRESHOLD_DISTANCE), THRESHOLD_DISTANCE)) {
             sq.CommitProceduralPrimitiveHit(distance); 
             material = closest_distance_and_material.y;
             return;

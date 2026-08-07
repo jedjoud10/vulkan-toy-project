@@ -59,8 +59,8 @@ float sdFbm( vec3 p, float d )
        float n = s*sdBase(p);
 	
        // add
-       n = smax(n,d-0.15*s,0.1*s);
-       d = smin(n,d      ,0.1*s);
+       n = smax(n,d-0.15*s,0.001*s);
+       d = smin(n,d      ,0.001*s);
 	
        // prepare next octave
        p = mul(p, matty);
@@ -76,12 +76,12 @@ void main(uint3 id: SV_DispatchThreadID) {
     float scale = 4.0;
     float3 p = id.xyz * 0.01;
     let uniforms = load_per_frame_uniforms();
-    float d = sdFbm(p + float3(uniforms.time * 0.01, 0, 0), p.y - 0.6) * 100.0;
+    float d = sdFbm(p + float3(uniforms.time * 0.01, 0, 0), p.y - 0.6);
 
-    //float d = p.y - 0.6;
+    //d = p.y - 0.6;
     //d = min(d, sdBase(p));
     //d = p.y - 64;
-    storage_images_3d_float[SDF_TEXTURE_STORAGE_IMAGE_IDX].Store(id.xyz, d);
+    storage_images_3d_float[SDF_TEXTURE_STORAGE_IMAGE_IDX].Store(id.xyz, d * 100.0);
 }
 
 struct aabb {

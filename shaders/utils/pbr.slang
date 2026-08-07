@@ -132,7 +132,7 @@ float3 get_sun_shadow(float3 world, float3 normal, float3 sun) {
 #ifdef SDF_SOFT_SHADOWS_SUPPORTED
 	let res = shadow_trace(world, sun);
 #else
-	let res = shadow_trace(world + normal * 0.01 + randomized_sun_direction * 0.01, randomized_sun_direction);
+	let res = shadow_trace(world + normal * THRESHOLD_DISTANCE + randomized_sun_direction * THRESHOLD_DISTANCE, randomized_sun_direction);
 #endif	
 	
 	return min(res.shadow, clouds_shadow);
