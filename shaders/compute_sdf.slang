@@ -78,7 +78,8 @@ void main(uint3 id: SV_DispatchThreadID) {
     let uniforms = load_per_frame_uniforms();
     float d = sdFbm(p + float3(uniforms.time * 0.01, 0, 0), p.y - 0.6) * 100.0;
 
-    //float d = sdBase(p);
+    //float d = p.y - 0.6;
+    //d = min(d, sdBase(p));
     //d = p.y - 64;
     storage_images_3d_float[SDF_TEXTURE_STORAGE_IMAGE_IDX].Store(id.xyz, d);
 }
@@ -101,7 +102,10 @@ void compute_aabbs(uint3 id: SV_DispatchThreadID, uint3 gid: SV_GroupID, uint3 g
     float3 aabb_min = 5;
     float3 aabb_max = 0;
 
-    bool close_enough = loaded < 2.5;
+    // probably some euclidean distance constants or something
+    float theshold = 0.7;
+
+    bool close_enough = loaded < theshold;
 
     float3 t = gtid;
 
@@ -119,13 +123,13 @@ void compute_aabbs(uint3 id: SV_DispatchThreadID, uint3 gid: SV_GroupID, uint3 g
 
     GroupMemoryBarrierWithWaveSync();
 
-    if (dmax > -1 && dmin < 2.5 && all(gtid == 0)) {
+    if (dmax > -theshold && dmin < theshold && all(gtid == 0)) {
         uint count = 0;
     
         storage_buffers[STORAGE_BUFFER_TERRAIN_AABB_BOUNDS+1].InterlockedAdd(0, 1, count);
         
         if (count < 1024*1024*1024) {
-            float offset = 1;
+            float offset = .0;
             aabb data = aabb(aabb_min + gid * 4 - 64.0 + offset, aabb_max + gid * 4 - 64.0 + offset);
             // aabb data = aabb(gid * 4 - 64.0, gid * 4 + 4 - 64.0);
 

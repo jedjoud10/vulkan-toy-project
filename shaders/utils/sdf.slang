@@ -216,7 +216,7 @@ float2 cheese(float3 lp, float instance_index) {
 
 [Differentiable]
 float2 terrain(float3 lp, float instance_index) {
-    return float2(tex_sample(lp - float3(0, +4, 0)), 0);
+    return float2(tex_sample(lp), 0);
 }
 
 struct TraceResHitObj {
@@ -324,6 +324,8 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls,
             closest_distance_and_material = terrain(local_position, instance_index);
         }
         sdf_calls += 1;
+
+        closest_distance_and_material.x = max(closest_distance_and_material.x, -(length(uniforms.position) - 4));
 
         // closest_distance_and_material.x = max(closest_distance_and_material.x, -(length(point - (uniforms.position.xyz + uniforms.forward.xyz * 10)) - 2));
         // check if we got close enough to the surface
