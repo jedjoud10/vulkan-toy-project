@@ -32,6 +32,7 @@ const static uint SKYBOX_STORAGE_IMAGE_IDX = 2;
 const static uint AMBIENT_SKYBOX_STORAGE_IMAGE_IDX = 3;
 const static uint CLOUDS_STORAGE_IMAGE_IDX = 4;
 const static uint SDF_TEXTURE_STORAGE_IMAGE_IDX = 5;
+const static uint COARSE_STORAGE_IMAGE_IDX = 6;
 
 const static uint UNIFORM_BUFFER_THINGY_IDX = 0;
 const static uint STORAGE_BUFFER_DEBUG_TEXT_LINES = 1;

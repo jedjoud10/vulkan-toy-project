@@ -118,15 +118,15 @@ float d(float3 p) {
     float3 torus_origin = float3(2, 2, 5);
     float tor = sdTorus(mul(p - torus_origin, rot), float2(5, 2)) + sin(p.y * 20.0) * 0.05 + 0.05;
 
-    float ground = p.y /* + snoise(p.xz * 2.0) * 0.2 + 0.1 */;
+    //float ground = tex_sample(p * 30) / 30.0 /* + snoise(p.xz * 2.0) * 0.2 + 0.1 */;
     //ground = max(ground, tex_sample(p * 50.0 - 4.2312) / 50.0);
     //ground = min(ground, p.y+0.8);
 
+    float ground = p.y;
     float sdf = min(sphere, min(ground, min(min(octa, cyl), min(hex, tor))));
 
 
-    //sdf = smin(sdf, d2(p), 0.5);
-    // sdf = min(sdf, tex_sample(p - float3(0, 10, 0)));
+
     return sdf;
 }
 
@@ -165,7 +165,7 @@ float2 tree2(float3 lp, float instance_index) {
     
     float3x3 local_rot = AngleAxis3x3(0.2 + sin(instance_index) * 0.03, float3(1, 0, -1));
 
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 3; i++) {
         // non smooth abs for branches
         bp.xz = abs(bp.xz);
 
@@ -174,7 +174,7 @@ float2 tree2(float3 lp, float instance_index) {
 
         // box is center at (0, 1, 0) in local branch space
         // the origin (bp = (0, 0, 0)) is the BOTTOM of the box
-        d = min(d, sdBox(bp - float3(0, box_height, 0), float3(thickness, box_height, thickness))) - noise(bp * 2.0 * float3(1, 3, 1)) * 0.02;
+        d = min(d, sdBox(bp - float3(0, box_height, 0), float3(thickness, box_height, thickness)));
 
         // move UP to reach end of box
         bp -= float3(0, 2 * box_height, 0);
@@ -257,9 +257,9 @@ void capture_performance_sdf_call() {
 
 static const uint MAX_ITERS = 256;
 static const float MAX_DISTANCE = 10000;
-static const float THRESHOLD_DISTANCE = 0.001;
+static const float THRESHOLD_DISTANCE = 0.01;
 static const float DISTANCE_SCALING_FACTOR = 1.0;
-static const bool LOD = false;
+static const bool LOD = true;
 
 
 float2 ray_box_get_tmin_tmax(
@@ -295,7 +295,7 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls,
     //float3 min_bounds = storage_buffers_readonly[STORAGE_BUFFER_TERRAIN_AABB_BOUNDS].Load<float3>(sq.CandidatePrimitiveIndex() * 3*4*2);
     //float3 max_bounds = storage_buffers_readonly[STORAGE_BUFFER_TERRAIN_AABB_BOUNDS].Load<float3>(sq.CandidatePrimitiveIndex() * 3*4*2 + 3*4);
     float2 tmin_tmax = ray_box_get_tmin_tmax(sq.CandidateRayObjectRayOrigin(), sq.CandidateObjectRayDirection(), -aabb_symmetric_bounds, aabb_symmetric_bounds);
-    //float2 tmin_tmax = ray_box_get_tmin_tmax(sq.CandidateRayObjectRayOrigin(), sq.CandidateObjectRayDirection(), min_bounds, max_bounds);
+    // float2 tmin_tmax = ray_box_get_tmin_tmax(sq.CandidateRayObjectRayOrigin(), sq.CandidateObjectRayDirection(), min_bounds, max_bounds);
     float distance = max(tmin_tmax.x, 0);
 
     // cache ray data
@@ -321,11 +321,12 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls,
             // atp just duplicate trace_inner to a "local" version that takes in a local SDF instead of global one
             float3 local_position = mul(sq.CandidateWorldToObject3x4(), float4(point, 1)).xyz;
             float instance_index = sq.CandidateInstanceIndex();
-            closest_distance_and_material = terrain(local_position, instance_index);
+            closest_distance_and_material.x = tree2(local_position, instance_index).x;
+            //closest_distance_and_material = terrain(local_position, instance_index);
         }
         sdf_calls += 1;
 
-        closest_distance_and_material.x = max(closest_distance_and_material.x, -(length(uniforms.position) - 4));
+        //closest_distance_and_material.x = max(closest_distance_and_material.x, -(length(uniforms.position) - 4));
 
         // closest_distance_and_material.x = max(closest_distance_and_material.x, -(length(point - (uniforms.position.xyz + uniforms.forward.xyz * 10)) - 2));
         // check if we got close enough to the surface
@@ -384,7 +385,7 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
         } else {
             DifferentialPair<float3> dp_a = diffPair(mul(sq.CommittedWorldToObject3x4(), float4(point, 1)).xyz);
             DifferentialPair<float> dp_i = diffPair(sq.CommittedInstanceIndex());
-            bwd_diff(terrain)(dp_a, dp_i, 1.0);  
+            bwd_diff(tree2)(dp_a, dp_i, 1.0);  
             
             float3 object_normal = normalize(dp_a.d);
             normal = mul(sq.CommittedObjectToWorld3x4(), float4(object_normal, 0)).xyz;

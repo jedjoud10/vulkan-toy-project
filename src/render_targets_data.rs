@@ -6,6 +6,11 @@ use crate::{debug::DebugMarker, renderer::GraphicsContext};
 pub struct RenderTargetsData {    
     pub rendered_image: vk::Image,
     pub rendered_image_allocation: Option<Allocation>,
+    
+    pub rendered_image_coarse_prepass: vk::Image,
+    pub rendered_image_allocation_coarse_prepass: Option<Allocation>,
+    
+    // we don't even need this bruh
     pub rendered_depth_image: vk::Image,
     pub rendered_depth_image_allocation: Option<Allocation>,
     
@@ -13,6 +18,7 @@ pub struct RenderTargetsData {
     pub bloom_image_allocation: Option<Allocation>,
     pub bloom_mip_image_views: Vec<vk::ImageView>,
 
+    pub rendered_image_coarse_view: vk::ImageView,
     pub rendered_image_view: vk::ImageView,
     pub rendered_depth_image_image_view: vk::ImageView,
     pub entire_bloom_image_view: vk::ImageView,
@@ -22,6 +28,9 @@ impl RenderTargetsData {
     pub unsafe fn create_constant_descriptor_sets(
     ) -> Self {
         Self {
+            rendered_image_coarse_prepass: vk::Image::null(),
+            rendered_image_coarse_view: vk::ImageView::null(),
+            rendered_image_allocation_coarse_prepass: None,
             rendered_image_view: vk::ImageView::null(),
             bloom_image: vk::Image::null(),
             bloom_image_allocation: None,
@@ -55,6 +64,8 @@ impl RenderTargetsData {
 
         let rendered_image_format = vk::Format::R16G16B16A16_SFLOAT;
         let (rendered_image, rendered_image_allocation) = create_image(device, rendered_image_format, allocator, queue_family_index, extent, debug_marker, scaling_factor, "Tmp Rendered Texture (pre-process)", None, vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED);
+        let (rendered_image_coarse, rendered_image_coarse_allocation) = create_image(device, vk::Format::R16_SFLOAT, allocator, queue_family_index, vk::Extent2D { width: extent.width / 8, height: extent.height / 8 }, debug_marker, scaling_factor, "Tmp Rendered Tsfgexture (pre-process)", None, vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED);
+
 
         let depth_image_format = vk::Format::D32_SFLOAT;
         let (depth_image, depth_image_allocation) = create_image(device, depth_image_format, allocator, queue_family_index, extent, debug_marker, scaling_factor, "Depth Texture", None, vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT);
@@ -72,6 +83,9 @@ impl RenderTargetsData {
 
         self.rendered_depth_image = depth_image;
         self.rendered_depth_image_allocation = Some(depth_image_allocation);
+
+        self.rendered_image_coarse_prepass = rendered_image_coarse;
+        self.rendered_image_allocation_coarse_prepass = Some(rendered_image_coarse_allocation);
 
 
         let subresource_range = vk::ImageSubresourceRange::default()
@@ -92,6 +106,14 @@ impl RenderTargetsData {
             .flags(vk::ImageViewCreateFlags::empty())
             .format(rendered_image_format)
             .image(self.rendered_image)
+            .subresource_range(subresource_range)
+            .view_type(vk::ImageViewType::TYPE_2D);
+
+        let rendered_image_view_coarse_create_info = vk::ImageViewCreateInfo::default()
+            .components(vk::ComponentMapping::default())
+            .flags(vk::ImageViewCreateFlags::empty())
+            .format(vk::Format::R16_SFLOAT)
+            .image(self.rendered_image_coarse_prepass)
             .subresource_range(subresource_range)
             .view_type(vk::ImageViewType::TYPE_2D);
 
@@ -120,6 +142,7 @@ impl RenderTargetsData {
         self.rendered_depth_image_image_view = device
             .create_image_view(&rendered_depth_image_view_create_info, None)
             .unwrap();
+        self.rendered_image_coarse_view = device.create_image_view(&rendered_image_view_coarse_create_info, None).unwrap();
 
         self.bloom_mip_image_views.clear();
 
@@ -188,6 +211,7 @@ impl RenderTargetsData {
         device.destroy_image_view(self.rendered_image_view, None);
         device.destroy_image_view(self.entire_bloom_image_view, None);
         device.destroy_image_view(self.rendered_depth_image_image_view, None);
+        device.destroy_image_view(self.rendered_image_coarse_view, None);
         log::info!("destroyed image views");
 
         for image_view in self.bloom_mip_image_views.iter() {
@@ -198,6 +222,10 @@ impl RenderTargetsData {
     
         device.destroy_image(self.rendered_image, None);
         allocator.free(self.rendered_image_allocation.take().unwrap()).unwrap();
+        log::info!("destroyed rendered image");
+
+        device.destroy_image(self.rendered_image_coarse_prepass, None);
+        allocator.free(self.rendered_image_allocation_coarse_prepass.take().unwrap()).unwrap();
         log::info!("destroyed rendered image");
 
         device.destroy_image(self.bloom_image, None);

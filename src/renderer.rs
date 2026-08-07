@@ -393,7 +393,22 @@ impl InternalApp {
 
         let blas2 = ray_tracing::create_blas(&mut ctx, cmd, geometry);
 
-        let blases = vec![blas1, blas2];
+
+        let aabbs = [ray_tracing::AccelerationStructureAabb {
+            min: -vek::Vec3::one() * 10.0,
+            max: vek::Vec3::one() * 10.0,
+        }];
+
+        let written = writer.write_bytes(cast_slice(&aabbs));
+
+        let geometry = ray_tracing::BlasGeometry::AABBs {
+            aabb_buffer_address: written.buffer_device_address_start,
+            max_count: 1
+        };
+
+        let blas3 = ray_tracing::create_blas(&mut ctx, cmd, geometry);
+
+        let blases = vec![blas1, blas2, blas3];
 
         others::end_recording_and_submit(&mut ctx, cmd);
         buffer::end_buffer_writer(&mut ctx, writer);
@@ -413,7 +428,7 @@ impl InternalApp {
 
         let tlas = ray_tracing::pre_create_tlas(&mut ctx);
         let scene_representation_for_sdf_buffer = buffer::create_buffer_default_flags(&mut ctx, size_of::<u32>() + size_of::<vek::Vec3<f32>>() * 100, "a");
-        let scene_representation_for_sdf = vec![vek::Vec3::<f32>::one()];
+        let scene_representation_for_sdf = vec![vek::Vec3::<f32>::one(), vek::Vec3::<f32>::one()*10.0];
 
         let mut blases_instances = Vec::new();
 
@@ -481,7 +496,6 @@ impl InternalApp {
 
         let counters_of_various_types = buffer::create_buffer_default_flags(&mut ctx, size_of::<u32>() * 100, "counters");
 
-        /*
         let mut rng = rand::rngs::SmallRng::seed_from_u64(432);
         for x in -20..20 {
             for z in -20..20 {
@@ -489,13 +503,12 @@ impl InternalApp {
                     vek::Quaternion::rotation_y(rng.random_range(0f32..std::f32::consts::TAU)),
                     vek::Vec3::new(rng.random_range(-600f32..600f32), 8f32, rng.random_range(-600f32..600f32)),
                     vek::Vec3::one(), // cannot do non-uniform scale! cannot do scale in general unless we account for it in the shader side!
-                    &blases[1],
+                    &blases[2],
                     1,
                     0xFF
                 ));
             }
         }
-        */
 
 
         Self {
@@ -794,13 +807,17 @@ impl InternalApp {
         let sdf_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
             .image_view(self.texture.image_view)
             .image_layout(vk::ImageLayout::GENERAL);
+        let coarse_rendered_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
+            .image_view(render_targets.rendered_image_coarse_view)
+            .image_layout(vk::ImageLayout::GENERAL);
         let mut storage_image_infos = vec![
             swapchain_image_view_descriptor_image_info,
             rendered_image_view_descriptor_image_info,
             skybox_image_view_descriptor_image_info,
             ambient_skybox_image_view_descriptor_image_info,
             clouds_image_view_descriptor_image_info,
-            sdf_image_view_descriptor_image_info
+            sdf_image_view_descriptor_image_info,
+            coarse_rendered_image_view_descriptor_image_info
         ];
         
         // add bloom storage image views
@@ -937,7 +954,7 @@ impl InternalApp {
         // TODO: ideally, these would:
         // 1. be dynamically allocated using some sort of per-frame arena with indexing
         // 2. be passed to the shader either using a uniform buffer (since these are constant anyways)
-        const BLOOM_MIPS_STORAGE_IMAGE_START_IDX: u32 = 6; // bloom needs to be last since it is dynamically allocated (can have a dynamic number of bloom mips, depending on screen res)
+        const BLOOM_MIPS_STORAGE_IMAGE_START_IDX: u32 = 7; // bloom needs to be last since it is dynamically allocated (can have a dynamic number of bloom mips, depending on screen res)
         const RENDERED_SAMPLER_IMAGE_IDX: u32 = 3;
         const BLOOM_MIPS_SAMPLED_IMAGE_START_IDX: u32 = 6; // bloom needs to be last since it is dynamically allocated (can have a dynamic number of bloom mips, depending on screen res)
 
@@ -1182,6 +1199,7 @@ impl InternalApp {
 
         self.device.cmd_dispatch(cmd, sdf_texture::SIZE.div_ceil(4), sdf_texture::SIZE.div_ceil(4), sdf_texture::SIZE.div_ceil(4));
 
+        /*
         self.device.cmd_fill_buffer(cmd, self.terrain_aabb_bounds_buffer.buffer, 0, vk::WHOLE_SIZE, bytemuck::cast(0f32));
 
                 
@@ -1225,7 +1243,8 @@ impl InternalApp {
         );
 
         self.device.cmd_dispatch(cmd, sdf_texture::SIZE.div_ceil(4), sdf_texture::SIZE.div_ceil(4), sdf_texture::SIZE.div_ceil(4));
-
+        
+        
 
         let terrain_aabb_bounds_buffer_barrier = vk::BufferMemoryBarrier2::default()
             .buffer(self.terrain_aabb_bounds_buffer.buffer)
@@ -1254,6 +1273,7 @@ impl InternalApp {
             &self.blases[1]
         );
 
+
         
         let terrain_aabb_bounds_buffer_barrier = vk::BufferMemoryBarrier2::default()
             .buffer(self.terrain_aabb_bounds_buffer.buffer)
@@ -1268,6 +1288,9 @@ impl InternalApp {
         let a = [terrain_aabb_bounds_buffer_barrier];
         let dep = vk::DependencyInfo::default().buffer_memory_barriers(&a);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
+
+        
+        */
 
 
         let skybox_subresource_range = vk::ImageSubresourceRange::default()
@@ -1327,6 +1350,47 @@ impl InternalApp {
 
         self.device.cmd_dispatch(cmd, skybox::AMBIENT_SKYBOX_RESOLUTION, skybox::AMBIENT_SKYBOX_RESOLUTION, 6);
         
+        let coarse_rendered_image_barrier = vk::ImageMemoryBarrier2::default()
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .src_access_mask(vk::AccessFlags2::SHADER_STORAGE_WRITE | vk::AccessFlags2::SHADER_STORAGE_READ)
+            .dst_access_mask(vk::AccessFlags2::SHADER_STORAGE_WRITE | vk::AccessFlags2::SHADER_STORAGE_READ)
+            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .image(render_targets.rendered_image_coarse_prepass)
+            .subresource_range(subresource_range);
+        let image_memory_barriers = [coarse_rendered_image_barrier];
+        let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
+        self.device.cmd_pipeline_barrier2(cmd, &dep);
+
+        
+        self.device.cmd_bind_pipeline(
+            cmd,
+            vk::PipelineBindPoint::COMPUTE,
+            self.compute_pipelines[COMPUTE_FULLSCREEN]["prepass"],
+        );
+
+        let coarse_resolution = size.map(|x| x.div_ceil(8));
+        self.device.cmd_dispatch(cmd, coarse_resolution.x.div_ceil(8), coarse_resolution.y.div_ceil(8), 1);
+
+                
+        let coarse_rendered_image_barrier = vk::ImageMemoryBarrier2::default()
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .src_access_mask(vk::AccessFlags2::SHADER_STORAGE_WRITE | vk::AccessFlags2::SHADER_STORAGE_READ)
+            .dst_access_mask(vk::AccessFlags2::SHADER_STORAGE_WRITE | vk::AccessFlags2::SHADER_STORAGE_READ)
+            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .image(render_targets.rendered_image_coarse_prepass)
+            .subresource_range(subresource_range);
+        let image_memory_barriers = [coarse_rendered_image_barrier];
+        let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
+        self.device.cmd_pipeline_barrier2(cmd, &dep);
+
         
         let skybox_subresource_range = vk::ImageSubresourceRange::default()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -1784,7 +1848,7 @@ unsafe fn compile_all_shaders(
         file_name_without_extension: COMPUTE_SKY,
     }, pipeline::PipelineCreateSettings {
         pipeline_debug_name: "compute fullscreen shader",
-        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["main"] },
+        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["main", "prepass"] },
         spec_constants: Some(&spec_constants),
         file_name_without_extension: COMPUTE_FULLSCREEN,
     }, pipeline::PipelineCreateSettings {
