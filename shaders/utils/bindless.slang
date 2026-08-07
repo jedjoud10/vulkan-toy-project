@@ -44,7 +44,7 @@ const static uint READBACK_BUFFER_RAYS_TRACED_QUERY_INDEX = 1;
 
 const static uint STORAGE_BUFFER_MATERIALS_BUFFER = 3;
 const static uint STORAGE_BUFFER_SCENE_REPR_BUFFER = 4;
-
+const static uint STORAGE_BUFFER_TERRAIN_AABB_BOUNDS = 5;
 
 const static uint STORAGE_BUFFER_SVO_INDEX = -1;
 const static uint STORAGE_BUFFER_SVO_BITMASK = -1;

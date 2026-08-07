@@ -308,7 +308,6 @@ pub struct ScratchBuffer {
 impl ScratchBuffer {
     pub unsafe fn new(ctx: &mut GraphicsContext) -> Self {
         let usage = vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
-
         let buffer_create_info = vk::BufferCreateInfo::default()
             .usage(usage)
             .flags(vk::BufferCreateFlags::DEVICE_ADDRESS_CAPTURE_REPLAY)

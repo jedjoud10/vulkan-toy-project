@@ -72,12 +72,67 @@ float sdFbm( vec3 p, float d )
 
 [shader("compute")]
 [numthreads(4, 4, 4)]
-void main(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID) {
+void main(uint3 id: SV_DispatchThreadID) {
     float scale = 4.0;
     float3 p = id.xyz * 0.01;
-    float d = sdFbm(p, p.y - 0.6) * 100.0;
+    let uniforms = load_per_frame_uniforms();
+    float d = sdFbm(p + float3(uniforms.time * 0.01, 0, 0), p.y - 0.6) * 100.0;
 
     //float d = sdBase(p);
     //d = p.y - 64;
     storage_images_3d_float[SDF_TEXTURE_STORAGE_IMAGE_IDX].Store(id.xyz, d);
+}
+
+struct aabb {
+    float3 min;
+    float3 max;
+}
+
+[shader("compute")]
+[numthreads(4, 4, 4)]
+void compute_aabbs(uint3 id: SV_DispatchThreadID, uint3 gid: SV_GroupID, uint3 gtid: SV_GroupThreadID) {
+    float loaded = storage_images_3d_float[SDF_TEXTURE_STORAGE_IMAGE_IDX].Load(id.xyz).x;
+
+    float dmin = WaveActiveMin(loaded);
+    float dmax = WaveActiveMax(loaded);
+
+    float3 k = id.xyz - 64.0;
+
+    float3 aabb_min = 5;
+    float3 aabb_max = 0;
+
+    bool close_enough = loaded < 2.5;
+
+    float3 t = gtid;
+
+    // Reduce each component individually
+    aabb_min.x = WaveActiveMin(select(close_enough, t.x, 0));
+    aabb_min.y = WaveActiveMin(select(close_enough, t.y, 0));
+    aabb_min.z = WaveActiveMin(select(close_enough, t.z, 0));
+
+    aabb_max.x = WaveActiveMax(select(close_enough, t.x+1, 0));
+    aabb_max.y = WaveActiveMax(select(close_enough, t.y+1, 0));
+    aabb_max.z = WaveActiveMax(select(close_enough, t.z+1, 0));
+    int3 lid2 = (int3)gid - 16;
+
+    uint aaabb_byte_offset = 3*4*2;
+
+    GroupMemoryBarrierWithWaveSync();
+
+    if (dmax > -1 && dmin < 2.5 && all(gtid == 0)) {
+        uint count = 0;
+    
+        storage_buffers[STORAGE_BUFFER_TERRAIN_AABB_BOUNDS+1].InterlockedAdd(0, 1, count);
+        
+        if (count < 1024*1024*1024) {
+            float offset = 1;
+            aabb data = aabb(aabb_min + gid * 4 - 64.0 + offset, aabb_max + gid * 4 - 64.0 + offset);
+            // aabb data = aabb(gid * 4 - 64.0, gid * 4 + 4 - 64.0);
+
+            storage_buffers[STORAGE_BUFFER_TERRAIN_AABB_BOUNDS].Store(aaabb_byte_offset * count, data.min);
+            storage_buffers[STORAGE_BUFFER_TERRAIN_AABB_BOUNDS].Store(aaabb_byte_offset * count + 3*4, data.max);
+        }
+    }
+    
+    GroupMemoryBarrierWithWaveSync();
 }

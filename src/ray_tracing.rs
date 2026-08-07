@@ -46,6 +46,121 @@ pub enum BlasGeometry {
 }
 
 
+pub unsafe fn rebuild_blas(
+    ctx: &mut GraphicsContext,
+    cmd: vk::CommandBuffer,
+    geometry: BlasGeometry,
+    blas: &AccelerationStructureData,
+) {
+    let (geometries, max_primitive_counts) = match geometry {
+        BlasGeometry::Triangles { vertex_count, vertex_offset, vertex_stride, index_count, index_offset, index_stride, vertex_buffer_address, index_buffer_address } => {
+            let vertex_data_device_address = vertex_buffer_address;
+            let index_data_device_address = index_buffer_address;
+
+            let triangles = vk::AccelerationStructureGeometryTrianglesDataKHR::default()
+                .index_type(vk::IndexType::UINT32)
+                .max_vertex(vertex_count as u32)
+                .vertex_stride(vertex_stride as u64)
+                .vertex_format(vk::Format::R32G32B32_SFLOAT)
+                .vertex_data(vk::DeviceOrHostAddressConstKHR { device_address: vertex_data_device_address + (vertex_stride * vertex_offset) as u64 })
+                .index_data(vk::DeviceOrHostAddressConstKHR { device_address: index_data_device_address + (index_stride * index_offset) as u64 });
+            let geometry_tmp = vk::AccelerationStructureGeometryDataKHR { triangles: triangles };
+
+            let geometry = vk::AccelerationStructureGeometryKHR::default()
+                .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
+                .geometry(geometry_tmp)
+                .flags(vk::GeometryFlagsKHR::OPAQUE);
+            
+            ([geometry], [index_count as u32 / 3])    
+        },
+        BlasGeometry::AABBs { aabb_buffer_address, max_count } => {
+            let aabbs = vk::AccelerationStructureGeometryAabbsDataKHR::default()
+                .stride(size_of::<AccelerationStructureAabb>() as u64)
+                .data(vk::DeviceOrHostAddressConstKHR { device_address: aabb_buffer_address });
+            let geometry_tmp = vk::AccelerationStructureGeometryDataKHR { aabbs: aabbs };
+
+            let geometry = vk::AccelerationStructureGeometryKHR::default()
+                .geometry_type(vk::GeometryTypeKHR::AABBS)
+                .geometry(geometry_tmp)
+                .flags(vk::GeometryFlagsKHR::OPAQUE);
+            
+            ([geometry], [max_count])   
+        },
+    };
+
+    let mut acceleration_structure_build_geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
+        .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
+        .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE | vk::BuildAccelerationStructureFlagsKHR::ALLOW_DATA_ACCESS)
+        .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
+        .geometries(&geometries);
+
+    let tmp = vk::AccelerationStructureBuildRangeInfoKHR::default()
+        .first_vertex(0)
+        .primitive_count(max_primitive_counts[0])
+        .primitive_offset(0)
+        .transform_offset(0);
+    let tmp2 = &[tmp];
+    let build_range_infos: &[&[vk::AccelerationStructureBuildRangeInfoKHR]] = &[tmp2];
+
+    acceleration_structure_build_geometry_info.scratch_data = vk::DeviceOrHostAddressKHR { device_address: blas.scratch_buffer.address };
+    acceleration_structure_build_geometry_info.dst_acceleration_structure = blas.acceleration_structure;
+
+    let queue_family_index = ctx.queue_family_index;
+
+    let backing_buffer_barrier = vk::BufferMemoryBarrier2::default()
+        .buffer(blas.backing_buffer.buffer)
+        .src_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR | vk::PipelineStageFlags2::FRAGMENT_SHADER | vk::PipelineStageFlags2::ALL_TRANSFER)
+        .dst_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR)
+        .src_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR | vk::AccessFlags2::TRANSFER_WRITE | vk::AccessFlags2::SHADER_READ)
+        .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR | vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR )
+        .size(vk::WHOLE_SIZE)
+        .offset(0)
+        .src_queue_family_index(queue_family_index)
+        .dst_queue_family_index(queue_family_index);
+    let scratch_buffer_barrier = vk::BufferMemoryBarrier2::default()
+        .buffer(blas.scratch_buffer.buffer)
+        .src_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR | vk::PipelineStageFlags2::FRAGMENT_SHADER | vk::PipelineStageFlags2::ALL_TRANSFER)
+        .dst_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR)
+        .src_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR | vk::AccessFlags2::TRANSFER_WRITE | vk::AccessFlags2::SHADER_READ)
+        .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR | vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR)
+        .size(vk::WHOLE_SIZE)
+        .offset(0)
+        .src_queue_family_index(queue_family_index)
+        .dst_queue_family_index(queue_family_index);
+    let buffer_memory_barriers = [backing_buffer_barrier, scratch_buffer_barrier];
+    let dep = vk::DependencyInfo::default()
+        .buffer_memory_barriers(&buffer_memory_barriers);
+    ctx.device.cmd_pipeline_barrier2(cmd, &dep);
+
+    ctx.acceleration_structure_device.cmd_build_acceleration_structures(cmd, &[acceleration_structure_build_geometry_info], build_range_infos);
+
+    let backing_buffer_barrier = vk::BufferMemoryBarrier2::default()
+        .buffer(blas.backing_buffer.buffer)
+        .src_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR)
+        .dst_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR | vk::PipelineStageFlags2::FRAGMENT_SHADER | vk::PipelineStageFlags2::COMPUTE_SHADER)
+        .src_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR)
+        .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR | vk::AccessFlags2::SHADER_READ)
+        .size(vk::WHOLE_SIZE)
+        .offset(0)
+        .src_queue_family_index(queue_family_index)
+        .dst_queue_family_index(queue_family_index);
+    let scratch_buffer_barrier = vk::BufferMemoryBarrier2::default()
+        .buffer(blas.scratch_buffer.buffer)
+        .src_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR)
+        .dst_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR | vk::PipelineStageFlags2::FRAGMENT_SHADER | vk::PipelineStageFlags2::COMPUTE_SHADER)
+        .src_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR)
+        .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR | vk::AccessFlags2::SHADER_READ)
+        .size(vk::WHOLE_SIZE)
+        .offset(0)
+        .src_queue_family_index(queue_family_index)
+        .dst_queue_family_index(queue_family_index);
+    let buffer_memory_barriers = [backing_buffer_barrier, scratch_buffer_barrier];
+    let dep = vk::DependencyInfo::default()
+        .buffer_memory_barriers(&buffer_memory_barriers);
+    ctx.device.cmd_pipeline_barrier2(cmd, &dep);
+
+}
+
 pub unsafe fn create_blas(
     ctx: &mut GraphicsContext,
     cmd: vk::CommandBuffer,

@@ -147,6 +147,9 @@ pub struct InternalApp {
     tlas: crate::ray_tracing::TopLevelAccelerationStructure,
     blases: Vec<crate::ray_tracing::AccelerationStructureData>,
     blases_instances: Vec<vk::AccelerationStructureInstanceKHR>,
+    terrain_aabb_bounds_buffer: buffer::Buffer,
+
+    counters_of_various_types: buffer::Buffer,
 
     texture: sdf_texture::SdfImage,
 
@@ -381,29 +384,11 @@ impl InternalApp {
 
         let blas1 = ray_tracing::create_blas(&mut ctx, cmd, geometry);
 
-        let symm_bounds = vek::Vec3::new(64f32, 64f32, 64f32);
-        let aabbs = [ray_tracing::AccelerationStructureAabb {
-            min: -symm_bounds,
-            max: symm_bounds,
-        }, ray_tracing::AccelerationStructureAabb {
-            min: -symm_bounds + vek::Vec3::unit_y() * 200f32,
-            max: symm_bounds+ vek::Vec3::unit_y() * 200f32,
-        }, ray_tracing::AccelerationStructureAabb {
-            min: -symm_bounds+ vek::Vec3::unit_y() * 500f32,
-            max: symm_bounds + vek::Vec3::unit_y() * 500f32,
-        } ,ray_tracing::AccelerationStructureAabb {
-            min: -symm_bounds  + vek::Vec3::unit_y() * 500f32,
-            max: symm_bounds  + -vek::Vec3::unit_y() * 500f32,
-        } ,ray_tracing::AccelerationStructureAabb {
-            min: -symm_bounds,
-            max: symm_bounds,
-        }];
-
-        let written = writer.write_bytes(cast_slice(&aabbs));
+        let terrain_aabb_bounds_buffer = buffer::create_buffer(&mut ctx, size_of::<vek::Vec3<f32>>() * 2 * 32768, "adfad", vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
 
         let geometry = ray_tracing::BlasGeometry::AABBs {
-            aabb_buffer_address: written.buffer_device_address_start,
-            max_count: 5
+            aabb_buffer_address: terrain_aabb_bounds_buffer.address,
+            max_count: 32768
         };
 
         let blas2 = ray_tracing::create_blas(&mut ctx, cmd, geometry);
@@ -428,7 +413,7 @@ impl InternalApp {
 
         let tlas = ray_tracing::pre_create_tlas(&mut ctx);
         let scene_representation_for_sdf_buffer = buffer::create_buffer_default_flags(&mut ctx, size_of::<u32>() + size_of::<vek::Vec3<f32>>() * 100, "a");
-        let scene_representation_for_sdf = vec![vek::Vec3::<f32>::one(), symm_bounds];
+        let scene_representation_for_sdf = vec![vek::Vec3::<f32>::one()];
 
         let mut blases_instances = Vec::new();
 
@@ -494,6 +479,7 @@ impl InternalApp {
 
         let texture = sdf_texture::create_voxel_image(&mut ctx);
 
+        let counters_of_various_types = buffer::create_buffer_default_flags(&mut ctx, size_of::<u32>() * 100, "counters");
 
         /*
         let mut rng = rand::rngs::SmallRng::seed_from_u64(432);
@@ -513,6 +499,9 @@ impl InternalApp {
 
 
         Self {
+            counters_of_various_types,
+            terrain_aabb_bounds_buffer,
+
             materials_buffer,
             materials,
             tlas, 
@@ -852,6 +841,14 @@ impl InternalApp {
                 .buffer(self.scene_representation_for_sdf_buffer.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
+            vk::DescriptorBufferInfo::default()
+                .buffer(self.terrain_aabb_bounds_buffer.buffer)
+                .offset(0)
+                .range(vk::WHOLE_SIZE),
+            vk::DescriptorBufferInfo::default()
+                .buffer(self.counters_of_various_types.buffer)
+                .offset(0)
+                .range(vk::WHOLE_SIZE),
         ];
 
         let storage_buffer_write = vk::WriteDescriptorSet::default()
@@ -953,6 +950,7 @@ impl InternalApp {
         let cpu_cmd_record_start = Instant::now();
         self.device.cmd_reset_query_pool(cmd, query_pool, 0, query_pool_statistics::NUM_TIMESTAMP_QUERIES as u32);
         self.device.cmd_reset_query_pool(cmd, pipeline_statistics_query_pool, 0, 1);
+        self.device.cmd_fill_buffer(cmd, self.counters_of_various_types.buffer, 0, vk::WHOLE_SIZE, 0);
                 
         scratch_buffer.begin_of_cmd_recording(self.queue_family_index, &self.device, cmd);
         
@@ -1047,7 +1045,6 @@ impl InternalApp {
 
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene_representation_for_sdf), self.scene_representation_for_sdf_buffer.buffer, 0);
         
-
         // rebuild TLAS
         ray_tracing::rebuild_tlas(
             self.blases_instances.iter().copied(),
@@ -1146,7 +1143,16 @@ impl InternalApp {
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)
             .size(vk::WHOLE_SIZE);
-        let buffer_memory_barriers = [uniform_buffer_barrier, debug_text_buffer_barrier, materials_gpu_buffer, scene_repr_gpu_buffer];
+        let asdfad = vk::BufferMemoryBarrier2::default()
+            .buffer(self.counters_of_various_types.buffer)
+            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .size(vk::WHOLE_SIZE);
+        let buffer_memory_barriers = [uniform_buffer_barrier, debug_text_buffer_barrier, materials_gpu_buffer, scene_repr_gpu_buffer, asdfad];
         let dep = vk::DependencyInfo::default().buffer_memory_barriers(&buffer_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
@@ -1175,6 +1181,94 @@ impl InternalApp {
         );
 
         self.device.cmd_dispatch(cmd, sdf_texture::SIZE.div_ceil(4), sdf_texture::SIZE.div_ceil(4), sdf_texture::SIZE.div_ceil(4));
+
+        self.device.cmd_fill_buffer(cmd, self.terrain_aabb_bounds_buffer.buffer, 0, vk::WHOLE_SIZE, bytemuck::cast(0f32));
+
+                
+        let terrain_aabb_bounds_buffer_barrier = vk::BufferMemoryBarrier2::default()
+            .buffer(self.terrain_aabb_bounds_buffer.buffer)
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_TRANSFER)
+            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE | vk::AccessFlags2::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_WRITE)
+            .size(vk::WHOLE_SIZE)
+            .offset(0)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index);
+        let a = [terrain_aabb_bounds_buffer_barrier];
+        let dep = vk::DependencyInfo::default().buffer_memory_barriers(&a);
+        self.device.cmd_pipeline_barrier2(cmd, &dep);
+
+        let sdf_subresource_range = vk::ImageSubresourceRange::default()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .level_count(1)
+            .layer_count(1);
+        let sdf_image_barrier = vk::ImageMemoryBarrier2::default()
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_STORAGE_READ)
+            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .image(self.texture.image)
+            .subresource_range(sdf_subresource_range);
+        let image_memory_barriers = [sdf_image_barrier];
+        let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
+        self.device.cmd_pipeline_barrier2(cmd, &dep);
+
+        self.device.cmd_bind_pipeline(
+            cmd,
+            vk::PipelineBindPoint::COMPUTE,
+            self.compute_pipelines[COMPUTE_SDF]["compute_aabbs"]
+        );
+
+        self.device.cmd_dispatch(cmd, sdf_texture::SIZE.div_ceil(4), sdf_texture::SIZE.div_ceil(4), sdf_texture::SIZE.div_ceil(4));
+
+
+        let terrain_aabb_bounds_buffer_barrier = vk::BufferMemoryBarrier2::default()
+            .buffer(self.terrain_aabb_bounds_buffer.buffer)
+            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .dst_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR)
+            .src_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR | vk::AccessFlags2::TRANSFER_WRITE | vk::AccessFlags2::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR | vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR )
+            .size(vk::WHOLE_SIZE)
+            .offset(0)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index);
+        let a = [terrain_aabb_bounds_buffer_barrier];
+        let dep = vk::DependencyInfo::default().buffer_memory_barriers(&a);
+        self.device.cmd_pipeline_barrier2(cmd, &dep);
+
+
+        let geometry = ray_tracing::BlasGeometry::AABBs {
+            aabb_buffer_address: self.terrain_aabb_bounds_buffer.address,
+            max_count: 32768
+        };
+
+        ray_tracing::rebuild_blas(
+            &mut ctx,
+            cmd,
+            geometry,
+            &self.blases[1]
+        );
+
+        
+        let terrain_aabb_bounds_buffer_barrier = vk::BufferMemoryBarrier2::default()
+            .buffer(self.terrain_aabb_bounds_buffer.buffer)
+            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .dst_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR)
+            .src_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR | vk::AccessFlags2::TRANSFER_WRITE | vk::AccessFlags2::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR | vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR )
+            .size(vk::WHOLE_SIZE)
+            .offset(0)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index);
+        let a = [terrain_aabb_bounds_buffer_barrier];
+        let dep = vk::DependencyInfo::default().buffer_memory_barriers(&a);
+        self.device.cmd_pipeline_barrier2(cmd, &dep);
+
 
         let skybox_subresource_range = vk::ImageSubresourceRange::default()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -1552,6 +1646,8 @@ impl InternalApp {
             .queue_present(self.queue, &present_info)
             .unwrap();
 
+        // self.device.wait_for_fences(&[end_fence], true, u64::MAX);
+
         self.frame_count += 1;
         if suboptimal {
             self.recreate_swapchain();
@@ -1693,7 +1789,7 @@ unsafe fn compile_all_shaders(
         file_name_without_extension: COMPUTE_FULLSCREEN,
     }, pipeline::PipelineCreateSettings {
         pipeline_debug_name: "compute SDF shader",
-        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["main"] },
+        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["main", "compute_aabbs"] },
         spec_constants: Some(&spec_constants),
         file_name_without_extension: COMPUTE_SDF,
     }];

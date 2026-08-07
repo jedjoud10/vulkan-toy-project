@@ -279,14 +279,37 @@ float2 ray_box_get_tmin_tmax(
 }
 
 void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls, inout float material) {    
-    float3 aabb_symmetric_bounds = storage_buffers_readonly[STORAGE_BUFFER_SCENE_REPR_BUFFER].Load<float3>(sq.CandidateRayInstanceCustomIndex() * 12);
+    //float3 aabb_symmetric_bounds = storage_buffers_readonly[STORAGE_BUFFER_SCENE_REPR_BUFFER].Load<float3>(sq.CandidateRayInstanceCustomIndex() * 12);
+
+    /*
+    if (!WaveActiveAllEqual(sq.CandidateInstanceIndex())) {
+        if (WaveActiveCountBits(true) < 50) {
+            return;
+        }
+    }
+    */
 
     // software AABB test lmao to get min and max dists of ray into  AABB
-    float2 tmin_tmax = ray_box_get_tmin_tmax(sq.CandidateRayObjectRayOrigin(), sq.CandidateObjectRayDirection(), -aabb_symmetric_bounds, aabb_symmetric_bounds);
+    float3 min_bounds = storage_buffers_readonly[STORAGE_BUFFER_TERRAIN_AABB_BOUNDS].Load<float3>(sq.CandidatePrimitiveIndex() * 3*4*2);
+    float3 max_bounds = storage_buffers_readonly[STORAGE_BUFFER_TERRAIN_AABB_BOUNDS].Load<float3>(sq.CandidatePrimitiveIndex() * 3*4*2 + 3*4);
+    // float2 tmin_tmax = ray_box_get_tmin_tmax(sq.CandidateRayObjectRayOrigin(), sq.CandidateObjectRayDirection(), -aabb_symmetric_bounds, aabb_symmetric_bounds);
+    float2 tmin_tmax = ray_box_get_tmin_tmax(sq.CandidateRayObjectRayOrigin(), sq.CandidateObjectRayDirection(), min_bounds, max_bounds);
     float distance = max(tmin_tmax.x, 0);
-    float3 point = sq.WorldRayOrigin() + sq.WorldRayDirection() * distance;
+    //float distance = 0.0;
+    //float2 tmin_tmax = float2(distance, 100000000);
+
+    // cache ray data
+    float3 ro = sq.WorldRayOrigin();
+    float3 rd = sq.WorldRayDirection();
+    float3 point = ro + rd * distance;
+
+    tmin_tmax.y = min(tmin_tmax.y, sq.CommittedRayT());
 
     for (; i < MAX_ITERS; i++) {
+        // shaves off a few ms
+        if (distance > tmin_tmax.y) {
+            return;
+        }
 
         capture_performance_sdf_call();
     
@@ -303,7 +326,6 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls,
         sdf_calls += 1;
 
         // closest_distance_and_material.x = max(closest_distance_and_material.x, -(length(point - (uniforms.position.xyz + uniforms.forward.xyz * 10)) - 2));
-                        
         // check if we got close enough to the surface
         if (closest_distance_and_material.x < max(THRESHOLD_DISTANCE * distance, THRESHOLD_DISTANCE)) {
             sq.CommitProceduralPrimitiveHit(distance); 
@@ -312,18 +334,8 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls,
         }
 
         float step_size = closest_distance_and_material.x * DISTANCE_SCALING_FACTOR;
-        point += sq.WorldRayDirection() * step_size;
+        point += rd * step_size;
         distance += step_size;
-    
-        // check if we left the bounds of the AABB (tmax is calculated using software ray-AABB test)
-        if (distance > tmin_tmax.y) {
-            return;
-        }
-
-        // if we already have a closer intersection than this one, discard this one
-        if (distance > sq.CommittedRayT()) {
-            return;
-        }
     }
 }
 
@@ -347,6 +359,7 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
     int i = 0;
     int sdf_calls = 0;
     float material = 0;
+
     while (sq.Proceed()) {
         if(sq.CandidateType() == CANDIDATE_PROCEDURAL_PRIMITIVE) {
             
