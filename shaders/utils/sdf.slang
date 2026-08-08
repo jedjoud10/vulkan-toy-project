@@ -4,101 +4,7 @@
 #include "other.slang"
 #include "noises.slang"
 #include "bindless.slang"
-
-// The MIT License
-// Copyright © 2019 Inigo Quilez
-// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions: The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-
-// https://iquilezles.org/articles/smin/
-[Differentiable]
-// cubic polynomial
-float smin( float a, float b, float k )
-{
-    k *= 6.0;
-    float h = max( k-abs(a-b), 0.0 )/k;
-    return min(a,b) - h*h*h*k*(1.0/6.0);
-}
-
-// https://iquilezles.org/articles/distfunctions/
-[Differentiable]
-float sdOctahedron( vec3 p, float s )
-{
-  p = abs(p);
-  float m = p.x+p.y+p.z-s;
-  vec3 q;
-       if( 3.0*p.x < m ) q = p.xyz;
-  else if( 3.0*p.y < m ) q = p.yzx;
-  else if( 3.0*p.z < m ) q = p.zxy;
-  else return m*0.57735027;
-    
-  float k = clamp(0.5*(q.z-q.y+s),0.0,s); 
-  return length(vec3(q.x,q.y-s+k,q.z-k)); 
-}
-
-// https://iquilezles.org/articles/distfunctions/
-[Differentiable]
-float sdHexPrism( vec3 p, vec2 h )
-{
-  const vec3 k = vec3(-0.8660254, 0.5, 0.57735);
-  p = abs(p);
-  p.xy -= 2.0*min(dot(k.xy, p.xy), 0.0)*k.xy;
-  vec2 d = vec2(
-       length(p.xy-vec2(clamp(p.x,-k.z*h.x,k.z*h.x), h.x))*sign(p.y-h.x),
-       p.z-h.y );
-  return min(max(d.x,d.y),0.0) + length(max(d,0.0));
-}
-
-// https://iquilezles.org/articles/distfunctions/
-[Differentiable]
-float sdCylinder( vec3 p, vec3 c )
-{
-  return length(p.xz-c.xy)-c.z;
-}
-
-// https://iquilezles.org/articles/distfunctions/
-[Differentiable]
-float sdTorus( vec3 p, vec2 t )
-{
-  vec2 q = vec2(length(p.xz)-t.x,p.y);
-  return length(q)-t.y;
-}
-
-// https://iquilezles.org/articles/distfunctions/
-[Differentiable]
-float sdRoundBox( vec3 p, vec3 b, float r )
-{
-  vec3 q = abs(p) - b + r;
-  return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0) - r;
-}
-
-// https://iquilezles.org/articles/distfunctions/
-[Differentiable]
-float sdBox( vec3 p, vec3 b )
-{
-  vec3 q = abs(p) - b;
-  return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0);
-}
-
-
-
-const static int TEXTURE_SIZE = 128;
-float tex_sample(float3 p) {
-    return sampled_images_3d[SDF_TEXTURE_SAMPLED_IMAGE_IDX].Sample(samplers[LINEAR_UNCAMPLED_SAMPLER_IDX], p / TEXTURE_SIZE + 0.5).x;
-}
-
-[BackwardDerivativeOf(tex_sample)]
-void bwd_tex_sample(inout DifferentialPair<float3> p_pair, float dOut)
-{
-    float eps = 0.1;
-    float x = tex_sample(p_pair.p - float3(eps, 0, 0));
-    float y = tex_sample(p_pair.p - float3(0, eps, 0));
-    float z = tex_sample(p_pair.p - float3(0, 0, eps));
-    float b = tex_sample(p_pair.p);
-
-
-    p_pair = diffPair<float3>(p_pair.p, (float3(b-x, b-y, b-z) / eps) * dOut);
-}
+#include "sdf_iq.slang"
 
 [Differentiable]
 float d(float3 p) {
@@ -124,6 +30,22 @@ float d(float3 p) {
 
     float sdf = min(sphere, min(ground, min(min(octa, cyl), min(hex, tor))));
 
+    /*
+    for (int i = 0; i < 0; i++) {
+        Primitive prim = storage_buffers_readonly[STORAGE_BUFFER_TERRAIN_AABB_BOUNDS].Load<Primitive>(i * 16);
+    
+        //float primitive_sdf = length(p - prim.position) - 1.0;
+        float primitive_sdf = sdTorus(p - prim.position, float2(0.5, 0.25));
+
+        if (prim.flags == 1) {
+            sdf = min(sdf, primitive_sdf);
+        } else {
+            sdf = max(sdf, -primitive_sdf);
+        }
+    }
+    */
+
+    sdf = min(sdf, tex_sample(p*4.0));
 
     //sdf = smin(sdf, d2(p), 0.5);
     // sdf = min(sdf, tex_sample(p - float3(0, 10, 0)));
@@ -219,6 +141,11 @@ float2 terrain(float3 lp, float instance_index) {
     return float2(tex_sample(lp), 0);
 }
 
+struct Primitive {
+    float3 position;
+    uint flags;
+}
+
 struct TraceResHitObj {
     int instance_custom_index;
     float material;
@@ -238,8 +165,6 @@ struct ShadowTraceRes {
     float shadow;
 };
 
-
-
 void capture_performance_query_trace_ray() {
     if (is_bit_set(SPEC_CONSTANTS_BITFIELD, 0)) {
         storage_buffers[STORAGE_BUFFER_READBACK_BUFFER].InterlockedAdd(READBACK_BUFFER_RAYS_TRACED_QUERY_INDEX * 4, 1);
@@ -254,12 +179,13 @@ void capture_performance_sdf_call() {
 
 
 #define HWRT_BOUNDS_ACCEL
+#define HWRT_BOUNDS_ACCEL_SHADOWS
 
 static const uint MAX_ITERS = 256;
 static const float MAX_DISTANCE = 10000;
 static const float THRESHOLD_DISTANCE = 0.001;
 static const float DISTANCE_SCALING_FACTOR = 1.0;
-static const bool LOD = false;
+static const bool LOD = true;
 
 
 float2 ray_box_get_tmin_tmax(
@@ -280,9 +206,11 @@ float2 ray_box_get_tmin_tmax(
     return float2(tmin,tmax);
 }
 
-void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls, inout float material) {    
-    float3 aabb_symmetric_bounds = storage_buffers_readonly[STORAGE_BUFFER_SCENE_REPR_BUFFER].Load<float3>(sq.CandidateRayInstanceCustomIndex() * 12);
+const static uint INSTANCE_CUSTOM_INDEX_AABB_LOOKUP_INDEX_MASK = 15;
+const static uint INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK = 16;
 
+
+void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls, inout float material) {
     /*
     if (!WaveActiveAllEqual(sq.CandidateInstanceIndex())) {
         if (WaveActiveCountBits(true) < 50) {
@@ -291,11 +219,17 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls,
     }
     */
 
+    // 24 bits
+    uint instance_custom_index = sq.CandidateRayInstanceCustomIndex();
+
+    // extract flags
+    uint aabb_lookup_index = instance_custom_index & INSTANCE_CUSTOM_INDEX_AABB_LOOKUP_INDEX_MASK;
+    bool local_sdf = (instance_custom_index & INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK) != 0;
+
     // software AABB test lmao to get min and max dists of ray into  AABB
-    //float3 min_bounds = storage_buffers_readonly[STORAGE_BUFFER_TERRAIN_AABB_BOUNDS].Load<float3>(sq.CandidatePrimitiveIndex() * 3*4*2);
-    //float3 max_bounds = storage_buffers_readonly[STORAGE_BUFFER_TERRAIN_AABB_BOUNDS].Load<float3>(sq.CandidatePrimitiveIndex() * 3*4*2 + 3*4);
-    float2 tmin_tmax = ray_box_get_tmin_tmax(sq.CandidateRayObjectRayOrigin(), sq.CandidateObjectRayDirection(), -aabb_symmetric_bounds, aabb_symmetric_bounds);
-    //float2 tmin_tmax = ray_box_get_tmin_tmax(sq.CandidateRayObjectRayOrigin(), sq.CandidateObjectRayDirection(), min_bounds, max_bounds);
+    float3 min_bounds = storage_buffers_readonly[STORAGE_BUFFER_SCENE_REPR_BUFFER].Load<float3>(aabb_lookup_index * 3*4*2);
+    float3 max_bounds = storage_buffers_readonly[STORAGE_BUFFER_SCENE_REPR_BUFFER].Load<float3>(aabb_lookup_index * 3*4*2 + 3*4);
+    float2 tmin_tmax = ray_box_get_tmin_tmax(sq.CandidateRayObjectRayOrigin(), sq.CandidateObjectRayDirection(), min_bounds, max_bounds);
     float distance = max(tmin_tmax.x, 0);
 
     // cache ray data
@@ -314,14 +248,14 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls,
         capture_performance_sdf_call();
     
         float2 closest_distance_and_material = 0;
-        if (sq.CandidateRayInstanceCustomIndex() == 0) {
+        if (!local_sdf) {
             closest_distance_and_material = float2(d(point), 0);
         } else {
             // TODO: it would be smarter to convert the point to object space first and trace using that
             // atp just duplicate trace_inner to a "local" version that takes in a local SDF instead of global one
             float3 local_position = mul(sq.CandidateWorldToObject3x4(), float4(point, 1)).xyz;
             float instance_index = sq.CandidateInstanceIndex();
-            closest_distance_and_material = terrain(local_position, instance_index);
+            closest_distance_and_material = tree2(local_position * 2.5, instance_index) / 2.5;
         }
         sdf_calls += 1;
 
@@ -431,7 +365,7 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
 ShadowTraceRes shadow_trace(float3 ray_pos, float3 ray_dir) {
     capture_performance_query_trace_ray();
 
-#ifdef HWRT_BOUNDS_ACCEL
+#ifdef HWRT_BOUNDS_ACCEL_SHADOWS
     // 7.7ms vs 7.3ms when using RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH at 800x600, 1 bounce, default scene
     RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_TRIANGLES | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> sq;
     let flags = RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_TRIANGLES | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;

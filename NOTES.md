@@ -7,3 +7,9 @@
 Idk if this is because I am riding on UB somewhere in the task/mesh shader or if it's simply shit AMD drivers on windows.
 
 - Also IIRC (from yesterday lol) it crashes the driver if you try to read from the `groupshared` `vertices` or `triangles` memory in the mesh shader :P
+
+
+# SDF
+- For us to make use of the coarse cone-tracing pre-pass, all scene geometry must be defined in the global SDF. no local SDFs (or, at least, we store a bound in the global SDF)
+
+- if we want to have soft SDF shadows, we must use global SDF. currently we use ray-traced shadows with hash offset to get soft shadows

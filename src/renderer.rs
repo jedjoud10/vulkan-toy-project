@@ -140,21 +140,13 @@ pub struct InternalApp {
 
     materials: Vec<Material>,
     materials_buffer: buffer::Buffer,
+
+    scene: crate::scene::Scene,
+    
     // voxels: SparseVoxelOctree,
     // voxels2: TestingStructure,
 
-
-    tlas: crate::ray_tracing::TopLevelAccelerationStructure,
-    blases: Vec<crate::ray_tracing::AccelerationStructureData>,
-    blases_instances: Vec<vk::AccelerationStructureInstanceKHR>,
-    terrain_aabb_bounds_buffer: buffer::Buffer,
-
     counters_of_various_types: buffer::Buffer,
-
-    texture: sdf_texture::SdfImage,
-
-    scene_representation_for_sdf: Vec<vek::Vec3<f32>>,
-    scene_representation_for_sdf_buffer: buffer::Buffer,
 
     timestamp_period: f32,
     skybox: skybox::Skybox,
@@ -353,9 +345,6 @@ impl InternalApp {
 
         let timestamp_period = physical_device_properties.properties.limits.timestamp_period;
 
-        let cmd = others::begin_recording(&mut ctx);
-        let mut writer = buffer::begin_buffer_writer(&mut ctx);
-
         let materials = vec![
             Material::new(&mut ctx, "metal/metal_0077"),
             Material::new(&mut ctx, "ground/ground_0029"),
@@ -364,40 +353,6 @@ impl InternalApp {
         ];
 
         let materials_buffer = buffer::create_buffer(&mut ctx, materials.len() * size_of::<GpuMaterialInfo>(), "gpu materials buffer", vk::BufferUsageFlags::TRANSFER_DST);
-
-        //let voxels = voxel::create_sparse_structures(&mut ctx, cmd, &mut writer, false);
-        //let voxels2 = voxel::create_sparse_structures2(&mut ctx, cmd, &mut writer, false);
-
-
-        
-        let aabbs = [ray_tracing::AccelerationStructureAabb {
-            min: -vek::Vec3::one(),
-            max: vek::Vec3::one(),
-        }];
-
-        let written = writer.write_bytes(cast_slice(&aabbs));
-
-        let geometry = ray_tracing::BlasGeometry::AABBs {
-            aabb_buffer_address: written.buffer_device_address_start,
-            max_count: 1
-        };
-
-        let blas1 = ray_tracing::create_blas(&mut ctx, cmd, geometry);
-
-        let terrain_aabb_bounds_buffer = buffer::create_buffer(&mut ctx, size_of::<vek::Vec3<f32>>() * 2 * 32768, "adfad", vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
-
-        let geometry = ray_tracing::BlasGeometry::AABBs {
-            aabb_buffer_address: terrain_aabb_bounds_buffer.address,
-            max_count: 32768
-        };
-
-        let blas2 = ray_tracing::create_blas(&mut ctx, cmd, geometry);
-
-        let blases = vec![blas1, blas2];
-
-        others::end_recording_and_submit(&mut ctx, cmd);
-        buffer::end_buffer_writer(&mut ctx, writer);
-
         let debug_text = debug_text::DebugText::new(&mut ctx);
 
         let render_finished_semaphores: SmallVec<[vk::Semaphore; swapchain::SWAPCHAIN_IMAGES]> = (0..swapchain::SWAPCHAIN_IMAGES).into_iter().map(|_| {
@@ -411,107 +366,18 @@ impl InternalApp {
             vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST
         );
 
-        let tlas = ray_tracing::pre_create_tlas(&mut ctx);
-        let scene_representation_for_sdf_buffer = buffer::create_buffer_default_flags(&mut ctx, size_of::<u32>() + size_of::<vek::Vec3<f32>>() * 100, "a");
-        let scene_representation_for_sdf = vec![vek::Vec3::<f32>::one()];
-
-        let mut blases_instances = Vec::new();
-
-        // plane
-        blases_instances.push(ray_tracing::instantiate_blas(
-            vek::Quaternion::identity(),
-            -vek::Vec3::unit_y(),
-            vek::Vec3::new(1000.0, 1.0, 1000.0),
-            &blases[0],
-            0,
-            0xFF,
-        ));
-
-        // sphere
-        blases_instances.push(ray_tracing::instantiate_blas(
-            vek::Quaternion::identity(),
-            vek::Vec3::unit_y(),
-            vek::Vec3::broadcast(2f32),
-            &blases[0],
-            0,
-            0xFF,
-        ));
-
-        // hex
-        blases_instances.push(ray_tracing::instantiate_blas(
-            vek::Quaternion::default(),
-            vek::Vec3::new(10f32, 2f32, 0f32),
-            vek::Vec3::new(2.6, 2.1, 4.1),
-            &blases[0],
-            0,
-            0xFF,
-        ));
-
-        // torus
-        blases_instances.push(ray_tracing::instantiate_blas(
-            vek::Quaternion::rotation_3d(2.4f32, vek::Vec3::<f32>::one().normalized()),
-            vek::Vec3::new(2f32, 2f32, 5f32),
-            vek::Vec3::new(7f32, 2f32, 7f32),
-            &blases[0],
-            0,
-            0xFF,
-        ));
-
-        // cylinder
-        blases_instances.push(ray_tracing::instantiate_blas(
-            vek::Quaternion::default(),
-            vek::Vec3::new(-10f32,0f32, -0f32),
-            vek::Vec3::new(2f32, 400f32, 2f32),
-            &blases[0],
-            0,
-            0xFF,
-        ));
-
-        // sphere 2
-        blases_instances.push(ray_tracing::instantiate_blas(
-            vek::Quaternion::default(),
-            vek::Vec3::new(0f32,10f32, 0f32),
-            vek::Vec3::new(6f32, 6f32, 6f32),
-            &blases[0],
-            0,
-            0xFF,
-        ));
-
-        let texture = sdf_texture::create_voxel_image(&mut ctx);
-
+        let scene = crate::scene::Scene::new(&mut ctx);
         let counters_of_various_types = buffer::create_buffer_default_flags(&mut ctx, size_of::<u32>() * 100, "counters");
-
-        /*
-        let mut rng = rand::rngs::SmallRng::seed_from_u64(432);
-        for x in -20..20 {
-            for z in -20..20 {
-                blases_instances.push(ray_tracing::instantiate_blas(
-                    vek::Quaternion::rotation_y(rng.random_range(0f32..std::f32::consts::TAU)),
-                    vek::Vec3::new(rng.random_range(-600f32..600f32), 8f32, rng.random_range(-600f32..600f32)),
-                    vek::Vec3::one(), // cannot do non-uniform scale! cannot do scale in general unless we account for it in the shader side!
-                    &blases[1],
-                    1,
-                    0xFF
-                ));
-            }
-        }
-        */
 
 
         Self {
             counters_of_various_types,
-            terrain_aabb_bounds_buffer,
+
+            scene,
 
             materials_buffer,
             materials,
-            tlas, 
-            blases,
-            blases_instances,
 
-            scene_representation_for_sdf,
-            scene_representation_for_sdf_buffer,
-
-            texture,
             last_frame_cpu_cmd_record_duration: Default::default(),
             frame_count: 0,
             input: Default::default(),
@@ -580,10 +446,7 @@ impl InternalApp {
             descriptor_pool: self.descriptor_pool,
         };
 
-        if add {
-            self.blases_instances.push(ray_tracing::instantiate_blas(vek::Quaternion::identity(), position, vek::Vec3::one(), &self.blases[1], 1, 0xFF));
-            //self.scene_representation_for_sdf.push(position);
-        }
+        self.scene.add_primitive(&mut ctx, position, add);
     }
 
     pub unsafe fn recreate_swapchain(&mut self) {
@@ -792,7 +655,7 @@ impl InternalApp {
             .image_view(self.skybox.clouds_image_view)
             .image_layout(vk::ImageLayout::GENERAL);
         let sdf_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
-            .image_view(self.texture.image_view)
+            .image_view(self.scene.texture.image_view)
             .image_layout(vk::ImageLayout::GENERAL);
         let mut storage_image_infos = vec![
             swapchain_image_view_descriptor_image_info,
@@ -838,11 +701,11 @@ impl InternalApp {
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
             vk::DescriptorBufferInfo::default()
-                .buffer(self.scene_representation_for_sdf_buffer.buffer)
+                .buffer(self.scene.scene_representation_for_sdf_buffer.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
             vk::DescriptorBufferInfo::default()
-                .buffer(self.terrain_aabb_bounds_buffer.buffer)
+                .buffer(self.scene.primitives_buffer.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
             vk::DescriptorBufferInfo::default()
@@ -875,7 +738,7 @@ impl InternalApp {
             .image_view(render_targets.entire_bloom_image_view)
             .image_layout(vk::ImageLayout::GENERAL);
         let sdf_sampled_image_view_descriptor_write_info = vk::DescriptorImageInfo::default()
-            .image_view(self.texture.image_view)
+            .image_view(self.scene.texture.image_view)
             .image_layout(vk::ImageLayout::GENERAL);
         let mut sampled_image_infos = vec![
             skybox_sampled_image_view_descriptor_image_info,
@@ -921,7 +784,7 @@ impl InternalApp {
             .dst_set(main_descriptor_set)
             .image_info(&samplers);
 
-        let tlases = [self.tlas.data.acceleration_structure];
+        let tlases = [self.scene.tlas.data.acceleration_structure];
         let mut acceleration_structure_write_tmp = vk::WriteDescriptorSetAccelerationStructureKHR::default()
             .acceleration_structures(&tlases);
 
@@ -1043,12 +906,13 @@ impl InternalApp {
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene_representation_for_sdf), self.scene_representation_for_sdf_buffer.buffer, size_of::<u32>() as u64);
         */
 
-        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene_representation_for_sdf), self.scene_representation_for_sdf_buffer.buffer, 0);
+        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.scene_representation_for_sdf), self.scene.scene_representation_for_sdf_buffer.buffer, 0);
+        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.primitives), self.scene.primitives_buffer.buffer, 0);
         
         // rebuild TLAS
         ray_tracing::rebuild_tlas(
-            self.blases_instances.iter().copied(),
-            &self.tlas,
+            self.scene.blases_instances.iter().copied(),
+            &self.scene.tlas,
             &mut ctx,
             cmd,
             scratch_buffer,
@@ -1134,6 +998,7 @@ impl InternalApp {
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)
             .size(vk::WHOLE_SIZE);
+        /*
         let scene_repr_gpu_buffer = vk::BufferMemoryBarrier2::default()
             .buffer(self.scene_representation_for_sdf_buffer.buffer)
             .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
@@ -1143,6 +1008,7 @@ impl InternalApp {
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)
             .size(vk::WHOLE_SIZE);
+        */
         let asdfad = vk::BufferMemoryBarrier2::default()
             .buffer(self.counters_of_various_types.buffer)
             .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
@@ -1152,7 +1018,7 @@ impl InternalApp {
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)
             .size(vk::WHOLE_SIZE);
-        let buffer_memory_barriers = [uniform_buffer_barrier, debug_text_buffer_barrier, materials_gpu_buffer, scene_repr_gpu_buffer, asdfad];
+        let buffer_memory_barriers = [uniform_buffer_barrier, debug_text_buffer_barrier, materials_gpu_buffer, /*scene_repr_gpu_buffer,*/ asdfad];
         let dep = vk::DependencyInfo::default().buffer_memory_barriers(&buffer_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
@@ -1182,6 +1048,7 @@ impl InternalApp {
 
         self.device.cmd_dispatch(cmd, sdf_texture::SIZE.div_ceil(4), sdf_texture::SIZE.div_ceil(4), sdf_texture::SIZE.div_ceil(4));
 
+        /*
         self.device.cmd_fill_buffer(cmd, self.terrain_aabb_bounds_buffer.buffer, 0, vk::WHOLE_SIZE, bytemuck::cast(0f32));
 
                 
@@ -1268,6 +1135,7 @@ impl InternalApp {
         let a = [terrain_aabb_bounds_buffer_barrier];
         let dep = vk::DependencyInfo::default().buffer_memory_barriers(&a);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
+        */
 
 
         let skybox_subresource_range = vk::ImageSubresourceRange::default()
@@ -1313,7 +1181,7 @@ impl InternalApp {
             .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)
-            .image(self.texture.image)
+            .image(self.scene.texture.image)
             .subresource_range(sdf_subresource_range);
         let image_memory_barriers = [skybox_image_barrier, clouds_image_barrier, sdf_image_barrier];
         let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
@@ -1657,8 +1525,8 @@ impl InternalApp {
     pub unsafe fn destroy(mut self) {
         self.device.device_wait_idle().unwrap();
 
-        self.texture.destroy(&self.device, &mut self.allocator);
-        log::info!("destroyed sdf texture");
+        self.scene.destroy(&self.device, &self.acceleration_structure_device, &mut self.allocator);
+        log::info!("destroyed scene");
 
         self.materials_buffer.destroy(&self.device, &mut self.allocator);
         for material in self.materials {
@@ -1685,16 +1553,6 @@ impl InternalApp {
         self.debug_text.destroy(&self.device, &mut self.allocator);
         log::info!("destroyed debug text buffer");
 
-        for x in self.blases {
-            x.destroy(&self.acceleration_structure_device, &self.device, &mut self.allocator);
-        }
-        log::info!("destroyed BLASes");
-
-        self.tlas.destroy(&self.acceleration_structure_device, &self.device, &mut self.allocator);
-        log::info!("destroyed TLAS");
-
-        self.scene_representation_for_sdf_buffer.destroy(&self.device, &mut self.allocator);
-        log::info!("destroyed gpu repr");
 
         log::info!("waiting for all frame in flight fences...");
         let fences = self.frames_in_flight.iter().map(|x| x.end_fence).collect::<Vec<_>>();

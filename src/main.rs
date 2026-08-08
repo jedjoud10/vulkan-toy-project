@@ -25,6 +25,7 @@ mod debug_text;
 mod ray_tracing;
 mod sdf_texture;
 mod shader_compiler;
+mod scene;
 
 use clap::Parser;
 use std::ops::ControlFlow;

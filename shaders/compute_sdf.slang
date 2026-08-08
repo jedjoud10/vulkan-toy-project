@@ -1,87 +1,43 @@
 #language slang 2026
 #include "utils/bindless.slang"
+#include "utils/sdf_iq.slang"
 
-typedef int3 ivec3 
-typedef float3 vec3 
-
-// The MIT License
-// Copyright © 2019 Inigo Quilez
-// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions: The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-// cubic polynomial
-// https://iquilezles.org/articles/smin
-float smin( float a, float b, float k )
-{
-    k *= 6.0;
-    float h = max( k-abs(a-b), 0.0 )/k;
-    return min(a,b) - h*h*h*k*(1.0/6.0);
+struct Primitive {
+    float3 position;
+    uint flags;
 }
-
-// https://iquilezles.org/articles/smin
-float smax( float a, float b, float k )
-{
-    float h = max(k-abs(a-b),0.0);
-    return max(a, b) + h*h*0.25/k;
-}
-
-float sph( ivec3 i, vec3 f, ivec3 c )
-{
-   // random radius at grid vertex i+c
-   float rad = 0.5*hash13(i+c);
-   // distance to sphere at grid vertex i+c
-   return length(f-vec3(c)) - rad; 
-}
-
-float sdBase( vec3 p )
-{
-   ivec3 i = ivec3(floor(p));
-    vec3 f =       fract(p);
-   // distance to the 8 corners spheres
-   return min(min(min(sph(i,f,ivec3(0,0,0)),
-                      sph(i,f,ivec3(0,0,1))),
-                  min(sph(i,f,ivec3(0,1,0)),
-                      sph(i,f,ivec3(0,1,1)))),
-              min(min(sph(i,f,ivec3(1,0,0)),
-                      sph(i,f,ivec3(1,0,1))),
-                  min(sph(i,f,ivec3(1,1,0)),
-                      sph(i,f,ivec3(1,1,1)))));
-}
-
-const static float3x3 matty = float3x3( 0.00, 1.60, 1.20, -1.60, 0.72,-0.96, -1.20,-0.96, 1.28 );
-
-// https://iquilezles.org/articles/fbmsdf/
-float sdFbm( vec3 p, float d )
-{
-   float s = 1.0;
-   for( int i=0; i<4; i++ )
-   {
-       // evaluate new octave
-       float n = s*sdBase(p);
-	
-       // add
-       n = smax(n,d-0.15*s,0.001*s);
-       d = smin(n,d      ,0.001*s);
-	
-       // prepare next octave
-       p = mul(p, matty);
-       s = 0.22*s;
-   }
-   return d;
-}
-
 
 [shader("compute")]
 [numthreads(4, 4, 4)]
 void main(uint3 id: SV_DispatchThreadID) {
-    float scale = 4.0;
-    float3 p = id.xyz * 0.01;
+    float scale = 0.25;
+    
+    float3 p = (id.xyz - 64.0 + 0.5) * scale;
     let uniforms = load_per_frame_uniforms();
+    
+    /*
     float d = sdFbm(p + float3(uniforms.time * 0.01, 0, 0), p.y - 0.6);
 
-    //d = p.y - 0.6;
-    //d = min(d, sdBase(p));
+    d = p.y - 0.6;
+    d = min(d, sdBase(p));
+    */
+
+    float d = 1000;
+
+
+    for (int i = 0; i < 10; i++) {
+        Primitive prim = storage_buffers_readonly[STORAGE_BUFFER_TERRAIN_AABB_BOUNDS].Load<Primitive>(i * 16);
+    
+        float primitive_sdf = sdRoundBox(p - prim.position, 1.0, 0.5);
+        //float primitive_sdf = length(p - prim.position) - 0.8;
+        //float primitive_sdf = sdTorus(p - prim.position, float2(0.5, 0.25));
+        
+        d = smin(d, primitive_sdf, 0.1);
+    }
+
+
     //d = p.y - 64;
-    storage_images_3d_float[SDF_TEXTURE_STORAGE_IMAGE_IDX].Store(id.xyz, d * 100.0);
+    storage_images_3d_float[SDF_TEXTURE_STORAGE_IMAGE_IDX].Store(id.xyz, d * scale);
 }
 
 struct aabb {
