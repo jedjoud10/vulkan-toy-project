@@ -531,8 +531,8 @@ impl InternalApp {
                 self.window.set_fullscreen(None);
             }
         }
-        let left = self.input.get_button(Button::Mouse(MouseButton::Left)).pressed();
-        let right = self.input.get_button(Button::Mouse(MouseButton::Right)).pressed();
+        let left = self.input.get_button(Button::Mouse(MouseButton::Left)).held();
+        let right = self.input.get_button(Button::Mouse(MouseButton::Right)).held();
         if left || right {
             self.click(left);
         }
@@ -705,7 +705,7 @@ impl InternalApp {
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
             vk::DescriptorBufferInfo::default()
-                .buffer(self.scene.scene_representation_for_sdf_buffer.buffer)
+                .buffer(self.scene.scene_blas_aabbs_buffer.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
             vk::DescriptorBufferInfo::default()
@@ -914,7 +914,7 @@ impl InternalApp {
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene_representation_for_sdf), self.scene_representation_for_sdf_buffer.buffer, size_of::<u32>() as u64);
         */
 
-        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.scene_representation_for_sdf), self.scene.scene_representation_for_sdf_buffer.buffer, 0);
+        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.scene_blas_aabbs), self.scene.scene_blas_aabbs_buffer.buffer, 0);
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.primitives), self.scene.primitives_buffer.buffer, 0);
         
         // rebuild TLAS
@@ -1198,15 +1198,35 @@ impl InternalApp {
 
         self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, query_pool_statistics::SKYBOX_PASS_TO_SDF_PASS_QUERY);
 
-        self.device.cmd_bind_pipeline(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.compute_pipelines[COMPUTE_SDF]["main"]
-        );
+        if self.scene.should_update() {
+            self.device.cmd_bind_pipeline(
+                cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                self.compute_pipelines[COMPUTE_SDF]["main"]
+            );
+        
+            let group_count = self.scene.texture.size.map(|x| x.div_ceil(4));
+            self.device.cmd_dispatch(cmd, group_count.w, group_count.h, group_count.d);
 
-        let group_count = self.scene.texture.size.map(|x| x.div_ceil(4));
-        self.device.cmd_dispatch(cmd, group_count.w, group_count.h, group_count.d);
+            let aabbs = [self.scene.modifiable_aabb];
+            let written = scratch_buffer.write_bytes(cast_slice(&aabbs));
 
+            let geometry = ray_tracing::BlasGeometry::AABBs {
+                aabb_buffer_address: written.buffer_device_address_start,
+                max_count: 1
+            };
+
+            ray_tracing::rebuild_blas(
+                &mut ctx,
+                cmd,
+                geometry,
+                &self.scene.blases[2]
+            );
+        }
+
+        /*
+
+        */
         self.device.cmd_bind_pipeline(
             cmd,
             vk::PipelineBindPoint::COMPUTE,

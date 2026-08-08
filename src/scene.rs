@@ -25,6 +25,7 @@ pub struct Primitive {
 
 const INSTANCE_CUSTOM_INDEX_AABB_LOOKUP_INDEX_MASK: u32 = 15;
 const INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK: u32 = 16;
+const INSTANCE_CUSTOM_INDEX_LOOKUP_AABB_USING_PRIMITIVE_INDEX_FLAG_MASK: u32 = 32;
 
 pub struct Scene {
     pub tlas: ray_tracing::TopLevelAccelerationStructure,
@@ -32,8 +33,8 @@ pub struct Scene {
     pub blases: Vec<ray_tracing::AccelerationStructureData>,
     pub blases_instances: Vec<vk::AccelerationStructureInstanceKHR>,
 
-    pub scene_representation_for_sdf_buffer: buffer::Buffer,
-    pub scene_representation_for_sdf: Vec<Aabb>,
+    pub scene_blas_aabbs_buffer: buffer::Buffer,
+    pub scene_blas_aabbs: Vec<Aabb>,
 
     pub primitives_buffer: buffer::Buffer,
     pub primitives: Vec<Primitive>,
@@ -41,10 +42,17 @@ pub struct Scene {
     pub texture: sdf_texture::SdfImage,
 
     pub texture2: sdf_texture::SdfImage,
+
+    tag: bool,
+
+    pub modifiable_aabb: Aabb,
 }
 
 impl Scene {
     pub unsafe fn new(mut ctx: &mut GraphicsContext) -> Self {
+        let texture = sdf_texture::create_voxel_image(ctx, vek::Extent3::new(128, 128, 128), vk::Format::R16_SFLOAT);
+        let texture2 = sdf_texture::create_voxel_image(ctx, vek::Extent3::new(64, 64, 64), vk::Format::R16G16_SFLOAT);
+
         let cmd = others::begin_recording(&mut ctx);
         let mut writer = buffer::begin_buffer_writer(&mut ctx);
         
@@ -78,16 +86,33 @@ impl Scene {
 
         let blas2 = ray_tracing::create_blas(&mut ctx, cmd, geometry);
 
+        let aabbs = [ray_tracing::AccelerationStructureAabb {
+            min: -vek::Vec3::broadcast(0f32),
+            max: vek::Vec3::broadcast(0f32),
+        }];
 
-        let blases = vec![blas1, blas2];
+        let written = writer.write_bytes(cast_slice(&aabbs));
+
+        let geometry = ray_tracing::BlasGeometry::AABBs {
+            aabb_buffer_address: written.buffer_device_address_start,
+            max_count: 1
+        };
+
+        let blas3 = ray_tracing::create_blas(&mut ctx, cmd, geometry);
+
+
+        let blases = vec![blas1, blas2, blas3];
+
+        let subresource_range = vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR).base_mip_level(0).layer_count(1).level_count(1);
+        ctx.device.cmd_clear_color_image(cmd, texture.image, vk::ImageLayout::GENERAL, &vk::ClearColorValue { float32: [1000f32; 4] }, &[subresource_range]);
 
         others::end_recording_and_submit(&mut ctx, cmd);
         buffer::end_buffer_writer(&mut ctx, writer);
         
         let tlas = ray_tracing::pre_create_tlas(&mut ctx);
         
-        let scene_representation_for_sdf_buffer = buffer::create_buffer_default_flags(&mut ctx, size_of::<Aabb>() * 100, "a");
-        let scene_representation_for_sdf = vec![Aabb { min: -vek::Vec3::one(), max: vek::Vec3::one() }, Aabb { min: -vek::Vec3::broadcast(5f32), max: vek::Vec3::broadcast(5f32) }];
+        let scene_blas_aabbs_buffer = buffer::create_buffer_default_flags(&mut ctx, size_of::<Aabb>() * 100, "a");
+        let scene_blas_aabbs = vec![Aabb { min: -vek::Vec3::one(), max: vek::Vec3::one() }, Aabb { min: -vek::Vec3::broadcast(5f32), max: vek::Vec3::broadcast(5f32) }, Aabb { min: -vek::Vec3::broadcast(0f32), max: vek::Vec3::broadcast(0f32) }];
 
         let primitives_buffer = buffer::create_buffer_default_flags(&mut ctx, size_of::<Primitive>() * 100, "a");
         let mut primitives = Vec::<Primitive>::new();
@@ -154,6 +179,15 @@ impl Scene {
             0xFF,
         ));
 
+        blases_instances.push(ray_tracing::instantiate_blas(
+            vek::Quaternion::default(),
+            vek::Vec3::zero(),
+            vek::Vec3::one(),
+            &blases[2],
+            2 & INSTANCE_CUSTOM_INDEX_AABB_LOOKUP_INDEX_MASK,
+            0xFF,
+        ));
+
         
         let mut rng = rand::rngs::SmallRng::seed_from_u64(432);
         for x in -20..20 {
@@ -177,13 +211,10 @@ impl Scene {
                 */
             }
         }
-
-        let texture = sdf_texture::create_voxel_image(ctx, vek::Extent3::new(128, 128, 128), vk::Format::R16_SFLOAT);
-        let texture2 = sdf_texture::create_voxel_image(ctx, vek::Extent3::new(128, 128, 128), vk::Format::R16G16_SFLOAT);
     
         Self {
-            scene_representation_for_sdf,
-            scene_representation_for_sdf_buffer,
+            scene_blas_aabbs,
+            scene_blas_aabbs_buffer,
             tlas,
             blases,
             blases_instances,
@@ -191,12 +222,47 @@ impl Scene {
             texture2,
             primitives,
             primitives_buffer,
+            tag: false,
+            modifiable_aabb: Aabb { min: vek::Vec3::broadcast(100f32), max: vek::Vec3::broadcast(-100f32) },
         }
     }
 
     pub unsafe fn add_primitive(&mut self, ctx: &mut GraphicsContext, pos: vek::Vec3<f32>, add: bool) {
-        self.blases_instances.push(ray_tracing::instantiate_blas(vek::Quaternion::identity(), pos, vek::Vec3::one(), &self.blases[0], 0, 0xFF));
-        self.primitives.push(Primitive { position: pos, flags: if add { 1 } else { 0 } });
+        /*
+        self.blases_instances.push(ray_tracing::instantiate_blas(
+            vek::Quaternion::identity(),
+            pos,
+            vek::Vec3::one(), // cannot do non-uniform scale! cannot do scale in general unless we account for it in the shader side!
+            &self.blases[1],
+            (1 & INSTANCE_CUSTOM_INDEX_AABB_LOOKUP_INDEX_MASK) | INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK,
+            0xFF
+        ));
+        */
+        //self.blases_instances.push(ray_tracing::instantiate_blas(vek::Quaternion::identity(), pos, vek::Vec3::one(), &self.blases[0], 0, 0xFF));
+        //self.primitives.push(Primitive { position: pos, flags: if add { 1 } else { 0 } });
+        if add {
+            self.modifiable_aabb.max = vek::Vec3::partial_max(self.modifiable_aabb.max, pos + 3f32);
+            self.modifiable_aabb.min = vek::Vec3::partial_min(self.modifiable_aabb.min, pos - 3f32);
+            self.scene_blas_aabbs[2] = self.modifiable_aabb;
+        }
+
+        self.tag = add;
+    }
+
+    pub unsafe fn should_update(&mut self) -> bool {
+        /*
+        self.blases_instances.push(ray_tracing::instantiate_blas(
+            vek::Quaternion::identity(),
+            pos,
+            vek::Vec3::one(), // cannot do non-uniform scale! cannot do scale in general unless we account for it in the shader side!
+            &self.blases[1],
+            (1 & INSTANCE_CUSTOM_INDEX_AABB_LOOKUP_INDEX_MASK) | INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK,
+            0xFF
+        ));
+        */
+        //self.blases_instances.push(ray_tracing::instantiate_blas(vek::Quaternion::identity(), pos, vek::Vec3::one(), &self.blases[0], 0, 0xFF));
+        //self.primitives.push(Primitive { position: pos, flags: if add { 1 } else { 0 } });
+        std::mem::take(&mut self.tag)
     }
 
     pub unsafe fn destroy(self, device: &ash::Device, acceleration_structure_device: &ash::khr::acceleration_structure::Device, mut allocator: &mut gpu_allocator::vulkan::Allocator) {
@@ -213,7 +279,7 @@ impl Scene {
         self.tlas.destroy(&acceleration_structure_device, &device, &mut allocator);
         log::info!("destroyed TLAS");
 
-        self.scene_representation_for_sdf_buffer.destroy(&device, &mut allocator);
+        self.scene_blas_aabbs_buffer.destroy(&device, &mut allocator);
         self.primitives_buffer.destroy(device, &mut allocator);
         log::info!("destroyed gpu repr");
     }

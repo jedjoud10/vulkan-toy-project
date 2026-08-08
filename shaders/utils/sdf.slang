@@ -46,7 +46,7 @@ float d(float3 p) {
     }
     */
 
-    sdf = min(sdf, tex_sample(p*4.0));
+    sdf = smin(sdf, tex_sample(p), SMOOTHING_FACTOR_MAP_TEXTURE);
 
     //sdf = smin(sdf, d2(p), 0.5);
     // sdf = min(sdf, tex_sample(p - float3(0, 10, 0)));
@@ -120,6 +120,7 @@ float2 ray_box_get_tmin_tmax(
 
 const static uint INSTANCE_CUSTOM_INDEX_AABB_LOOKUP_INDEX_MASK = 15;
 const static uint INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK = 16;
+const static uint INSTANCE_CUSTOM_INDEX_LOOKUP_AABB_USING_PRIMITIVE_INDEX_FLAG_MASK = 32;
 
 
 void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls, inout float material) {
@@ -135,8 +136,10 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls,
     uint instance_custom_index = sq.CandidateRayInstanceCustomIndex();
 
     // extract flags
-    uint aabb_lookup_index = instance_custom_index & INSTANCE_CUSTOM_INDEX_AABB_LOOKUP_INDEX_MASK;
     bool local_sdf = (instance_custom_index & INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK) != 0;
+    bool aabb_index_from_primitive_index = (instance_custom_index & INSTANCE_CUSTOM_INDEX_LOOKUP_AABB_USING_PRIMITIVE_INDEX_FLAG_MASK) != 0;
+    uint aabb_lookup_index = select(aabb_index_from_primitive_index, sq.CandidateRayPrimitiveIndex(), instance_custom_index & INSTANCE_CUSTOM_INDEX_AABB_LOOKUP_INDEX_MASK);
+
     float local_distance_scaling_factor = select(local_sdf, 0.8, 1.0);
 
     // software AABB test lmao to get min and max dists of ray into  AABB
@@ -223,7 +226,7 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
         float3 point = sq.WorldRayOrigin() + sq.WorldRayDirection() * sq.CommittedRayT();
 
         float3 normal = 0.0;
-        if (sq.CommittedRayInstanceCustomIndex() == 0) {
+        if ((sq.CommittedRayInstanceCustomIndex() & INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK) == 0) {
             DifferentialPair<float3> dp_a = diffPair(point);
             bwd_diff(d)(dp_a, 1.0);
             normal = normalize(dp_a.d); 
@@ -236,7 +239,7 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
             normal = mul(sq.CommittedObjectToWorld3x4(), float4(object_normal, 0)).xyz;
         }
 
-        return TraceRes(i, true, point, ray_dir, normal, sdf_calls, TraceResHitObj(sq.CommittedRayInstanceCustomIndex(), material));
+        return TraceRes(i, true, point, ray_dir, normal, sdf_calls, TraceResHitObj((sq.CommittedRayInstanceCustomIndex() & INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK), material));
     } else {
         return TraceRes(i, false, ray_pos, ray_dir, 0.0, sdf_calls, TraceResHitObj());
     }

@@ -75,22 +75,29 @@ float2 tree2(float3 lp, float instance_index) {
     return float2(d, id);
 }
 
+const static float MAP_SIZE = 32;
+const static float TEXTURE_SIZE = 128;
+const static float SMOOTHING_FACTOR_MAP_TEXTURE = 0.5;
 
 
+// p is in world space [-MAP_SIZE..MAP_SIZE]
 float tex_sample(float3 p) {
-    uint w = 0;
-    uint h = 0;
-    uint d = 0;
-    uint lods = 0;
-    sampled_images_3d[SDF_TEXTURE_SAMPLED_IMAGE_IDX].GetDimensions(0, w, h, d, lods);
+    // [0..MAP_SIZE]
+    p = p * 0.5 + MAP_SIZE * 0.5;
 
-    return sampled_images_3d[SDF_TEXTURE_SAMPLED_IMAGE_IDX].Sample(samplers[LINEAR_UNCAMPLED_SAMPLER_IDX], p / float3(w,h,d) + 0.5).x;
+    // [0..TEXTURE_SIZE]
+    p *= TEXTURE_SIZE / MAP_SIZE;
+
+    // [0..1]
+    p /= TEXTURE_SIZE;
+
+    return sampled_images_3d[SDF_TEXTURE_SAMPLED_IMAGE_IDX].Sample(samplers[LINEAR_UNCAMPLED_SAMPLER_IDX], p).x;
 }
 
 [BackwardDerivativeOf(tex_sample)]
 void bwd_tex_sample(inout DifferentialPair<float3> p_pair, float dOut)
 {
-    float eps = 0.1;
+    float eps = 0.01;
     float x = tex_sample(p_pair.p - float3(eps, 0, 0));
     float y = tex_sample(p_pair.p - float3(0, eps, 0));
     float z = tex_sample(p_pair.p - float3(0, 0, eps));

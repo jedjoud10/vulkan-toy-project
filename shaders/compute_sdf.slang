@@ -10,11 +10,7 @@ struct Primitive {
 
 [shader("compute")]
 [numthreads(4, 4, 4)]
-void main(uint3 id: SV_DispatchThreadID) {
-    float scale = 0.25;
-    
-    float3 p = (id.xyz - 64.0 + 0.5) * scale;
-    let uniforms = load_per_frame_uniforms();
+void main(uint3 id: SV_DispatchThreadID) {   
     
     /*
     float d = sdFbm(p + float3(uniforms.time * 0.01, 0, 0), p.y - 0.6);
@@ -23,13 +19,14 @@ void main(uint3 id: SV_DispatchThreadID) {
     d = min(d, sdBase(p));
     */
 
+    /*
     float d = 1000;
 
 
     for (int i = 0; i < 10; i++) {
         Primitive prim = storage_buffers_readonly[STORAGE_BUFFER_TERRAIN_AABB_BOUNDS].Load<Primitive>(i * 16);
     
-        float primitive_sdf = sdRoundBox(p - prim.position, 1.0, 0.5);
+        float primitive_sdf = sdRoundBox(p - prim.position, 0.6, 0.5);
         //float primitive_sdf = length(p - prim.position) - 0.8;
         //float primitive_sdf = sdTorus(p - prim.position, float2(0.5, 0.25));
         
@@ -39,6 +36,29 @@ void main(uint3 id: SV_DispatchThreadID) {
 
     //d = p.y - 64;
     storage_images_3d_float[SDF_TEXTURE_STORAGE_IMAGE_IDX].Store(id.xyz, d * scale);
+    */
+    
+
+    // [0..TEXTURE_SIZE]
+    float3 p = (id.xyz + 0.5);
+
+    // [-TEXTURE_SIZE..TEXTURE_SIZE]
+    p = p * 2 - TEXTURE_SIZE;
+
+    // [-MAP_SIZE..MAP_SIZE]
+    p *= MAP_SIZE / TEXTURE_SIZE;
+    
+
+    let uniforms = load_per_frame_uniforms();
+    
+
+    float prev = storage_images_3d_float[SDF_TEXTURE_STORAGE_IMAGE_IDX].Load(id.xyz).x;
+
+    float3 pos = uniforms.position.xyz + uniforms.forward.xyz * 5.0;
+
+    prev = min(prev, length(p - pos) - 0.8);
+
+    storage_images_3d_float[SDF_TEXTURE_STORAGE_IMAGE_IDX].Store(id.xyz, prev);
 }
 
 
