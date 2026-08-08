@@ -657,13 +657,17 @@ impl InternalApp {
         let sdf_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
             .image_view(self.scene.texture.image_view)
             .image_layout(vk::ImageLayout::GENERAL);
+        let sdf_image_view_descriptor_image_info2 = vk::DescriptorImageInfo::default()
+            .image_view(self.scene.texture2.image_view)
+            .image_layout(vk::ImageLayout::GENERAL);
         let mut storage_image_infos = vec![
             swapchain_image_view_descriptor_image_info,
             rendered_image_view_descriptor_image_info,
             skybox_image_view_descriptor_image_info,
             ambient_skybox_image_view_descriptor_image_info,
             clouds_image_view_descriptor_image_info,
-            sdf_image_view_descriptor_image_info
+            sdf_image_view_descriptor_image_info,
+            sdf_image_view_descriptor_image_info2
         ];
         
         // add bloom storage image views
@@ -740,12 +744,16 @@ impl InternalApp {
         let sdf_sampled_image_view_descriptor_write_info = vk::DescriptorImageInfo::default()
             .image_view(self.scene.texture.image_view)
             .image_layout(vk::ImageLayout::GENERAL);
+        let sdf_sampled_image_view_descriptor_write_info2 = vk::DescriptorImageInfo::default()
+            .image_view(self.scene.texture2.image_view)
+            .image_layout(vk::ImageLayout::GENERAL);
         let mut sampled_image_infos = vec![
             skybox_sampled_image_view_descriptor_image_info,
             ambient_skybox_sampled_image_view_descriptor_image_info,
             clouds_sampled_image_view_descriptor_image_info,
             rendered_sampled_image_view_descriptor_image_info,
             sdf_sampled_image_view_descriptor_write_info,
+            sdf_sampled_image_view_descriptor_write_info2,
             entire_bloom_sampled_image_view_descriptor_image_info,
         ];
 
@@ -800,9 +808,9 @@ impl InternalApp {
         // TODO: ideally, these would:
         // 1. be dynamically allocated using some sort of per-frame arena with indexing
         // 2. be passed to the shader either using a uniform buffer (since these are constant anyways)
-        const BLOOM_MIPS_STORAGE_IMAGE_START_IDX: u32 = 6; // bloom needs to be last since it is dynamically allocated (can have a dynamic number of bloom mips, depending on screen res)
+        const BLOOM_MIPS_STORAGE_IMAGE_START_IDX: u32 = 7; // bloom needs to be last since it is dynamically allocated (can have a dynamic number of bloom mips, depending on screen res)
         const RENDERED_SAMPLER_IMAGE_IDX: u32 = 3;
-        const BLOOM_MIPS_SAMPLED_IMAGE_START_IDX: u32 = 6; // bloom needs to be last since it is dynamically allocated (can have a dynamic number of bloom mips, depending on screen res)
+        const BLOOM_MIPS_SAMPLED_IMAGE_START_IDX: u32 = 7; // bloom needs to be last since it is dynamically allocated (can have a dynamic number of bloom mips, depending on screen res)
 
         let cmd_buffer_begin_info = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
@@ -1022,7 +1030,7 @@ impl InternalApp {
         let dep = vk::DependencyInfo::default().buffer_memory_barriers(&buffer_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
-        self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, 0);
+        self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, query_pool_statistics::ENTIRE_FRAME_QUERY_START);
 
         self.device.cmd_bind_pipeline(
             cmd,
@@ -1039,14 +1047,6 @@ impl InternalApp {
         );
 
         self.device.cmd_dispatch(cmd, skybox::SKYBOX_RESOLUTION.div_ceil(8), skybox::SKYBOX_RESOLUTION.div_ceil(8), 6);
-
-        self.device.cmd_bind_pipeline(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.compute_pipelines[COMPUTE_SDF]["main"]
-        );
-
-        self.device.cmd_dispatch(cmd, sdf_texture::SIZE.div_ceil(4), sdf_texture::SIZE.div_ceil(4), sdf_texture::SIZE.div_ceil(4));
 
         /*
         self.device.cmd_fill_buffer(cmd, self.terrain_aabb_bounds_buffer.buffer, 0, vk::WHOLE_SIZE, bytemuck::cast(0f32));
@@ -1194,6 +1194,27 @@ impl InternalApp {
         );
 
         self.device.cmd_dispatch(cmd, skybox::AMBIENT_SKYBOX_RESOLUTION, skybox::AMBIENT_SKYBOX_RESOLUTION, 6);
+
+
+        self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, query_pool_statistics::SKYBOX_PASS_TO_SDF_PASS_QUERY);
+
+        self.device.cmd_bind_pipeline(
+            cmd,
+            vk::PipelineBindPoint::COMPUTE,
+            self.compute_pipelines[COMPUTE_SDF]["main"]
+        );
+
+        let group_count = self.scene.texture.size.map(|x| x.div_ceil(4));
+        self.device.cmd_dispatch(cmd, group_count.w, group_count.h, group_count.d);
+
+        self.device.cmd_bind_pipeline(
+            cmd,
+            vk::PipelineBindPoint::COMPUTE,
+            self.compute_pipelines[COMPUTE_SDF]["main2"]
+        );
+
+        let group_count = self.scene.texture2.size.map(|x| x.div_ceil(4));
+        self.device.cmd_dispatch(cmd, group_count.w, group_count.h, group_count.d);
         
         
         let skybox_subresource_range = vk::ImageSubresourceRange::default()
@@ -1273,11 +1294,9 @@ impl InternalApp {
             self.compute_pipelines[COMPUTE_FULLSCREEN]["main"],
         );
 
-        self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, 1);
+        self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, query_pool_statistics::SDF_PASS_TO_MAIN_FRAME_QUERY);
 
         self.device.cmd_dispatch(cmd, size.x.div_ceil(8), size.y.div_ceil(8), 1);
-
-        self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, 2);
 
         // transition rendered image from color attachment to sampled shader read (for bloom passes)
         let rendered_image_barrier = vk::ImageMemoryBarrier2::default()
@@ -1319,6 +1338,9 @@ impl InternalApp {
             src_sampled_img_idx: u32,
             dst_storage_img_idx: u32,
         }
+
+        
+        self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, query_pool_statistics::MAIN_FRAME_TO_POST_PROCESS_QUERY);
 
         // execute bloom downsample passes
         self.device.cmd_bind_pipeline(
@@ -1486,7 +1508,8 @@ impl InternalApp {
         let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
-        self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, 3);
+        
+        self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, query_pool_statistics::ENTIRE_FRAME_QUERY_FINISH);
         self.device.end_command_buffer(cmd).unwrap();
         let now = Instant::now();
         self.last_frame_cpu_cmd_record_duration = now - cpu_cmd_record_start;
@@ -1647,7 +1670,7 @@ unsafe fn compile_all_shaders(
         file_name_without_extension: COMPUTE_FULLSCREEN,
     }, pipeline::PipelineCreateSettings {
         pipeline_debug_name: "compute SDF shader",
-        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["main", "compute_aabbs"] },
+        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["main", "main2", "compute_aabbs"] },
         spec_constants: Some(&spec_constants),
         file_name_without_extension: COMPUTE_SDF,
     }];

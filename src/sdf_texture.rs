@@ -8,13 +8,11 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use crate::{renderer::GraphicsContext, utils::{index_to_offset, offset_to_index}};
 
 
-pub const SIZE: u32 = 128;
-pub const _SIZE: usize = SIZE as usize;
-pub const FORMAT: vk::Format = vk::Format::R16_SFLOAT;
-
 // from https://github.com/jedjoud10/vulkan-toy-project/blob/d3ae7315d94f54a213fa6a757dd69f45cb8eb8b2/src/voxel.rs
 pub unsafe fn create_voxel_image(
-    ctx: &mut GraphicsContext
+    ctx: &mut GraphicsContext,
+    size: vek::Extent3<u32>,
+    format: vk::Format,
 ) -> SdfImage {
     let GraphicsContext {
         device,
@@ -29,11 +27,11 @@ pub unsafe fn create_voxel_image(
 
     let image_create_info = vk::ImageCreateInfo::default()
         .extent(vk::Extent3D {
-            width: SIZE,
-            height: SIZE,
-            depth: SIZE,
+            width: size.w,
+            height: size.h,
+            depth: size.d,
         })
-        .format(FORMAT)
+        .format(format)
         .image_type(vk::ImageType::TYPE_3D)
         .initial_layout(vk::ImageLayout::UNDEFINED)
         .mip_levels(1)
@@ -79,7 +77,7 @@ pub unsafe fn create_voxel_image(
     let image_view_create_info = vk::ImageViewCreateInfo::default()
         .components(vk::ComponentMapping::default())
         .flags(vk::ImageViewCreateFlags::empty())
-        .format(FORMAT)
+        .format(format)
         .image(image)
         .subresource_range(image_subresource_range)
         .view_type(vk::ImageViewType::TYPE_3D);
@@ -101,10 +99,11 @@ pub unsafe fn create_voxel_image(
         image,
         allocation,
         image_view,
+        size,
     }
 }
 
-unsafe fn generate_write_cpu_sdf_to_image(host_image_copy_device: &mut &ash::ext::host_image_copy::Device, image: vk::Image) {
+unsafe fn generate_write_cpu_sdf_to_image(host_image_copy_device: &mut &ash::ext::host_image_copy::Device, image: vk::Image, size: u32) {
     let image_subresource_layers = vk::ImageSubresourceLayers::default()
         .aspect_mask(vk::ImageAspectFlags::COLOR)
         .mip_level(0)
@@ -120,9 +119,9 @@ unsafe fn generate_write_cpu_sdf_to_image(host_image_copy_device: &mut &ash::ext
     // create seeds
     for _ in 0..5 {
         stack.push((0, vek::Vec4::new(
-            rng.random_range(0f32..(SIZE as f32)),
-            rng.random_range(0f32..(SIZE as f32)),
-            rng.random_range(0f32..(SIZE as f32)),
+            rng.random_range(0f32..(size as f32)),
+            rng.random_range(0f32..(size as f32)),
+            rng.random_range(0f32..(size as f32)),
             rng.random_range(15f32..40f32)        
         )));
     }
@@ -167,15 +166,15 @@ unsafe fn generate_write_cpu_sdf_to_image(host_image_copy_device: &mut &ash::ext
     for x in -1..=1 {
         for y in -1..=1 {
             for z in -1..=1 {
-                points.extend(src_points.iter().map(|point| point + vek::Vec4::new(x as f32 * SIZE as f32, y as f32 * SIZE as f32, z as f32 * SIZE as f32, 0f32)));
+                points.extend(src_points.iter().map(|point| point + vek::Vec4::new(x as f32 * size as f32, y as f32 * size as f32, z as f32 * size as f32, 0f32)));
             }
         }
     }
 
     log::info!("calculating SDF");
 
-    let texels = (0..(SIZE*SIZE*SIZE)).into_par_iter().map(|i| {
-        let p = index_to_offset(i as usize, SIZE as usize);
+    let texels = (0..(size*size*size)).into_par_iter().map(|i| {
+        let p = index_to_offset(i as usize, size as usize);
         let fp = p.as_::<f32>();
     
         //let distance = (fp + vek::Vec3::new(0f32, -10f32, 0f32)).magnitude() - 5.0f32;
@@ -192,7 +191,7 @@ unsafe fn generate_write_cpu_sdf_to_image(host_image_copy_device: &mut &ash::ext
     
     let region = vk::MemoryToImageCopyEXT::default()
         .host_pointer(bytes.as_ptr() as *const _)
-        .image_extent(vk::Extent3D::default().height(SIZE).width(SIZE).depth(SIZE))
+        .image_extent(vk::Extent3D::default().height(size).width(size).depth(size))
         .image_subresource(image_subresource_layers);
     let regions = [region];
     
@@ -209,6 +208,7 @@ pub struct SdfImage {
     pub image: vk::Image,
     pub allocation: Allocation,
     pub image_view: vk::ImageView,
+    pub size: vek::Extent3<u32>,
 }
 
 impl SdfImage {

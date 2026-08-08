@@ -137,23 +137,4 @@ float sdFbm( vec3 p, float d )
    return d;
 }
 
-
-const static int TEXTURE_SIZE = 128;
-float tex_sample(float3 p) {
-    return sampled_images_3d[SDF_TEXTURE_SAMPLED_IMAGE_IDX].Sample(samplers[LINEAR_UNCAMPLED_SAMPLER_IDX], p / TEXTURE_SIZE + 0.5).x;
-}
-
-[BackwardDerivativeOf(tex_sample)]
-void bwd_tex_sample(inout DifferentialPair<float3> p_pair, float dOut)
-{
-    float eps = 0.1;
-    float x = tex_sample(p_pair.p - float3(eps, 0, 0));
-    float y = tex_sample(p_pair.p - float3(0, eps, 0));
-    float z = tex_sample(p_pair.p - float3(0, 0, eps));
-    float b = tex_sample(p_pair.p);
-
-
-    p_pair = diffPair<float3>(p_pair.p, (float3(b-x, b-y, b-z) / eps) * dOut);
-}
-
 #endif

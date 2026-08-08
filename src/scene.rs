@@ -26,7 +26,6 @@ pub struct Primitive {
 const INSTANCE_CUSTOM_INDEX_AABB_LOOKUP_INDEX_MASK: u32 = 15;
 const INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK: u32 = 16;
 
-
 pub struct Scene {
     pub tlas: ray_tracing::TopLevelAccelerationStructure,
     
@@ -40,6 +39,8 @@ pub struct Scene {
     pub primitives: Vec<Primitive>,
 
     pub texture: sdf_texture::SdfImage,
+
+    pub texture2: sdf_texture::SdfImage,
 }
 
 impl Scene {
@@ -162,7 +163,7 @@ impl Scene {
 
                 blases_instances.push(ray_tracing::instantiate_blas(
                     vek::Quaternion::rotation_y(rng.random_range(0f32..std::f32::consts::TAU)),
-                    vek::Vec3::new(rng.random_range(-200f32..200f32), 2f32, rng.random_range(-200f32..200f32)),
+                    vek::Vec3::new(rng.random_range(-400f32..400f32), 4f32, rng.random_range(-400f32..400f32)),
                     vek::Vec3::one(), // cannot do non-uniform scale! cannot do scale in general unless we account for it in the shader side!
                     &blases[1],
                     aabb_index | is_local_sdf,
@@ -177,7 +178,8 @@ impl Scene {
             }
         }
 
-        let texture = sdf_texture::create_voxel_image(ctx);
+        let texture = sdf_texture::create_voxel_image(ctx, vek::Extent3::new(128, 128, 128), vk::Format::R16_SFLOAT);
+        let texture2 = sdf_texture::create_voxel_image(ctx, vek::Extent3::new(128, 128, 128), vk::Format::R16G16_SFLOAT);
     
         Self {
             scene_representation_for_sdf,
@@ -186,6 +188,7 @@ impl Scene {
             blases,
             blases_instances,
             texture,
+            texture2,
             primitives,
             primitives_buffer,
         }
@@ -198,6 +201,7 @@ impl Scene {
 
     pub unsafe fn destroy(self, device: &ash::Device, acceleration_structure_device: &ash::khr::acceleration_structure::Device, mut allocator: &mut gpu_allocator::vulkan::Allocator) {
         self.texture.destroy(&device, &mut allocator);
+        self.texture2.destroy(&device, &mut allocator);
         log::info!("destroyed sdf texture");
 
         

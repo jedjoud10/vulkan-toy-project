@@ -1,6 +1,7 @@
 #language slang 2026
 #include "utils/bindless.slang"
 #include "utils/sdf_iq.slang"
+#include "utils/sdf_ext.slang"
 
 struct Primitive {
     float3 position;
@@ -38,6 +39,41 @@ void main(uint3 id: SV_DispatchThreadID) {
 
     //d = p.y - 64;
     storage_images_3d_float[SDF_TEXTURE_STORAGE_IMAGE_IDX].Store(id.xyz, d * scale);
+}
+
+
+[shader("compute")]
+[numthreads(4, 4, 4)]
+void main2(uint3 id: SV_DispatchThreadID) {
+    float3 p = (id.xyz + 0.5);
+    uniforms = load_per_frame_uniforms();
+
+    // divide by texture size, resulting coord in [0..1] space
+    {
+        uint w = 0;
+        uint h = 0;
+        uint d = 0;
+        uint lods = 0;
+        sampled_images_3d[SDF_TEXTURE2_SAMPLED_IMAGE_IDX].GetDimensions(0, w, h, d, lods);
+        p /= float3(w,h,d);
+    }
+
+    // remap to [-1..1]
+    p = p*2.0 - 1.0;
+
+    // remap to -TREE_SCALE..TREE_SCALE
+    p *= TREE_SCALE;
+
+    p *= TREE_SCALE2;
+
+    float2 distance_and_material = tree2(p + float3(0, 4, 0), 0);
+
+    // accomodate distance factor
+    float dmult = TREE_SCALE2;
+
+    float2 scaled = distance_and_material / float2(dmult, 1.0);
+
+    storage_images_3d[SDF_TEXTURE2_STORAGE_IMAGE_IDX].Store(id.xyz, float4(scaled, 0));
 }
 
 struct aabb {

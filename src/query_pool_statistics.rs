@@ -4,7 +4,7 @@ use ash::vk;
 
 use crate::per_frame_data;
 
-pub const NUM_TIMESTAMP_QUERIES: usize = 4;
+pub const NUM_TIMESTAMP_QUERIES: usize = 5;
 pub const BUFFER_SIZE: usize = 8;
 
 struct SingleRegion {
@@ -15,11 +15,13 @@ struct SingleRegion {
 }
 
 impl SingleRegion {
-    pub fn new(name: &'static str, start_query_index: usize, end_query_index: usize) -> Self {
+    pub fn new(name: &'static str, start_query_index: u32, end_query_index: u32) -> Self {
         Self {
             name,
-            start_query_index,
-            end_query_index,
+
+            // we do it this way so that the constants are u32, which we can pass directly to vk calls without casting. makes it neater
+            start_query_index: start_query_index as usize,
+            end_query_index: end_query_index as usize,
             buffer: Default::default(),
         }
     }
@@ -34,19 +36,35 @@ impl SingleRegion {
     }
 }
 
+pub const ENTIRE_FRAME_QUERY_START: u32 = 0;
+
+pub const SKYBOX_PASS_TO_SDF_PASS_QUERY: u32 = 1;
+
+pub const SDF_PASS_TO_MAIN_FRAME_QUERY: u32 = 2;
+
+pub const MAIN_FRAME_TO_POST_PROCESS_QUERY: u32 = 3;
+
+pub const ENTIRE_FRAME_QUERY_FINISH: u32 = 4;
+
+
 pub struct QueryPoolStatistics {
-    regions: [SingleRegion; 4]
+    regions: [SingleRegion; 5]
 }
 
 impl QueryPoolStatistics {
     pub fn new() -> Self {
-        let entire_frame = SingleRegion::new("entire frame", 0, 3);
-        let skybox_region = SingleRegion::new("skybox pass", 0, 1);
-        let compute_region = SingleRegion::new("main frame pass", 1, 2);
-        let bloom_region = SingleRegion::new("postprocess pass", 2, 3);
+        let entire_frame = SingleRegion::new("entire frame", ENTIRE_FRAME_QUERY_START, ENTIRE_FRAME_QUERY_FINISH);
+
+        let skybox_region = SingleRegion::new("skybox pass", ENTIRE_FRAME_QUERY_START, SKYBOX_PASS_TO_SDF_PASS_QUERY);
+
+        let sdf_generation_pass = SingleRegion::new("SDF generation pass", SKYBOX_PASS_TO_SDF_PASS_QUERY, SDF_PASS_TO_MAIN_FRAME_QUERY);
+
+        let compute_region = SingleRegion::new("main frame pass", SDF_PASS_TO_MAIN_FRAME_QUERY, MAIN_FRAME_TO_POST_PROCESS_QUERY);
+
+        let bloom_region = SingleRegion::new("postprocess pass", MAIN_FRAME_TO_POST_PROCESS_QUERY, ENTIRE_FRAME_QUERY_FINISH);
     
         Self {
-            regions: [entire_frame, skybox_region, compute_region, bloom_region]
+            regions: [entire_frame, skybox_region, sdf_generation_pass, compute_region, bloom_region]
         }
     }
 

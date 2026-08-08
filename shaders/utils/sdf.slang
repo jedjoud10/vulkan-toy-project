@@ -5,6 +5,7 @@
 #include "noises.slang"
 #include "bindless.slang"
 #include "sdf_iq.slang"
+#include "sdf_ext.slang"
 
 [Differentiable]
 float d(float3 p) {
@@ -50,95 +51,6 @@ float d(float3 p) {
     //sdf = smin(sdf, d2(p), 0.5);
     // sdf = min(sdf, tex_sample(p - float3(0, 10, 0)));
     return sdf;
-}
-
-[Differentiable]
-float tree1(float3 lp) {
-    float3 rotated = lp.xzy;
-    
-    // base trunk
-    float d = sdHexPrism(rotated - float3(0, 0, -3.0), float2(0.5, 5));
-    
-    d = min(d, sdRoundBox(rotated - float3(0, 0, 0.5) + float3(sin(uniforms.time - 3.213), cos(uniforms.time + 4.534), 0) * 0.1, float3(2.0, 2.0, 0.5), 0.2));
-    
-    d = min(d, sdRoundBox(rotated - float3(0, 0, 4.2) + float3(sin(uniforms.time), cos(uniforms.time), 0) * 0.1, float3(1.5, 1.5, 3.5), 0.2));
-    /*
-    d = min(d, sdHexPrism(rotated - float3(0, 0, 0.5) + float3(sin(uniforms.time - 3.213), cos(uniforms.time + 4.534), 0) * 0.1, float2(2.0, 0.5)));
-    d = min(d, sdHexPrism(rotated - float3(0, 0, 4.5) + float3(sin(uniforms.time), cos(uniforms.time), 0) * 0.1, float2(1.5, 3.5)));
-    */
-    // d = min(d, sdHexPrism(rotated - float3(0, 0, 1.1), float2(0.6, 2.0)));
-
-    // d += noise(rotated * 2.2) * 0.1;
-
-    return d;
-}
-
-[Differentiable]
-float2 tree2(float3 lp, float instance_index) {
-    // half extent
-    float box_height = 4;
-    
-    // branch space
-    float3 bp = lp - float3(0, -2.0 * box_height, 0);
-    float3 bp2 = lp - float3(0, -2.0 * box_height, 0);
-    
-    float d = 10000;
-    float thickness = 0.8;
-    
-    float3x3 local_rot = AngleAxis3x3(0.2 + sin(instance_index) * 0.03, float3(1, 0, -1));
-
-    for (int i = 0; i < 4; i++) {
-        // non smooth abs for branches
-        bp.xz = abs(bp.xz);
-
-        // smooth abs for leaves
-        bp2.xz = sqrt(pow(bp2.xz, 2.0) + 0.35);
-
-        // box is center at (0, 1, 0) in local branch space
-        // the origin (bp = (0, 0, 0)) is the BOTTOM of the box
-        d = min(d, sdBox(bp - float3(0, box_height, 0), float3(thickness, box_height, thickness))) - noise(bp * 2.0 * float3(1, 3, 1)) * 0.02;
-
-        // move UP to reach end of box
-        bp -= float3(0, 2 * box_height, 0);
-        bp2 -= float3(0, 2 * box_height, 0);
-
-        // rotate space
-        bp = mul(bp, local_rot);
-        bp2 = mul(bp2, local_rot);
-        
-        // make next branches smaller and shorter
-        thickness *= 0.8  + cos(34.2 * instance_index) * 0.1;
-        box_height *= 0.6 + cos(3.2  * instance_index) * 0.1;
-    }
-
-    float id = 0;
-
-    float sphere = length(bp2 - float3(0, 2, 0)) - 2.0;
-    if (sphere < d) {
-        d = sphere;
-        id = 1;
-    }
-    
-    //d = smin(d, , 0.2);
-
-    return float2(d, id);
-}
-
-
-[Differentiable]
-float2 cheese(float3 lp, float instance_index) {
-    float scale = abs(sin(instance_index * 432.32)) * 10;
-    /*
-    float d = sdRoundBox(lp, float3(9, 15, 9), 1.5);
-    d = max(d, -tex_sample(lp * scale + uniforms.time) / scale);
-    return float2(d, 1.0);
-    */
-    return float2(tex_sample(lp * scale + uniforms.time) / scale, 0);
-}
-
-[Differentiable]
-float2 terrain(float3 lp, float instance_index) {
-    return float2(tex_sample(lp), 0);
 }
 
 struct Primitive {
@@ -225,6 +137,7 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls,
     // extract flags
     uint aabb_lookup_index = instance_custom_index & INSTANCE_CUSTOM_INDEX_AABB_LOOKUP_INDEX_MASK;
     bool local_sdf = (instance_custom_index & INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK) != 0;
+    float local_distance_scaling_factor = select(local_sdf, 0.8, 1.0);
 
     // software AABB test lmao to get min and max dists of ray into  AABB
     float3 min_bounds = storage_buffers_readonly[STORAGE_BUFFER_SCENE_REPR_BUFFER].Load<float3>(aabb_lookup_index * 3*4*2);
@@ -255,11 +168,10 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls,
             // atp just duplicate trace_inner to a "local" version that takes in a local SDF instead of global one
             float3 local_position = mul(sq.CandidateWorldToObject3x4(), float4(point, 1)).xyz;
             float instance_index = sq.CandidateInstanceIndex();
-            closest_distance_and_material = tree2(local_position * 2.5, instance_index) / 2.5;
+            // closest_distance_and_material = tree2(local_position * 2.5, instance_index) / 2.5;
+            closest_distance_and_material = sample_tree(local_position);
         }
         sdf_calls += 1;
-
-        closest_distance_and_material.x = max(closest_distance_and_material.x, -(length(point - uniforms.position.xyz) - 4));
 
         // closest_distance_and_material.x = max(closest_distance_and_material.x, -(length(point - (uniforms.position.xyz + uniforms.forward.xyz * 10)) - 2));
         // check if we got close enough to the surface
@@ -269,7 +181,7 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls,
             return;
         }
 
-        float step_size = closest_distance_and_material.x * DISTANCE_SCALING_FACTOR;
+        float step_size = closest_distance_and_material.x * DISTANCE_SCALING_FACTOR * local_distance_scaling_factor;
         point += rd * step_size;
         distance += step_size;
     }
@@ -318,7 +230,7 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
         } else {
             DifferentialPair<float3> dp_a = diffPair(mul(sq.CommittedWorldToObject3x4(), float4(point, 1)).xyz);
             DifferentialPair<float> dp_i = diffPair(sq.CommittedInstanceIndex());
-            bwd_diff(terrain)(dp_a, dp_i, 1.0);  
+            bwd_diff(sample_tree)(dp_a, 1.0);  
             
             float3 object_normal = normalize(dp_a.d);
             normal = mul(sq.CommittedObjectToWorld3x4(), float4(object_normal, 0)).xyz;
