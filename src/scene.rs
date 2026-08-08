@@ -162,7 +162,7 @@ impl Scene {
 
                 blases_instances.push(ray_tracing::instantiate_blas(
                     vek::Quaternion::rotation_y(rng.random_range(0f32..std::f32::consts::TAU)),
-                    vek::Vec3::new(rng.random_range(-200f32..200f32), 0f32, rng.random_range(-200f32..200f32)),
+                    vek::Vec3::new(rng.random_range(-200f32..200f32), 2f32, rng.random_range(-200f32..200f32)),
                     vek::Vec3::one(), // cannot do non-uniform scale! cannot do scale in general unless we account for it in the shader side!
                     &blases[1],
                     aabb_index | is_local_sdf,

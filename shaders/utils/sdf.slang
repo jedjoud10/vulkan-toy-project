@@ -259,7 +259,7 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls,
         }
         sdf_calls += 1;
 
-        closest_distance_and_material.x = max(closest_distance_and_material.x, -(length(uniforms.position) - 4));
+        closest_distance_and_material.x = max(closest_distance_and_material.x, -(length(point - uniforms.position.xyz) - 4));
 
         // closest_distance_and_material.x = max(closest_distance_and_material.x, -(length(point - (uniforms.position.xyz + uniforms.forward.xyz * 10)) - 2));
         // check if we got close enough to the surface
