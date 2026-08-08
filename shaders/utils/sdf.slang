@@ -8,7 +8,7 @@
 #include "sdf_ext.slang"
 
 [Differentiable]
-float d(float3 p) {
+float2 d(float3 p) {
     float t = uniforms.time;
 
     // float s = length(p - 10*clamp(round(p/10.0), -float3(100, 1, 100), float3(100, 1, 100))) - 2;
@@ -46,11 +46,19 @@ float d(float3 p) {
     }
     */
 
-    sdf = smin(sdf, tex_sample(p), SMOOTHING_FACTOR_MAP_TEXTURE);
+    float other = tex_sample(p);
+    
+    float mat = 0.0;
+    
+    if (other < sdf) {
+        mat = 1.0;    
+    }
+
+    sdf = smin(sdf, other, SMOOTHING_FACTOR_MAP_TEXTURE);
 
     //sdf = smin(sdf, d2(p), 0.5);
     // sdf = min(sdf, tex_sample(p - float3(0, 10, 0)));
-    return sdf;
+    return float2(sdf, mat);
 }
 
 struct Primitive {
@@ -89,9 +97,9 @@ void capture_performance_sdf_call() {
     }
 }
 
-
 #define HWRT_BOUNDS_ACCEL
 #define HWRT_BOUNDS_ACCEL_SHADOWS
+#define SHADOWS
 
 static const uint MAX_ITERS = 256;
 static const float MAX_DISTANCE = 10000;
@@ -165,7 +173,7 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls,
     
         float2 closest_distance_and_material = 0;
         if (!local_sdf) {
-            closest_distance_and_material = float2(d(point), 0);
+            closest_distance_and_material = d(point);
         } else {
             // TODO: it would be smarter to convert the point to object space first and trace using that
             // atp just duplicate trace_inner to a "local" version that takes in a local SDF instead of global one
@@ -278,6 +286,10 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
 
 
 ShadowTraceRes shadow_trace(float3 ray_pos, float3 ray_dir) {
+#ifndef SHADOWS
+    return ShadowTraceRes(1.0);
+#endif
+
     capture_performance_query_trace_ray();
 
 #ifdef HWRT_BOUNDS_ACCEL_SHADOWS

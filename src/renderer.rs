@@ -155,6 +155,7 @@ pub struct InternalApp {
 
     // debug settings
     debug_type: u32,
+    click_type: u32,
     wireframe: bool,
     toggles_bitmask: u32,
     debug_text: debug_text::DebugText,
@@ -380,6 +381,7 @@ impl InternalApp {
 
             last_frame_cpu_cmd_record_duration: Default::default(),
             frame_count: 0,
+            click_type: 0,
             input: Default::default(),
             movement: Movement::new(),
             window,
@@ -425,28 +427,6 @@ impl InternalApp {
             acceleration_structure_device,
             host_image_copy_device,
         }
-    }
-
-    pub unsafe fn click(&mut self, add: bool) {
-        let position = self.movement.forward() * 5.0f32 + self.movement.position;
-
-        let mut ctx = GraphicsContext {
-            device: &self.device,
-            pool: self.pool,
-            queue: self.queue,
-            queue_family_index: self.queue_family_index,
-            mesh_shader_device: &self.mesh_shader_device,
-            extended_dynamic_state3_device: &self.extended_dynamic_state3_device,
-            acceleration_structure_device: &self.acceleration_structure_device,
-            host_image_copy_device: &self.host_image_copy_device,
-            allocator: &mut self.allocator,
-            debug_marker: &self.debug_marker,
-            main_descriptor_set_layout: self.main_descriptor_set_layout,
-            main_pipeline_layout: self.main_pipeline_layout,
-            descriptor_pool: self.descriptor_pool,
-        };
-
-        self.scene.add_primitive(&mut ctx, position, add);
     }
 
     pub unsafe fn recreate_swapchain(&mut self) {
@@ -531,16 +511,14 @@ impl InternalApp {
                 self.window.set_fullscreen(None);
             }
         }
-        let left = self.input.get_button(Button::Mouse(MouseButton::Left)).held();
-        let right = self.input.get_button(Button::Mouse(MouseButton::Right)).held();
-        if left || right {
-            self.click(left);
-        }
         if self.input.get_button(Button::Keyboard(KeyCode::KeyH)).pressed() {
             self.debug_type = (self.debug_type as i32 + 1).rem_euclid(8) as u32;
         }
         if self.input.get_button(Button::Keyboard(KeyCode::KeyG)).pressed() {
             self.debug_type = (self.debug_type as i32 - 1).rem_euclid(8) as u32;
+        }
+        if self.input.get_button(Button::Keyboard(KeyCode::Tab)).pressed() {
+            self.click_type = (self.click_type + 1).rem_euclid(3);
         }
         if self.input.get_button(Button::Keyboard(KeyCode::KeyT)).pressed() {
             self.wireframe = !self.wireframe; 
@@ -855,6 +833,7 @@ impl InternalApp {
 
         dbgtext_writeln!(&mut self.debug_text, "pos: {:.2}", self.movement.position);
         dbgtext_writeln!(&mut self.debug_text, "debug type: {}", self.debug_type);
+        dbgtext_writeln!(&mut self.debug_text, "click type: {}", self.click_type);
         dbgtext_writeln!(&mut self.debug_text, "toggles bitmask: {:#032b}", self.toggles_bitmask);
         dbgtext_writeln!(&mut self.debug_text, "wireframe: {}", self.wireframe);
         dbgtext_writeln!(&mut self.debug_text, "updating frustum: {}", self.movement.update_frustum);
@@ -997,7 +976,7 @@ impl InternalApp {
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)
             .size(vk::WHOLE_SIZE);
-        let materials_gpu_buffer = vk::BufferMemoryBarrier2::default()
+        let materials_gpu_buffer_barrier = vk::BufferMemoryBarrier2::default()
             .buffer(self.materials_buffer.buffer)
             .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
             .dst_access_mask(vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::MEMORY_WRITE)
@@ -1006,9 +985,8 @@ impl InternalApp {
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)
             .size(vk::WHOLE_SIZE);
-        /*
-        let scene_repr_gpu_buffer = vk::BufferMemoryBarrier2::default()
-            .buffer(self.scene_representation_for_sdf_buffer.buffer)
+        let scene_aabbs_buffer_barrier = vk::BufferMemoryBarrier2::default()
+            .buffer(self.scene.scene_blas_aabbs_buffer.buffer)
             .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
             .dst_access_mask(vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::MEMORY_WRITE)
             .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
@@ -1016,8 +994,16 @@ impl InternalApp {
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)
             .size(vk::WHOLE_SIZE);
-        */
-        let asdfad = vk::BufferMemoryBarrier2::default()
+        let scene_primitives_buffer_barrier = vk::BufferMemoryBarrier2::default()
+            .buffer(self.scene.primitives_buffer.buffer)
+            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .size(vk::WHOLE_SIZE);
+        let counters_of_various_types_buffer_barrier = vk::BufferMemoryBarrier2::default()
             .buffer(self.counters_of_various_types.buffer)
             .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
             .dst_access_mask(vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::MEMORY_WRITE)
@@ -1026,7 +1012,7 @@ impl InternalApp {
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)
             .size(vk::WHOLE_SIZE);
-        let buffer_memory_barriers = [uniform_buffer_barrier, debug_text_buffer_barrier, materials_gpu_buffer, /*scene_repr_gpu_buffer,*/ asdfad];
+        let buffer_memory_barriers = [uniform_buffer_barrier, debug_text_buffer_barrier, materials_gpu_buffer_barrier, scene_aabbs_buffer_barrier, scene_primitives_buffer_barrier, counters_of_various_types_buffer_barrier];
         let dep = vk::DependencyInfo::default().buffer_memory_barriers(&buffer_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
@@ -1172,18 +1158,7 @@ impl InternalApp {
             .dst_queue_family_index(self.queue_family_index)
             .image(self.skybox.clouds_image)
             .subresource_range(clouds_subresource_range);
-        let sdf_image_barrier = vk::ImageMemoryBarrier2::default()
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
-            .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
-            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-            .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(self.queue_family_index)
-            .image(self.scene.texture.image)
-            .subresource_range(sdf_subresource_range);
-        let image_memory_barriers = [skybox_image_barrier, clouds_image_barrier, sdf_image_barrier];
+        let image_memory_barriers = [skybox_image_barrier, clouds_image_barrier];
         let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
@@ -1198,30 +1173,83 @@ impl InternalApp {
 
         self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, query_pool_statistics::SKYBOX_PASS_TO_SDF_PASS_QUERY);
 
-        if self.scene.should_update() {
-            self.device.cmd_bind_pipeline(
-                cmd,
-                vk::PipelineBindPoint::COMPUTE,
-                self.compute_pipelines[COMPUTE_SDF]["main"]
-            );
-        
-            let group_count = self.scene.texture.size.map(|x| x.div_ceil(4));
-            self.device.cmd_dispatch(cmd, group_count.w, group_count.h, group_count.d);
+        let left = self.input.get_button(Button::Mouse(MouseButton::Left)).pressed();
+        let right = self.input.get_button(Button::Mouse(MouseButton::Right)).pressed();
 
-            let aabbs = [self.scene.modifiable_aabb];
-            let written = scratch_buffer.write_bytes(cast_slice(&aabbs));
+        if  left || right {
+            let pos = self.movement.position + self.movement.forward() * 5f32;
+            if self.click_type == 0 {
+                let data = if left { 1u32 } else { 0 }; 
 
-            let geometry = ray_tracing::BlasGeometry::AABBs {
-                aabb_buffer_address: written.buffer_device_address_start,
-                max_count: 1
-            };
 
-            ray_tracing::rebuild_blas(
-                &mut ctx,
-                cmd,
-                geometry,
-                &self.scene.blases[2]
-            );
+                self.scene.modifiable_aabb.max = vek::Vec3::partial_max(self.scene.modifiable_aabb.max, pos + 3f32);
+                self.scene.modifiable_aabb.min = vek::Vec3::partial_min(self.scene.modifiable_aabb.min, pos - 3f32);
+                self.scene.scene_blas_aabbs[2] = self.scene.modifiable_aabb;
+                
+                self.device.cmd_bind_pipeline(
+                    cmd,
+                    vk::PipelineBindPoint::COMPUTE,
+                    self.compute_pipelines[COMPUTE_SDF]["main"]
+                );
+
+                self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytemuck::bytes_of(&[data]));
+            
+                let group_count = self.scene.texture.size.map(|x| x.div_ceil(4));
+                self.device.cmd_dispatch(cmd, group_count.w, group_count.h, group_count.d);
+
+                let aabbs = [self.scene.modifiable_aabb];
+                let written = scratch_buffer.write_bytes(cast_slice(&aabbs));
+
+                let geometry = ray_tracing::BlasGeometry::AABBs {
+                    aabb_buffer_address: written.buffer_device_address_start,
+                    max_count: 1
+                };
+
+                let sdf_image_barrier = vk::ImageMemoryBarrier2::default()
+                    .old_layout(vk::ImageLayout::GENERAL)
+                    .new_layout(vk::ImageLayout::GENERAL)
+                    .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+                    .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+                    .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                    .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                    .src_queue_family_index(self.queue_family_index)
+                    .dst_queue_family_index(self.queue_family_index)
+                    .image(self.scene.texture.image)
+                    .subresource_range(sdf_subresource_range);
+                let scene_aabbs_buffer_barrier = vk::BufferMemoryBarrier2::default()
+                    .buffer(self.scene.scene_blas_aabbs_buffer.buffer)
+                    .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
+                    .dst_access_mask(vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::MEMORY_WRITE)
+                    .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+                    .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+                    .src_queue_family_index(self.queue_family_index)
+                    .dst_queue_family_index(self.queue_family_index)
+                    .size(vk::WHOLE_SIZE);
+                let image_memory_barriers = [skybox_image_barrier, clouds_image_barrier, sdf_image_barrier];
+                let buffer_memory_barriers = [scene_aabbs_buffer_barrier];
+                let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers).buffer_memory_barriers(&buffer_memory_barriers);
+                self.device.cmd_pipeline_barrier2(cmd, &dep);
+
+                ray_tracing::rebuild_blas(
+                    &mut ctx,
+                    cmd,
+                    geometry,
+                    &self.scene.blases[2]
+                );
+            } else if self.click_type == 1 {
+                let aabb_index = 1 & crate::scene::INSTANCE_CUSTOM_INDEX_AABB_LOOKUP_INDEX_MASK;
+                let is_local_sdf = crate::scene::INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK;
+
+                self.scene.blases_instances.push(ray_tracing::instantiate_blas(
+                    vek::Quaternion::identity(),
+                    pos,
+                    vek::Vec3::one(), // cannot do non-uniform scale! cannot do scale in general unless we account for it in the shader side!
+                    &self.scene.blases[1],
+                    aabb_index | is_local_sdf,
+                    0xFF
+                ));
+            }
+            
         }
 
         /*
@@ -1595,6 +1623,10 @@ impl InternalApp {
         
         self.debug_text.destroy(&self.device, &mut self.allocator);
         log::info!("destroyed debug text buffer");
+
+        
+        self.counters_of_various_types.destroy(&self.device, &mut self.allocator);
+        log::info!("destroyed various counters");
 
 
         log::info!("waiting for all frame in flight fences...");

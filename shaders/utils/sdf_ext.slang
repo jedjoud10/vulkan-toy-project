@@ -4,6 +4,12 @@
 #include "sdf_iq.slang"
 
 [Differentiable]
+float dsmoothstep(float a, float b, float x) {
+    let k = saturate((x - a) / (b - a));
+    return 3*k*k - 2*k*k*k;
+}
+
+[Differentiable]
 float tree1(float3 lp) {
     float3 rotated = lp.xzy;
     
@@ -76,8 +82,8 @@ float2 tree2(float3 lp, float instance_index) {
 }
 
 const static float MAP_SIZE = 32;
-const static float TEXTURE_SIZE = 128;
-const static float SMOOTHING_FACTOR_MAP_TEXTURE = 0.5;
+const static float TEXTURE_SIZE = 256;
+const static float SMOOTHING_FACTOR_MAP_TEXTURE = 0.05;
 
 
 // p is in world space [-MAP_SIZE..MAP_SIZE]
@@ -97,7 +103,7 @@ float tex_sample(float3 p) {
 [BackwardDerivativeOf(tex_sample)]
 void bwd_tex_sample(inout DifferentialPair<float3> p_pair, float dOut)
 {
-    float eps = 0.01;
+    float eps = 0.1;
     float x = tex_sample(p_pair.p - float3(eps, 0, 0));
     float y = tex_sample(p_pair.p - float3(0, eps, 0));
     float z = tex_sample(p_pair.p - float3(0, 0, eps));

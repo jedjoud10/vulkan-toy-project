@@ -238,6 +238,10 @@ public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) 
 				diffuse = sample_triplanar(index, world, normal);
 				arm = sample_triplanar(index+1, world, normal);
 				normal = sample_triplanar_normal(index+2, world, normal);
+			
+				diffuse = lerp(diffuse, 1.0, res.data.material);
+				arm = lerp(arm, float3(1, 0.0, 1.0), res.data.material);
+				normal = normalize(lerp(normal, res.normal, res.data.material));
 			}
 
 

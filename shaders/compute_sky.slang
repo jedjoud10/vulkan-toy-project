@@ -102,7 +102,7 @@ void write_skybox(uint3 id: SV_DispatchThreadID, uint3 gid: SV_GroupID) {
 
     
     float3 ray_dir = uv_coords_to_ray_dir(uv, gid.z);
-    float3 sky_colour = sky(sun, ray_dir, 0.0, false, true);
+    float3 sky_colour = sky(sun, ray_dir, 0.0, true, true);
     (storage_images_array[SKYBOX_STORAGE_IMAGE_IDX]).Store(id, float4(sky_colour, 0));
 }
 

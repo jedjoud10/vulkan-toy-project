@@ -10,7 +10,7 @@ struct Primitive {
 
 [shader("compute")]
 [numthreads(4, 4, 4)]
-void main(uint3 id: SV_DispatchThreadID) {   
+void main(uint3 id: SV_DispatchThreadID, uniform uint add) {   
     
     /*
     float d = sdFbm(p + float3(uniforms.time * 0.01, 0, 0), p.y - 0.6);
@@ -56,7 +56,14 @@ void main(uint3 id: SV_DispatchThreadID) {
 
     float3 pos = uniforms.position.xyz + uniforms.forward.xyz * 5.0;
 
-    prev = min(prev, length(p - pos) - 0.8);
+    float sdf = sdRoundBox(p - pos, 0.8, 0.2);
+    if (add == 1) {
+        prev = min(prev, sdf);
+    } else {
+        prev = max(prev, -sdf);
+    }
+
+    //prev += 0.001;
 
     storage_images_3d_float[SDF_TEXTURE_STORAGE_IMAGE_IDX].Store(id.xyz, prev);
 }

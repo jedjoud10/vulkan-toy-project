@@ -37,7 +37,7 @@ pub unsafe fn create_voxel_image(
         .mip_levels(1)
         .sharing_mode(vk::SharingMode::EXCLUSIVE)
         .flags(vk::ImageCreateFlags::empty())
-        .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::HOST_TRANSFER_EXT)
+        .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::HOST_TRANSFER_EXT)
         .queue_family_indices(&queue_family_indices)
         .samples(vk::SampleCountFlags::TYPE_1)
         .array_layers(1);

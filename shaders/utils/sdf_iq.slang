@@ -22,6 +22,16 @@ float smin( float a, float b, float k )
     return min(a,b) - h*h*h*k*(1.0/6.0);
 }
 
+// https://iquilezles.org/articles/smin/
+[Differentiable]
+// cubic polynomial
+float smin( float a, float b, float k, out float h)
+{
+    k *= 6.0;
+    h = max( k-abs(a-b), 0.0 )/k;
+    return min(a,b) - h*h*h*k*(1.0/6.0);
+}
+
 // https://iquilezles.org/articles/distfunctions/
 [Differentiable]
 float sdOctahedron( vec3 p, float s )
