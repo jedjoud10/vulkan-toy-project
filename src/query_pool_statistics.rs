@@ -98,7 +98,7 @@ impl QueryPoolStatistics {
     }
 
     pub fn get_compute_region_duration(&self) -> f64 {
-        self.regions[2].get_average_in_ms()
+        self.regions[3].get_average_in_ms()
     }
 }
 
