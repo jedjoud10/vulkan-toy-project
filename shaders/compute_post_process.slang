@@ -81,10 +81,10 @@ float3 aces(float3 x) {
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void write_swapchain_image(uint3 id: SV_DispatchThreadID) {
+void write_swapchain_image(uint3 id: SV_DispatchThreadID, uniform PostProcessPushConstants pc) {
     let pre_compose = storage_images[RENDERED_STORAGE_IMAGE_IDX];
     let swapchain_image = storage_images[SWAPCHAIN_STORAGE_IMAGE_IDX];
-    let entire_bloom_image = sampled_images[ENTIRE_BLOOM_SAMPLED_IMAGE_IDX];
+    let entire_bloom_image = sampled_images[pc.entire_bloom_sampled_image_idx];
     let uniforms = storage_buffers_readonly[UNIFORM_BUFFER_THINGY_IDX].Load<UniformThing>(0);
 
 
