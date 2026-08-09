@@ -24,6 +24,12 @@ pub struct PerFrameUniformData {
     pub time: f32,
 }
 
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+pub struct PostProcessPushConstants {
+    pub bloom_sampled_images_entire_bloom_image_view_start: u32,
+}
+
 pub struct SingleEntryPointWrapper {
     pub pipeline: vk::Pipeline,
     pub debug_pipeline_name: &'static str,

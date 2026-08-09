@@ -5,7 +5,7 @@ use bytemuck::{bytes_of, cast_slice};
 use gpu_allocator::vulkan::{Allocation, Allocator};
 use image::{EncodableLayout, GenericImage, GenericImageView};
 
-use crate::{buffer, others, renderer::GraphicsContext, texture::{Texture, create_texture}};
+use crate::{buffer, others, per_frame_data, renderer::GraphicsContext, texture::{Texture, create_texture}};
 
 pub struct Material {
     pub albedo_texture: Texture,
@@ -100,16 +100,11 @@ impl Material {
         self.normal_texture.destroy(device, allocator);
     }
     
-    pub fn add_per_frame_sampled_images(&mut self, sampled_image_infos: &mut Vec<vk::DescriptorImageInfo>) {
-        self.base_index = sampled_image_infos.len() as u32;
-        sampled_image_infos.push(vk::DescriptorImageInfo::default()
-            .image_view(self.albedo_texture.image_view)
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL));
-        sampled_image_infos.push(vk::DescriptorImageInfo::default()
-            .image_view(self.arm_texture.image_view)
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL));
-        sampled_image_infos.push(vk::DescriptorImageInfo::default()
-            .image_view(self.normal_texture.image_view)
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL));
+    pub fn add_per_frame_sampled_images(&mut self, sampled_image_infos: &mut per_frame_data::PerFrameAllocator) {
+        self.base_index = sampled_image_infos.current() as u32;
+
+        sampled_image_infos.push(self.albedo_texture.image_view);
+        sampled_image_infos.push(self.arm_texture.image_view);
+        sampled_image_infos.push(self.normal_texture.image_view);
     }
 }
