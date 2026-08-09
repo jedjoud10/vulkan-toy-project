@@ -182,11 +182,9 @@ impl InternalApp {
             window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
         }
 
-        window
-            .set_cursor_grab(winit::window::CursorGrabMode::Confined)
-            .unwrap();
         window.set_cursor_visible(false);
         let raw_display_handle = window.display_handle().unwrap().as_raw();
+
         let entry = ash::Entry::load().unwrap();
 
         #[cfg(debug_assertions)]
@@ -369,6 +367,17 @@ impl InternalApp {
 
         let scene = crate::scene::Scene::new(&mut ctx);
         let counters_of_various_types = buffer::create_buffer_default_flags(&mut ctx, size_of::<u32>() * 100, "counters");
+
+
+        // this call can fail on x11
+        // though, for some reason, doing this at the end (here) does not result in that error
+        // shrug
+        let cursor_grab_res = window
+            .set_cursor_grab(winit::window::CursorGrabMode::Confined);
+        if let Err(err) = cursor_grab_res {
+            log::warn!("cursor grab error: {err}");
+        }
+
 
 
         Self {

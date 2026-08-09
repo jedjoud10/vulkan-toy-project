@@ -57,6 +57,10 @@ struct Args {
     /// I'm writing the data to the buffer in the shader very inefficiently. Just used for quick profiling.
     #[arg(long, short, action = clap::ArgAction::SetFalse, default_value_t = true)]
     readback_performance_queries: bool,
+
+    /// If on Linux, force winit to use X11 instead of Wayland
+    #[arg(long, default_value_t = false)]
+    x11: bool,
 }
 
 struct App {
@@ -138,7 +142,26 @@ pub fn main() {
         // std::env::set_var("MESA_VK_TRACE_TRIGGER", "/tmp/trigger");
     }
 
-    let event_loop = EventLoop::new().unwrap();
+    // https://github.com/rust-windowing/winit/issues/4327
+    let mut builder = EventLoop::builder();
+    let mut reference = &mut builder;
+    
+    {
+        #[cfg(all(unix, not(target_os = "macos")))] // Desktop only
+        {
+            use winit::platform::wayland::EventLoopBuilderExtWayland;
+            use winit::platform::x11::EventLoopBuilderExtX11;   
+        
+            if args.x11 {
+                reference = reference.with_x11()
+            } else {
+                reference = reference.with_wayland()
+            }
+        }
+    };
+
+    let event_loop = reference.build().unwrap();
+        
     let mut app = App {
         start: Instant::now(),
         last: Instant::now(),
