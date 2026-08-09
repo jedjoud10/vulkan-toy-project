@@ -625,53 +625,20 @@ impl InternalApp {
         self.device.reset_fences(&[end_fence]).unwrap();
         let render_finished_semaphore = [self.render_finished_semaphores[acquired_swapchain_image_index as usize]];
 
-        // create bindless descriptor write for storage images        
-        let swapchain_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
-            .image_view(swapchain_image_view)
-            .image_layout(vk::ImageLayout::GENERAL);
-        let rendered_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
-            .image_view(render_targets.rendered_image_view)
-            .image_layout(vk::ImageLayout::GENERAL);
-        let skybox_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
-            .image_view(self.skybox.skybox_array_image_view)
-            .image_layout(vk::ImageLayout::GENERAL);
-        let ambient_skybox_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
-            .image_view(self.skybox.ambient_skybox_array_image_view)
-            .image_layout(vk::ImageLayout::GENERAL);
-        let clouds_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
-            .image_view(self.skybox.clouds_image_view)
-            .image_layout(vk::ImageLayout::GENERAL);
-        let sdf_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
-            .image_view(self.scene.texture.image_view)
-            .image_layout(vk::ImageLayout::GENERAL);
-        let sdf_image_view_descriptor_image_info2 = vk::DescriptorImageInfo::default()
-            .image_view(self.scene.texture2.image_view)
-            .image_layout(vk::ImageLayout::GENERAL);
-        let mut storage_image_infos = vec![
-            swapchain_image_view_descriptor_image_info,
-            rendered_image_view_descriptor_image_info,
-            skybox_image_view_descriptor_image_info,
-            ambient_skybox_image_view_descriptor_image_info,
-            clouds_image_view_descriptor_image_info,
-            sdf_image_view_descriptor_image_info,
-            sdf_image_view_descriptor_image_info2
-        ];
-        
+        let mut storage_images_allocator = per_frame_data::PerFrameAllocator::new();
+        storage_images_allocator.push(swapchain_image_view);
+        storage_images_allocator.push(render_targets.rendered_image_view);
+        storage_images_allocator.push(self.skybox.skybox_array_image_view);
+        storage_images_allocator.push(self.skybox.ambient_skybox_array_image_view);
+        storage_images_allocator.push(self.skybox.clouds_image_view);
+        storage_images_allocator.push(self.scene.texture.image_view);
+        storage_images_allocator.push(self.scene.texture2.image_view);
+
         // add bloom storage image views
+        let bloom_storage_images_start_index = storage_images_allocator.current();
         for bloom_storage_image_view in render_targets.bloom_mip_image_views.iter() {
-            storage_image_infos.push(vk::DescriptorImageInfo::default()
-                .image_view(*bloom_storage_image_view)
-                .image_layout(vk::ImageLayout::GENERAL)
-            );
+            storage_images_allocator.push(*bloom_storage_image_view);
         }
-        
-        let storage_image_write = vk::WriteDescriptorSet::default()
-            .descriptor_count(storage_image_infos.len() as u32)
-            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-            .dst_binding(0)
-            .dst_array_element(0)
-            .dst_set(main_descriptor_set)
-            .image_info(&storage_image_infos);      
 
         // create bindless descriptor write for storage buffers
         let storage_buffer_infos = vec![
@@ -713,56 +680,28 @@ impl InternalApp {
             .buffer_info(&storage_buffer_infos);
 
         // create bindless descriptor write for image samplers
-        let skybox_sampled_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
-            .image_view(self.skybox.skybox_image_view)
-            .image_layout(vk::ImageLayout::GENERAL);
-        let ambient_skybox_sampled_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
-            .image_view(self.skybox.ambient_skybox_image_view)
-            .image_layout(vk::ImageLayout::GENERAL);
-        let clouds_sampled_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
-            .image_view(self.skybox.clouds_image_view)
-            .image_layout(vk::ImageLayout::GENERAL);
-        let rendered_sampled_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
-            .image_view(render_targets.rendered_image_view)
-            .image_layout(vk::ImageLayout::GENERAL);
-        let entire_bloom_sampled_image_view_descriptor_image_info = vk::DescriptorImageInfo::default()
-            .image_view(render_targets.entire_bloom_image_view)
-            .image_layout(vk::ImageLayout::GENERAL);
-        let sdf_sampled_image_view_descriptor_write_info = vk::DescriptorImageInfo::default()
-            .image_view(self.scene.texture.image_view)
-            .image_layout(vk::ImageLayout::GENERAL);
-        let sdf_sampled_image_view_descriptor_write_info2 = vk::DescriptorImageInfo::default()
-            .image_view(self.scene.texture2.image_view)
-            .image_layout(vk::ImageLayout::GENERAL);
-        let mut sampled_image_infos = vec![
-            skybox_sampled_image_view_descriptor_image_info,
-            ambient_skybox_sampled_image_view_descriptor_image_info,
-            clouds_sampled_image_view_descriptor_image_info,
-            rendered_sampled_image_view_descriptor_image_info,
-            sdf_sampled_image_view_descriptor_write_info,
-            sdf_sampled_image_view_descriptor_write_info2,
-            entire_bloom_sampled_image_view_descriptor_image_info,
-        ];
-
+        let mut sampled_images_allocator = per_frame_data::PerFrameAllocator::new();
+        sampled_images_allocator.push(self.skybox.skybox_image_view);
+        sampled_images_allocator.push(self.skybox.ambient_skybox_image_view);
+        sampled_images_allocator.push(self.skybox.clouds_image_view);
+        sampled_images_allocator.push(render_targets.rendered_image_view);
+        sampled_images_allocator.push(self.scene.texture.image_view);
+        sampled_images_allocator.push(self.scene.texture2.image_view);
+        
         // add bloom sampled image views
+        let bloom_sampled_images_entire_bloom_image_index = sampled_images_allocator.push(render_targets.entire_bloom_image_view);
+        let bloom_sampled_images_specific_mip_image_views_start_index = bloom_sampled_images_entire_bloom_image_index + 1;
         for bloom_sampled_image_view in render_targets.bloom_mip_image_views.iter() {
-            sampled_image_infos.push(vk::DescriptorImageInfo::default()
-                .image_view(*bloom_sampled_image_view)
-                .image_layout(vk::ImageLayout::GENERAL)
-            );
+            sampled_images_allocator.push(*bloom_sampled_image_view);
         }
 
         // add material sampled image views
         for material in self.materials.iter_mut() {
-            material.add_per_frame_sampled_images(&mut sampled_image_infos);
+            material.add_per_frame_sampled_images(&mut sampled_images_allocator);
         }
 
-        let sampled_image_write = vk::WriteDescriptorSet::default()
-            .descriptor_count(sampled_image_infos.len() as u32)
-            .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
-            .dst_binding(2)
-            .dst_set(main_descriptor_set)
-            .image_info(&sampled_image_infos);
+        // constant as above
+        let rendered_image_sampler_index = 3;
 
         let samplers = [
             vk::DescriptorImageInfo::default()
@@ -790,14 +729,14 @@ impl InternalApp {
             .dst_binding(4)
             .push_next(&mut acceleration_structure_write_tmp);
 
-        self.device.update_descriptor_sets(&[storage_image_write, storage_buffer_write, sampled_image_write, sampler_states_write, acceleration_structure_write], &[]);
-
-        // TODO: ideally, these would:
-        // 1. be dynamically allocated using some sort of per-frame arena with indexing
-        // 2. be passed to the shader either using a uniform buffer (since these are constant anyways)
-        const BLOOM_MIPS_STORAGE_IMAGE_START_IDX: u32 = 7; // bloom needs to be last since it is dynamically allocated (can have a dynamic number of bloom mips, depending on screen res)
-        const RENDERED_SAMPLER_IMAGE_IDX: u32 = 3;
-        const BLOOM_MIPS_SAMPLED_IMAGE_START_IDX: u32 = 7; // bloom needs to be last since it is dynamically allocated (can have a dynamic number of bloom mips, depending on screen res)
+        self.device.update_descriptor_sets(&[
+            storage_images_allocator.to_descriptor_bindings(main_descriptor_set, vk::DescriptorType::STORAGE_IMAGE, 0),
+            storage_buffer_write,
+            sampled_images_allocator.to_descriptor_bindings(main_descriptor_set, vk::DescriptorType::SAMPLED_IMAGE, 2),
+            sampler_states_write,
+            acceleration_structure_write],
+            &[]
+        );
 
         let cmd_buffer_begin_info = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
@@ -964,7 +903,19 @@ impl InternalApp {
             
         };
 
-        self.device.cmd_update_buffer(cmd, self.uniform_buffer.buffer, 0, bytemuck::bytes_of(&uniform_per_frame_data));
+        self.device.cmd_update_buffer(cmd, self.uniform_buffer.buffer, 0, bytes_of(&uniform_per_frame_data));
+
+        let push_constants = pipeline::PerFramePushConstants {
+            bloom_sampled_images_entire_bloom_image_view_start: bloom_sampled_images_entire_bloom_image_index,
+        };
+
+        self.device.cmd_push_constants(
+            cmd,
+            self.main_pipeline_layout,
+            vk::ShaderStageFlags::ALL,
+            0,
+            bytes_of(&push_constants)
+        );
 
 
         let uniform_buffer_barrier = vk::BufferMemoryBarrier2::default()
@@ -1441,8 +1392,8 @@ impl InternalApp {
 
             let downsample_dispatch_push_constants = BloomPushConstantData {
                 previous_bloom_size: previous_mip_size.as_::<f32>(),
-                src_sampled_img_idx: if mip == 0 { RENDERED_SAMPLER_IMAGE_IDX } else { mip + BLOOM_MIPS_SAMPLED_IMAGE_START_IDX },
-                dst_storage_img_idx: mip + BLOOM_MIPS_STORAGE_IMAGE_START_IDX + 1,
+                src_sampled_img_idx: if mip == 0 { rendered_image_sampler_index } else { mip + bloom_sampled_images_specific_mip_image_views_start_index },
+                dst_storage_img_idx: mip + bloom_storage_images_start_index + 1,
             };
 
             //log::info!("{:?}", downsample_dispatch_push_constants);
@@ -1505,8 +1456,8 @@ impl InternalApp {
 
             let upsample_dispatch_push_constants = BloomPushConstantData {
                 previous_bloom_size: previous_mip_size.as_::<f32>(),
-                src_sampled_img_idx: mip + BLOOM_MIPS_SAMPLED_IMAGE_START_IDX + 1,
-                dst_storage_img_idx: mip + BLOOM_MIPS_STORAGE_IMAGE_START_IDX,
+                src_sampled_img_idx: mip + bloom_sampled_images_specific_mip_image_views_start_index + 1,
+                dst_storage_img_idx: mip + bloom_storage_images_start_index,
             };
 
             //log::info!("{:?}", upsample_dispatch_push_constants);
@@ -1545,6 +1496,15 @@ impl InternalApp {
             cmd,
             vk::PipelineBindPoint::COMPUTE,
             self.compute_pipelines[COMPUTE_POST_PROCESS][WRITE_SWAPCHAIN_IMAGE_ENTRY_POINT],
+        );
+
+        // have to re-push the constants since the bloom passes have their own constants
+        self.device.cmd_push_constants(
+            cmd,
+            self.main_pipeline_layout,
+            vk::ShaderStageFlags::ALL,
+            0,
+            bytes_of(&push_constants)
         );
 
         self.device.cmd_dispatch(cmd, window_size_no_downscale.x.div_ceil(8), window_size_no_downscale.y.div_ceil(8), 1);
