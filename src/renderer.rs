@@ -810,17 +810,17 @@ impl InternalApp {
             let data = readback_buffer.allocation.mapped_slice_mut().unwrap();
             let readback_debug_buffer_data = cast_slice::<u8, u32>(data); 
             
-            let million_sdf_calls = readback_debug_buffer_data[0] as f64 / 1_000_000f64;
+            
+            const MS_IN_SECOND: f64 = 1000f64;
+            const MILLION: f64 = 1_000_000f64;
+            
+            let million_sdf_calls = readback_debug_buffer_data[0] as f64 / MILLION;
             dbgtext_writeln!(&mut self.debug_text, "SDF calls (millions): {:.2}", million_sdf_calls);
             
-            let million_traced_rays = readback_debug_buffer_data[1] as f64 / 1_000_000f64;
+            let million_traced_rays = readback_debug_buffer_data[1] as f64 / MILLION;
             dbgtext_writeln!(&mut self.debug_text, "rays traced (millions): {:.2}", million_traced_rays);
 
-            dbgtext_writeln!(&mut self.debug_text, "million rays per second: {:.2}", million_traced_rays / (self.stats.get_compute_region_duration()));
-
-            let duration = (self.stats.get_compute_region_duration()) / million_sdf_calls;
-            dbgtext_writeln!(&mut self.debug_text, "ms per million SDF call: {:.2}", duration * 1000f64);
-
+            dbgtext_writeln!(&mut self.debug_text, "million rays per second: {:.2}", (million_traced_rays / (self.stats.get_compute_region_duration_in_ms()) * MS_IN_SECOND));
 
             // clear data for next frame
             data.fill(0);
@@ -1134,12 +1134,21 @@ impl InternalApp {
 
         self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, query_pool_statistics::SKYBOX_PASS_TO_SDF_PASS_QUERY);
 
-        let left = self.input.get_button(Button::Mouse(MouseButton::Left)).pressed();
-        let right = self.input.get_button(Button::Mouse(MouseButton::Right)).pressed();
+        let left;
+        let right;
+
+        if self.click_type == 0 {
+            left = self.input.get_button(Button::Mouse(MouseButton::Left)).held();
+            right = self.input.get_button(Button::Mouse(MouseButton::Right)).held();
+        } else {
+            left = self.input.get_button(Button::Mouse(MouseButton::Left)).pressed();
+            right = self.input.get_button(Button::Mouse(MouseButton::Right)).pressed();
+        }
+
 
         if  left || right {
             let pos = self.movement.position + self.movement.forward() * 5f32;
-            if self.click_type == 0 {
+            if self.click_type == 0 || self.click_type == 2 {
                 let data = if left { 1u32 } else { 0 }; 
 
 
