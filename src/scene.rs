@@ -27,7 +27,7 @@ pub const INSTANCE_CUSTOM_INDEX_AABB_LOOKUP_INDEX_MASK: u32 = 15;
 pub const INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK: u32 = 16;
 pub const INSTANCE_CUSTOM_INDEX_LOOKUP_AABB_USING_PRIMITIVE_INDEX_FLAG_MASK: u32 = 32;
 
-pub const GI_TEXTURE_SIZE: u32 = 256;
+pub const GI_TEXTURE_SIZE: u32 = 128;
 
 pub const SPAWN_TREES: bool = false;
 
@@ -58,7 +58,7 @@ impl Scene {
     pub unsafe fn new(mut ctx: &mut GraphicsContext) -> Self {
         let texture = sdf_texture::create_voxel_image(ctx, vek::Extent3::broadcast(256), vk::Format::R16_SFLOAT, None);
         let texture2 = sdf_texture::create_voxel_image(ctx, vek::Extent3::broadcast(64), vk::Format::R16G16_SFLOAT, None);
-        let texture3 = sdf_texture::create_voxel_image(ctx, vek::Extent3::broadcast(GI_TEXTURE_SIZE), vk::Format::R16G16B16A16_SFLOAT, Some(7));
+        let texture3 = sdf_texture::create_voxel_image(ctx, vek::Extent3::broadcast(GI_TEXTURE_SIZE), vk::Format::R16G16B16A16_SFLOAT, Some(4));
         let texture4 = sdf_texture::create_voxel_image(ctx, vek::Extent3::broadcast(GI_TEXTURE_SIZE), vk::Format::R16G16B16A16_SFLOAT, None);
 
         let cmd = others::begin_recording(&mut ctx);

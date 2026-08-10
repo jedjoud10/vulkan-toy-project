@@ -197,6 +197,10 @@ float3 move_point_to_surface(float3 p, float3 d) {
 	*/
 }
 
+float3 goo_material(float3 world) {
+	return hash33(floor(world/10));
+}
+
 float3 get_diffuse_colour_only(float3 world, float3 normal, float material) {
 	float3 diffuse = 1.0;
 
@@ -209,45 +213,43 @@ float3 get_diffuse_colour_only(float3 world, float3 normal, float material) {
 	
 		diffuse = sample_triplanar(index, world, normal);
 
-		diffuse = lerp(diffuse, 1.0, material);
+		diffuse = lerp(diffuse, goo_material(world), material);
 	}
 
 	return diffuse;
 }
 
-static const uint GI_TEXTURE_SIZE = 256;
-static const float GI_TEXTURE_SCALING = 1.0/4.0;
+static const uint GI_TEXTURE_SIZE = 128;
+static const float GI_TEXTURE_SCALING = 1/4.0;
 
 
-static const float startOffset = 1.5;
-static const float mipMapCountLimit = 7;
-static const float minOpacityBreak = 0.2;
-static const float stepSize = 0.8;
-static const uint stepCount = 16;
-static const float diffuseAmbientHalfAngleRadian = 0.3;
+static const float startOffset = 0.5;
+static const float mipMapCountLimit = 3;
+static const float minOpacityBreak = 0.8;
+static const float vxgiRayLength = 15.0;
+static const uint stepCount = 64;
+static const float diffuseAmbientHalfAngleRadian = 0.2;
 
 
 
-float4 samplevxgi(float4 position_lod) {
+float4 sample_vxgi(float4 position_lod) {
 	return sampled_images_3d[SDF_TEXTURE3_SAMPLED_IMAGE_IDX].SampleLevel(samplers[LINEAR_CLAMPED_SAMPLER_IDX], ((position_lod.xyz / GI_TEXTURE_SCALING) / GI_TEXTURE_SIZE) + 0.5, position_lod.w);
 }
 
+// https://github.com/jedjoud10/URP-Testing/blob/main/Assets/VoxelGlobalIllumination.compute#L161-L206
 float3 trace_vxgi(float3 position, float3 normal, float half_angle_radian) {
     float3 ray_pos = position + normal * startOffset;
     
 	float3 colour = 0.0;
     float opacity = 0.0;
 
-    float step_size = stepSize / stepCount;
+    float step_size = vxgiRayLength / stepCount;
     float3 step = normal * step_size;
     float dist = startOffset;
     float inv_log_2 = 1.0 / 0.301029;
     float tanned = tan(clamp(half_angle_radian, 0, 3.141 * 0.5));
 
     for (int i = 0; i < stepCount; i++) {
-        dist += step_size;
-        ray_pos += step;
-
         // uses the distance and the half angle to approximate sphere radius at specific distance along cone
         float sphere_radius = dist * tanned;
 
@@ -257,7 +259,7 @@ float3 trace_vxgi(float3 position, float3 normal, float half_angle_radian) {
 		// sample from specific mip
 		float4 pos = float4(ray_pos, mip_level);
 
-		float4 sampled = samplevxgi(pos);
+		float4 sampled = sample_vxgi(pos);
 
 		// https://kth.diva-portal.org/smash/get/diva2:1886204/FULLTEXT01.pdf
         colour += (1 - opacity) * sampled.w * sampled.xyz;
@@ -267,11 +269,12 @@ float3 trace_vxgi(float3 position, float3 normal, float half_angle_radian) {
 		if (sampled.w > minOpacityBreak) {
 			break;
 		}
+
+		dist += step_size;
+        ray_pos += step;
     }
 
-	//colour += sample_skybox_and_clouds(ray_pos, normal);
-
-    return colour;
+	return colour;
 }
 
 
@@ -424,7 +427,7 @@ public float3 trace_scene_singlebounce(uint2 id, float3 ray_pos, float3 ray_dir)
 			arm = sample_triplanar(index+1, world, normal);
 			normal = sample_triplanar_normal(index+2, world, normal);
 		
-			diffuse = lerp(diffuse, 1.0, res.data.material);
+			diffuse = lerp(diffuse, goo_material(world), res.data.material);
 			arm = lerp(arm, float3(1, 1.0, 0.0), res.data.material);
 			normal = normalize(lerp(normal, res.normal, res.data.material));
 		}
@@ -447,9 +450,7 @@ public float3 trace_scene_singlebounce(uint2 id, float3 ray_pos, float3 ray_dir)
 		float3 ks = fresnelRoughness(f0, surface.normal, camera.view, surface.arm.roughness);
 		float3 kd = (1 - ks) * (1 - surface.arm.metallic);
 
-		float mip = uniforms.time % 2;
-		//float3 sampled_ambient = sampled_images_3d[SDF_TEXTURE3_SAMPLED_IMAGE_IDX].SampleLevel(samplers[LINEAR_CLAMPED_SAMPLER_IDX], ((world / GI_TEXTURE_SCALING) / GI_TEXTURE_SIZE) + 0.5, mip).xyz;
-		float3 sampled_ambient = trace_vxgi(world, res.normal, diffuseAmbientHalfAngleRadian);
+		float3 sampled_ambient = trace_vxgi(world, normal, diffuseAmbientHalfAngleRadian);
 
 		float3 ambient = surface.albedo * kd * surface.arm.ao * sampled_ambient;
 		
@@ -468,12 +469,18 @@ public float3 trace_scene_singlebounce(uint2 id, float3 ray_pos, float3 ray_dir)
 		camera_view = -ray_dir;
 		*/
 
-		//col = trace_vxgi(world, reflect(ray_dir, res.normal), 0.0);
+		//col = trace_vxgi(world + res.normal * 2.0, reflect(ray_dir, res.normal), 0.03);
 
 		if ((uniforms.toggles_bitmask & 8) != 0) {
-			col = samplevxgi(float4(world, 0)).xyz;
+			col = ambient;
+			//col += trace_vxgi(world, reflect(ray_dir, normal), 0.2);
 		}
-		
+
+		if ((uniforms.toggles_bitmask & 16) != 0) {
+			float4 k = sample_vxgi(float4(world - res.normal * 0.3, 0));
+			col = k.xyz;
+		}
+
 		//col += ks * sampled_images_3d[SDF_TEXTURE4_SAMPLED_IMAGE_IDX].Sample(samplers[LINEAR_CLAMPED_SAMPLER_IDX], ((world / GI_TEXTURE_SCALING) / GI_TEXTURE_SIZE) + 0.5).xyz;
 	} else {
 		col += mask * sample_skybox_and_clouds(res.pos, res.dir);

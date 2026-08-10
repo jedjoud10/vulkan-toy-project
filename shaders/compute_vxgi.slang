@@ -2,7 +2,7 @@
 #include "utils/pbr.slang"
 
 static const int TEXTURE_RES = GI_TEXTURE_SIZE;
-static const float MAX_DISTANCE_THESHOLD = 1.2;
+static const float MAX_DISTANCE_THESHOLD = 1.5;
 
 float3 test(float3 p)
 {
@@ -31,6 +31,8 @@ void voxelize (uint3 id : SV_DispatchThreadID) {
 
     uniforms = load_per_frame_uniforms();
     float2 da = d(p);
+
+    storage_images_3d[SDF_TEXTURE3_STORAGE_IMAGE_IDX].Store(id, float4(0));
 
     if (da.x > MAX_DISTANCE_THESHOLD) {
         return;
@@ -93,15 +95,21 @@ void voxelize (uint3 id : SV_DispatchThreadID) {
     }    
     */
 
+    float inside_distance_opacity_multiplier = 2;
+    float radiance_multiplier = 8;
+    float outsetting = 0.5;
+    float3 outsetted = p + n * outsetting;
 
-    float3 diffuse = get_diffuse_colour_only(p, n, m);
-    PbrSurfaceData surface = PbrSurfaceData(p, diffuse, n, AoRoughnessMetallic(float3(1, 1, 0)));
+    float3 diffuse = get_diffuse_colour_only(outsetted, n, m);
+    PbrSurfaceData surface = PbrSurfaceData(outsetted, diffuse, n, AoRoughnessMetallic(float3(1, 1, 0)));
     SunData sun = SunData(uniforms.sun.xyz, 16.0);
 
     // shouldn't matter since we consider fully diffuse materials
+    // because of this, we lose "directional" information, like metal reflections being able to
+    // globally illuminate other objects depending on the viewing angle
     CameraData camera = CameraData(n);
-        
-	float3 colour = radiance_sun(surface, camera, sun) * 2.0;
+      
+	float3 colour = radiance_sun(surface, camera, sun) * radiance_multiplier;
 
     // colour += sample_skybox_and_clouds(p, n) * 0.5;
 
@@ -109,7 +117,10 @@ void voxelize (uint3 id : SV_DispatchThreadID) {
         colour = 0;
     }
 
-    storage_images_3d[SDF_TEXTURE3_STORAGE_IMAGE_IDX].Store(id, float4(colour, 1.0));
+    //float opacity = 1.000;
+    float opacity = saturate(-da.x*inside_distance_opacity_multiplier);
+
+    storage_images_3d[SDF_TEXTURE3_STORAGE_IMAGE_IDX].Store(id, float4(colour*opacity, opacity));
     //storage_images_3d[SDF_TEXTURE4_STORAGE_IMAGE_IDX].Store(id, float4(n, 1));
     
 }
@@ -120,7 +131,7 @@ void mip_map_downsample(uint3 id : SV_DispatchThreadID, uniform uint src_mip_sam
 	float4 summed = 0;
 	const static int size = 2;
 	const static int volume = (size*2 + 1) * (size*2 + 1) * (size*2 + 1); 
-	const static float scale = 3.0;
+	const static float scale = 2.5;
 
 	float max_alpha = 0;
 
@@ -130,12 +141,18 @@ void mip_map_downsample(uint3 id : SV_DispatchThreadID, uniform uint src_mip_sam
                 float3 texture_position = id.xyz * 2 + float3(x,y,z) * scale;
 
 				float4 loaded = sampled_images_3d[src_mip_sampled_image_index].Sample(samplers[LINEAR_CLAMPED_SAMPLER_IDX], texture_position / TEXTURE_RES);
-				summed += loaded;
+				//summed += loaded * loaded.w;
+                summed += loaded;
+                max_alpha = max(max_alpha, loaded.w);
 			}
 		}	
 	}
 
-	storage_images_3d[dst_storage_mip_index].Store(id, summed / volume);	
+    float4 a = float4(summed.xyz / volume, max_alpha);
+    float4 b = summed / volume;
+    
+
+	storage_images_3d[dst_storage_mip_index].Store(id, a);
 }
 
 /*
