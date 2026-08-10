@@ -59,6 +59,7 @@ const BLUR_AMBIENT_SKYBOX_ENTRY_POINT: &str = "blur_skybox_ambient";
 const COMPUTE_FULLSCREEN: &str = "fullscreen";
 
 const COMPUTE_SDF: &'static str = "compute_sdf";
+const COMPUTE_LIGHTPROBES: &'static str = "compute_lightprobes";
 
 pub struct GraphicsContext<'a> {
     pub device: &'a ash::Device,
@@ -633,6 +634,7 @@ impl InternalApp {
         storage_images_allocator.push(self.skybox.clouds_image_view);
         storage_images_allocator.push(self.scene.texture.image_view);
         storage_images_allocator.push(self.scene.texture2.image_view);
+        storage_images_allocator.push(self.scene.texture3.image_view);
 
         // add bloom storage image views
         let bloom_storage_images_start_index = storage_images_allocator.current();
@@ -687,6 +689,8 @@ impl InternalApp {
         sampled_images_allocator.push(render_targets.rendered_image_view);
         sampled_images_allocator.push(self.scene.texture.image_view);
         sampled_images_allocator.push(self.scene.texture2.image_view);
+        sampled_images_allocator.push(self.scene.texture3.image_view);
+
 
         
         // add bloom sampled image views
@@ -809,7 +813,7 @@ impl InternalApp {
 
             let data = readback_buffer.allocation.mapped_slice_mut().unwrap();
             let readback_debug_buffer_data = cast_slice::<u8, u32>(data); 
-            
+
             
             const MS_IN_SECOND: f64 = 1000f64;
             const MILLION: f64 = 1_000_000f64;
@@ -1233,6 +1237,64 @@ impl InternalApp {
 
         let group_count = self.scene.texture2.size.map(|x| x.div_ceil(4));
         self.device.cmd_dispatch(cmd, group_count.w, group_count.h, group_count.d);
+
+
+        let skybox_subresource_range = vk::ImageSubresourceRange::default()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .level_count(1)
+            .layer_count(6);
+        let clouds_subresource_range = vk::ImageSubresourceRange::default()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .level_count(1)
+            .layer_count(1);
+        let skybox_image_barrier = vk::ImageMemoryBarrier2::default()
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .image(self.skybox.skybox_image)
+            .subresource_range(skybox_subresource_range);
+        let clouds_image_barrier = vk::ImageMemoryBarrier2::default()
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .image(self.skybox.clouds_image)
+            .subresource_range(clouds_subresource_range);
+        let ambient_clouds_image_barrier = vk::ImageMemoryBarrier2::default()
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .image(self.skybox.ambient_skybox_image)
+            .subresource_range(clouds_subresource_range);
+        let image_memory_barriers = [skybox_image_barrier, clouds_image_barrier, ambient_clouds_image_barrier];
+        let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
+        self.device.cmd_pipeline_barrier2(cmd, &dep);
+
+        
+        self.device.cmd_bind_pipeline(
+            cmd,
+            vk::PipelineBindPoint::COMPUTE,
+            self.compute_pipelines[COMPUTE_LIGHTPROBES]["main"],
+        );
+
+
+        let group_count = self.scene.texture3.size.map(|x| x.div_ceil(4));
+        self.device.cmd_dispatch(cmd, group_count.w, group_count.h, group_count.d);
+
         
         
         let skybox_subresource_range = vk::ImageSubresourceRange::default()
@@ -1704,6 +1766,11 @@ unsafe fn compile_all_shaders(
         wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["main", "main2", "compute_aabbs"] },
         spec_constants: Some(&spec_constants),
         file_name_without_extension: COMPUTE_SDF,
+    }, pipeline::PipelineCreateSettings {
+        pipeline_debug_name: "compute lightprobes shader",
+        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["main"] },
+        spec_constants: Some(&spec_constants),
+        file_name_without_extension: COMPUTE_LIGHTPROBES,
     }];
 
     let compiled = shader_compiler::compile_all_shaders();

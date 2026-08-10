@@ -197,6 +197,26 @@ float3 move_point_to_surface(float3 p, float3 d) {
 	*/
 }
 
+float3 get_diffuse_colour_only(float3 world, float3 normal) {
+	float3 diffuse = 1.0;
+
+	if ((uniforms.toggles_bitmask & 4) == 0) {
+		// TODO: file a bug report SOMEWHERE because these NonUniformResourceIndex are not doing anything
+		// (even tried with a simpler setup that uses NonUniformResourceIndex into a texture sample, still does not work) 
+		uint material_index = NonUniformResourceIndex(floor((snoise(world.xz * 0.03) * 0.5 + 0.5) * 4));
+		uint index = NonUniformResourceIndex(storage_buffers_readonly[STORAGE_BUFFER_MATERIALS_BUFFER].Load<uint32_t>(NonUniformResourceIndex(material_index * 4)));
+	
+	
+		diffuse = sample_triplanar(index, world, normal);
+	}
+
+	return diffuse;
+}
+
+static const uint GI_TEXTURE_SIZE = 256;
+static const float GI_TEXTURE_SCALING = 1.0/8.0;
+
+
 public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) {
 	float3 col = 0.0;
 	float3 mask = 1.0;
@@ -290,7 +310,7 @@ public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) 
 			}
 
 
-
+			col += sampled_images_3d[SDF_TEXTURE3_SAMPLED_IMAGE_IDX].Sample(samplers[LINEAR_CLAMPED_SAMPLER_IDX], ((world / GI_TEXTURE_SCALING) / GI_TEXTURE_SIZE) + 0.5).xyz * mask;
     	} else {
     	    col += mask * sample_skybox_and_clouds(res.pos, res.dir);
 			break;
