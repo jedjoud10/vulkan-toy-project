@@ -104,7 +104,7 @@ void capture_performance_sdf_call() {
 static const uint MAX_ITERS = 256;
 static const float MAX_DISTANCE = 10000;
 static const float THRESHOLD_DISTANCE = 0.001;
-static const float DISTANCE_SCALING_FACTOR = 1.0;
+static const float DISTANCE_SCALING_FACTOR = 0.9;
 static const bool LOD = true;
 
 

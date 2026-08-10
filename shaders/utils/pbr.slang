@@ -119,7 +119,7 @@ void InitRandom(uint2 pos, uint frameNo) {
     g_RandomSeed ^= frameNo * 1234;
 }
 
-#define SHADOWS
+#define SHADOWS2
 
 float3 get_sun_shadow(float3 world, float3 normal, float3 sun) {
 	float3 randomized_sun_direction = normalize(sun + GetRandomSphereDir() * 0.02);
@@ -151,7 +151,7 @@ public float3 radiance_sun(
 	float3 specular = specular(f0, surface.arm.roughness, camera.view, sun.direction, surface.normal, half_view);
 	float n_dot_l = max(dot(sun.direction, surface.normal), 0.0);
 
-#ifdef SHADOWS
+#ifdef SHADOWS2
 	float3 shadow = get_sun_shadow(surface.position, surface.normal, sun.direction); 
 #else
 	float3 shadow = 1.0;
@@ -215,8 +215,64 @@ float3 get_diffuse_colour_only(float3 world, float3 normal, float material) {
 	return diffuse;
 }
 
-static const uint GI_TEXTURE_SIZE = 64;
-static const float GI_TEXTURE_SCALING = 1.0/2.0;
+static const uint GI_TEXTURE_SIZE = 256;
+static const float GI_TEXTURE_SCALING = 1.0/4.0;
+
+
+static const float startOffset = 1.5;
+static const float mipMapCountLimit = 7;
+static const float minOpacityBreak = 0.2;
+static const float stepSize = 0.8;
+static const uint stepCount = 16;
+static const float diffuseAmbientHalfAngleRadian = 0.3;
+
+
+
+float4 samplevxgi(float4 position_lod) {
+	return sampled_images_3d[SDF_TEXTURE3_SAMPLED_IMAGE_IDX].SampleLevel(samplers[LINEAR_CLAMPED_SAMPLER_IDX], ((position_lod.xyz / GI_TEXTURE_SCALING) / GI_TEXTURE_SIZE) + 0.5, position_lod.w);
+}
+
+float3 trace_vxgi(float3 position, float3 normal, float half_angle_radian) {
+    float3 ray_pos = position + normal * startOffset;
+    
+	float3 colour = 0.0;
+    float opacity = 0.0;
+
+    float step_size = stepSize / stepCount;
+    float3 step = normal * step_size;
+    float dist = startOffset;
+    float inv_log_2 = 1.0 / 0.301029;
+    float tanned = tan(clamp(half_angle_radian, 0, 3.141 * 0.5));
+
+    for (int i = 0; i < stepCount; i++) {
+        dist += step_size;
+        ray_pos += step;
+
+        // uses the distance and the half angle to approximate sphere radius at specific distance along cone
+        float sphere_radius = dist * tanned;
+
+        // compute mip based on sphere radius. if sphere radius is 0.5, this should result in a mip of 0, since radius would span over an entire voxel
+        float mip_level = clamp(log(sphere_radius + 1) * inv_log_2, 0, mipMapCountLimit);
+
+		// sample from specific mip
+		float4 pos = float4(ray_pos, mip_level);
+
+		float4 sampled = samplevxgi(pos);
+
+		// https://kth.diva-portal.org/smash/get/diva2:1886204/FULLTEXT01.pdf
+        colour += (1 - opacity) * sampled.w * sampled.xyz;
+		opacity += (1 - opacity) * sampled.w;
+
+		// exit if the sampled voxel is too opaque (meaning that there would be no point in sampling after this voxel; everything would be occluded)
+		if (sampled.w > minOpacityBreak) {
+			break;
+		}
+    }
+
+	//colour += sample_skybox_and_clouds(ray_pos, normal);
+
+    return colour;
+}
 
 
 public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) {
@@ -335,6 +391,7 @@ public float3 trace_scene_singlebounce(uint2 id, float3 ray_pos, float3 ray_dir)
 	float3 camera_view = -ray_dir;
 
 	TraceRes res = trace(ray_pos, ray_dir);
+	InitRandom(id.xy, (uint32_t)uniforms.frame_count);
 
 	if (res.hit) {  
 		float3 world = res.pos;
@@ -389,8 +446,12 @@ public float3 trace_scene_singlebounce(uint2 id, float3 ray_pos, float3 ray_dir)
 		float3 f0 = lerp(0.04, surface.albedo, surface.arm.metallic);
 		float3 ks = fresnelRoughness(f0, surface.normal, camera.view, surface.arm.roughness);
 		float3 kd = (1 - ks) * (1 - surface.arm.metallic);
-		
-		float3 ambient = surface.albedo * kd * surface.arm.ao * sampled_images_3d[SDF_TEXTURE3_SAMPLED_IMAGE_IDX].Sample(samplers[LINEAR_CLAMPED_SAMPLER_IDX], ((world / GI_TEXTURE_SCALING) / GI_TEXTURE_SIZE) + 0.5).xyz;
+
+		float mip = uniforms.time % 2;
+		//float3 sampled_ambient = sampled_images_3d[SDF_TEXTURE3_SAMPLED_IMAGE_IDX].SampleLevel(samplers[LINEAR_CLAMPED_SAMPLER_IDX], ((world / GI_TEXTURE_SCALING) / GI_TEXTURE_SIZE) + 0.5, mip).xyz;
+		float3 sampled_ambient = trace_vxgi(world, res.normal, diffuseAmbientHalfAngleRadian);
+
+		float3 ambient = surface.albedo * kd * surface.arm.ao * sampled_ambient;
 		
 		
 		// TODO: there's still a problem here. plasticy materials (roughness~0, metallic~0) look like metals. I'm forgetting to account for something here. I don't know my PBR
@@ -400,12 +461,20 @@ public float3 trace_scene_singlebounce(uint2 id, float3 ray_pos, float3 ray_dir)
 		float3 random_normal = normal + GetRandomSphereDir();
 		float3 reflected_ray_dir = reflect(ray_dir, normal);
 
+		/*
 		// TODO: this is also wrong. instead of shooting *one* ray for the surface we need to shoot the ambient and reflection rays separately. we cannot just shoot one to approximate both effect
 		ray_dir = normalize(lerp(reflected_ray_dir, random_normal, surface.arm.roughness));
 		ray_pos = res.pos + ray_dir * 0.01;
 		camera_view = -ray_dir;
+		*/
+
+		//col = trace_vxgi(world, reflect(ray_dir, res.normal), 0.0);
+
+		if ((uniforms.toggles_bitmask & 8) != 0) {
+			col = samplevxgi(float4(world, 0)).xyz;
+		}
 		
-		col += ks * sampled_images_3d[SDF_TEXTURE4_SAMPLED_IMAGE_IDX].Sample(samplers[LINEAR_CLAMPED_SAMPLER_IDX], ((world / GI_TEXTURE_SCALING) / GI_TEXTURE_SIZE) + 0.5).xyz;
+		//col += ks * sampled_images_3d[SDF_TEXTURE4_SAMPLED_IMAGE_IDX].Sample(samplers[LINEAR_CLAMPED_SAMPLER_IDX], ((world / GI_TEXTURE_SCALING) / GI_TEXTURE_SIZE) + 0.5).xyz;
 	} else {
 		col += mask * sample_skybox_and_clouds(res.pos, res.dir);
 	}

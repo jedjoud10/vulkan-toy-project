@@ -13,6 +13,7 @@ pub unsafe fn create_voxel_image(
     ctx: &mut GraphicsContext,
     size: vek::Extent3<u32>,
     format: vk::Format,
+    mips: Option<u32>,
 ) -> SdfImage {
     let GraphicsContext {
         device,
@@ -34,7 +35,7 @@ pub unsafe fn create_voxel_image(
         .format(format)
         .image_type(vk::ImageType::TYPE_3D)
         .initial_layout(vk::ImageLayout::UNDEFINED)
-        .mip_levels(1)
+        .mip_levels(mips.unwrap_or(1))
         .sharing_mode(vk::SharingMode::EXCLUSIVE)
         .flags(vk::ImageCreateFlags::empty())
         .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::HOST_TRANSFER_EXT)
@@ -62,7 +63,7 @@ pub unsafe fn create_voxel_image(
         .base_array_layer(0)
         .layer_count(1)
         .base_mip_level(0)
-        .level_count(1);
+        .level_count(mips.unwrap_or(1));
 
     let transition = vk::HostImageLayoutTransitionInfoEXT::default()
         .image(image)
@@ -85,6 +86,36 @@ pub unsafe fn create_voxel_image(
         .create_image_view(&image_view_create_info, None)
         .unwrap();
 
+    let specific_mip_image_views = mips.map(|mip_count| {
+        (0..mip_count).into_iter().map(|mip| {
+            let image_subresource_range = vk::ImageSubresourceRange::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .base_array_layer(0)
+                .layer_count(1)
+                .base_mip_level(mip)
+                .level_count(1);
+
+            let transition = vk::HostImageLayoutTransitionInfoEXT::default()
+                .image(image)
+                .old_layout(vk::ImageLayout::UNDEFINED)
+                .new_layout(vk::ImageLayout::GENERAL)
+                .subresource_range(image_subresource_range);
+
+            host_image_copy_device.transition_image_layout(&[transition]).unwrap();
+
+            let image_view_create_info = vk::ImageViewCreateInfo::default()
+                .components(vk::ComponentMapping::default())
+                .flags(vk::ImageViewCreateFlags::empty())
+                .format(format)
+                .image(image)
+                .subresource_range(image_subresource_range)
+                .view_type(vk::ImageViewType::TYPE_3D);
+            device
+                .create_image_view(&image_view_create_info, None)
+                .unwrap()
+        }).collect::<Vec<vk::ImageView>>()
+    });
+
     /*
     let transition = vk::HostImageLayoutTransitionInfoEXT::default()
         .image(image)
@@ -100,6 +131,7 @@ pub unsafe fn create_voxel_image(
         allocation,
         image_view,
         size,
+        specific_mip_image_views,
     }
 }
 
@@ -209,10 +241,18 @@ pub struct SdfImage {
     pub allocation: Allocation,
     pub image_view: vk::ImageView,
     pub size: vek::Extent3<u32>,
+
+    pub specific_mip_image_views: Option<Vec<vk::ImageView>>,
 }
 
 impl SdfImage {
     pub unsafe fn destroy(self, device: &ash::Device, allocator: &mut Allocator) {
+        if let Some(mips) =  self.specific_mip_image_views {
+            for mip in mips {
+                device.destroy_image_view(mip, None);
+            }
+        }
+
         device.destroy_image_view(self.image_view, None);
         device.destroy_image(self.image, None);
         allocator.free(self.allocation).unwrap();

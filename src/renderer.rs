@@ -60,6 +60,8 @@ const COMPUTE_FULLSCREEN: &str = "fullscreen";
 
 const COMPUTE_SDF: &'static str = "compute_sdf";
 const COMPUTE_LIGHTPROBES: &'static str = "compute_lightprobes";
+const COMPUTE_VXGI: &'static str = "compute_vxgi";
+
 
 pub struct GraphicsContext<'a> {
     pub device: &'a ash::Device,
@@ -635,7 +637,14 @@ impl InternalApp {
         storage_images_allocator.push(self.scene.texture.image_view);
         storage_images_allocator.push(self.scene.texture2.image_view);
         storage_images_allocator.push(self.scene.texture3.image_view);
-        storage_images_allocator.push(self.scene.texture4.image_view);
+        
+        let sdf_storage_images_start_index = storage_images_allocator.current();
+        for image_mip in self.scene.texture3.specific_mip_image_views.as_ref().unwrap().iter() {
+            storage_images_allocator.push(*image_mip);
+        }
+
+        
+        //storage_images_allocator.push(self.scene.texture4.image_view);
 
 
         // add bloom storage image views
@@ -692,7 +701,14 @@ impl InternalApp {
         sampled_images_allocator.push(self.scene.texture.image_view);
         sampled_images_allocator.push(self.scene.texture2.image_view);
         sampled_images_allocator.push(self.scene.texture3.image_view);
-        sampled_images_allocator.push(self.scene.texture4.image_view);
+        
+        let sdf_sampled_images_start_index = sampled_images_allocator.current();
+        for image_mip in self.scene.texture3.specific_mip_image_views.as_ref().unwrap().iter() {
+            sampled_images_allocator.push(*image_mip);
+        }
+
+        
+        //sampled_images_allocator.push(self.scene.texture4.image_view);
 
 
         
@@ -1291,13 +1307,72 @@ impl InternalApp {
         self.device.cmd_bind_pipeline(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
-            self.compute_pipelines[COMPUTE_LIGHTPROBES]["main"],
+            self.compute_pipelines[COMPUTE_VXGI]["voxelize"],
         );
 
 
         let group_count = self.scene.texture3.size.map(|x| x.div_ceil(4));
         self.device.cmd_dispatch(cmd, group_count.w, group_count.h, group_count.d);
 
+        let full_image_barrier = vk::ImageMemoryBarrier2::default()
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .image(self.scene.texture3.image)
+            .subresource_range(subresource_range);
+        let image_memory_barriers = [full_image_barrier];
+        let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
+        self.device.cmd_pipeline_barrier2(cmd, &dep);
+
+        let mips = self.scene.texture3.specific_mip_image_views.as_ref().unwrap();
+
+        for mip_index in 0..mips.len() {
+            let mip_index = mip_index as u32;
+            let previous_mip_level_subresource_range = vk::ImageSubresourceRange::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .base_array_layer(0)
+                .layer_count(1)
+                .base_mip_level(mip_index)
+                .level_count(1);
+            let previous_mip_image_memory_barrier = vk::ImageMemoryBarrier2::default()
+                .old_layout(vk::ImageLayout::GENERAL)
+                .new_layout(vk::ImageLayout::GENERAL)
+                .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+                .dst_access_mask(vk::AccessFlags2::SHADER_READ)
+                .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .src_queue_family_index(self.queue_family_index)
+                .dst_queue_family_index(self.queue_family_index)
+                .image(self.scene.texture3.image)
+                .subresource_range(previous_mip_level_subresource_range);
+            let barriers = [previous_mip_image_memory_barrier];
+            let dep = vk::DependencyInfo::default().image_memory_barriers(&barriers);
+            self.device.cmd_pipeline_barrier2(cmd, &dep);
+
+
+            
+            self.device.cmd_bind_pipeline(
+                cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                self.compute_pipelines[COMPUTE_VXGI]["mip_map_downsample"],
+            );
+
+            let scaling_factor = 2 << mip_index;
+
+            let group_count = self.scene.texture3.size.map(|x| (x / scaling_factor).div_ceil(4));
+
+            let pc = [sdf_sampled_images_start_index + mip_index, sdf_storage_images_start_index + mip_index + 1];
+            self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytes_of(&pc));
+
+            self.device.cmd_dispatch(cmd, group_count.w, group_count.h, group_count.d);
+        }
+
+        /*/
         self.device.cmd_bind_pipeline(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
@@ -1307,7 +1382,7 @@ impl InternalApp {
 
         let group_count = self.scene.texture3.size.map(|x| x.div_ceil(4));
         self.device.cmd_dispatch(cmd, group_count.w, group_count.h, group_count.d);
-
+        */
         
         
         let skybox_subresource_range = vk::ImageSubresourceRange::default()
@@ -1780,10 +1855,10 @@ unsafe fn compile_all_shaders(
         spec_constants: Some(&spec_constants),
         file_name_without_extension: COMPUTE_SDF,
     }, pipeline::PipelineCreateSettings {
-        pipeline_debug_name: "compute lightprobes shader",
-        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["main", "main2"] },
+        pipeline_debug_name: "compute vxgi shader",
+        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["voxelize", "mip_map_downsample"] },
         spec_constants: Some(&spec_constants),
-        file_name_without_extension: COMPUTE_LIGHTPROBES,
+        file_name_without_extension: COMPUTE_VXGI,
     }];
 
     let compiled = shader_compiler::compile_all_shaders();
