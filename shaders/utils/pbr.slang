@@ -197,7 +197,7 @@ float3 move_point_to_surface(float3 p, float3 d) {
 	*/
 }
 
-float3 get_diffuse_colour_only(float3 world, float3 normal) {
+float3 get_diffuse_colour_only(float3 world, float3 normal, float material) {
 	float3 diffuse = 1.0;
 
 	if ((uniforms.toggles_bitmask & 4) == 0) {
@@ -208,13 +208,15 @@ float3 get_diffuse_colour_only(float3 world, float3 normal) {
 	
 	
 		diffuse = sample_triplanar(index, world, normal);
+
+		diffuse = lerp(diffuse, 1.0, material);
 	}
 
 	return diffuse;
 }
 
-static const uint GI_TEXTURE_SIZE = 256;
-static const float GI_TEXTURE_SCALING = 1.0/8.0;
+static const uint GI_TEXTURE_SIZE = 64;
+static const float GI_TEXTURE_SCALING = 1.0/2.0;
 
 
 public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) {
@@ -233,7 +235,7 @@ public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) 
 			float3 normal = res.normal;
 
 			float3 diffuse = 1.0; 
-			float3 arm = float3(1, 0.1, 1);
+			float3 arm = float3(1, 1, 0);
 
 			if (res.data.instance_custom_index != 0) {
 				arm = float3(1, 0.8, 0);
@@ -286,7 +288,7 @@ public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) 
 				
 				// TODO: there's still a problem here. plasticy materials (roughness~0, metallic~0) look like metals. I'm forgetting to account for something here. I don't know my PBR
 				col += mask * radiance;
-				float3 ambient = surface.albedo * kd * surface.arm.ao;
+				//float3 ambient = surface.albedo * kd * surface.arm.ao;
 				mask *= lerp(fresnelRoughness(surface.albedo, surface.normal, camera.view, surface.arm.roughness), surface.albedo, surface.arm.metallic);
 
 				float3 random_normal = normal + GetRandomSphereDir();
@@ -310,7 +312,7 @@ public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) 
 			}
 
 
-			col += sampled_images_3d[SDF_TEXTURE3_SAMPLED_IMAGE_IDX].Sample(samplers[LINEAR_CLAMPED_SAMPLER_IDX], ((world / GI_TEXTURE_SCALING) / GI_TEXTURE_SIZE) + 0.5).xyz * mask;
+			//col += sampled_images_3d[SDF_TEXTURE3_SAMPLED_IMAGE_IDX].Sample(samplers[LINEAR_CLAMPED_SAMPLER_IDX], ((world / GI_TEXTURE_SCALING) / GI_TEXTURE_SIZE) + 0.5).xyz * mask;
     	} else {
     	    col += mask * sample_skybox_and_clouds(res.pos, res.dir);
 			break;
@@ -319,6 +321,93 @@ public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) 
 		if ((uniforms.toggles_bitmask & 1) != 0) {
 			break;
 		}
+	}
+
+
+	return col;
+}
+
+
+public float3 trace_scene_singlebounce(uint2 id, float3 ray_pos, float3 ray_dir) {
+	float3 col = 0.0;
+	float3 mask = 1.0;
+
+	float3 camera_view = -ray_dir;
+
+	TraceRes res = trace(ray_pos, ray_dir);
+
+	if (res.hit) {  
+		float3 world = res.pos;
+		float3 normal = res.normal;
+
+		float3 diffuse = 1.0; 
+		float3 arm = float3(1, 1, 0);
+
+		if (res.data.instance_custom_index != 0) {
+			arm = float3(1, 0.8, 0);
+
+			// tree colours
+			float3 trunk = hex2col(0x564631) * (noise(world * 20.2) * 0.2 + 0.9);
+			float3 leaf = hex2col(0x588732) * (noise(world * 10.0) * 0.2 + 0.9);
+			diffuse = lerp(trunk, leaf, res.data.material);
+			
+
+			// cheese colours
+			//diffuse = hex2col(0xf7de51) * (noise(world * 10.0) * 0.3 + 0.5);
+		}
+
+		if ((uniforms.toggles_bitmask & 4) == 0 && res.data.instance_custom_index == 0) {
+			// TODO: file a bug report SOMEWHERE because these NonUniformResourceIndex are not doing anything
+			// (even tried with a simpler setup that uses NonUniformResourceIndex into a texture sample, still does not work) 
+			uint material_index = NonUniformResourceIndex(floor((snoise(world.xz * 0.03) * 0.5 + 0.5) * 4));
+			uint index = NonUniformResourceIndex(storage_buffers_readonly[STORAGE_BUFFER_MATERIALS_BUFFER].Load<uint32_t>(NonUniformResourceIndex(material_index * 4)));
+		
+
+			diffuse = sample_triplanar(index, world, normal);
+			arm = sample_triplanar(index+1, world, normal);
+			normal = sample_triplanar_normal(index+2, world, normal);
+		
+			diffuse = lerp(diffuse, 1.0, res.data.material);
+			arm = lerp(arm, float3(1, 1.0, 0.0), res.data.material);
+			normal = normalize(lerp(normal, res.normal, res.data.material));
+		}
+
+
+
+		
+		PbrSurfaceData surface = PbrSurfaceData(res.pos, diffuse, normal, AoRoughnessMetallic(arm));
+		CameraData camera = CameraData(camera_view);
+		
+		// opaque surface, non refractive
+		float3 sun = uniforms.sun.xyz;
+		float3 sun_colour = sun_colour(sun.xyz);
+		SunData light = SunData(sun.xyz, 16.0);
+
+		float3 radiance = radiance_sun(surface, camera, light);
+
+		// IBL diffuse term
+		float3 f0 = lerp(0.04, surface.albedo, surface.arm.metallic);
+		float3 ks = fresnelRoughness(f0, surface.normal, camera.view, surface.arm.roughness);
+		float3 kd = (1 - ks) * (1 - surface.arm.metallic);
+		
+		float3 ambient = surface.albedo * kd * surface.arm.ao * sampled_images_3d[SDF_TEXTURE3_SAMPLED_IMAGE_IDX].Sample(samplers[LINEAR_CLAMPED_SAMPLER_IDX], ((world / GI_TEXTURE_SCALING) / GI_TEXTURE_SIZE) + 0.5).xyz;
+		
+		
+		// TODO: there's still a problem here. plasticy materials (roughness~0, metallic~0) look like metals. I'm forgetting to account for something here. I don't know my PBR
+		col += mask * radiance + mask * ambient;
+		mask *= lerp(fresnelRoughness(surface.albedo, surface.normal, camera.view, surface.arm.roughness), surface.albedo, surface.arm.metallic);
+
+		float3 random_normal = normal + GetRandomSphereDir();
+		float3 reflected_ray_dir = reflect(ray_dir, normal);
+
+		// TODO: this is also wrong. instead of shooting *one* ray for the surface we need to shoot the ambient and reflection rays separately. we cannot just shoot one to approximate both effect
+		ray_dir = normalize(lerp(reflected_ray_dir, random_normal, surface.arm.roughness));
+		ray_pos = res.pos + ray_dir * 0.01;
+		camera_view = -ray_dir;
+		
+		col += ks * sampled_images_3d[SDF_TEXTURE4_SAMPLED_IMAGE_IDX].Sample(samplers[LINEAR_CLAMPED_SAMPLER_IDX], ((world / GI_TEXTURE_SCALING) / GI_TEXTURE_SIZE) + 0.5).xyz;
+	} else {
+		col += mask * sample_skybox_and_clouds(res.pos, res.dir);
 	}
 
 

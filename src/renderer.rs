@@ -635,6 +635,8 @@ impl InternalApp {
         storage_images_allocator.push(self.scene.texture.image_view);
         storage_images_allocator.push(self.scene.texture2.image_view);
         storage_images_allocator.push(self.scene.texture3.image_view);
+        storage_images_allocator.push(self.scene.texture4.image_view);
+
 
         // add bloom storage image views
         let bloom_storage_images_start_index = storage_images_allocator.current();
@@ -690,6 +692,7 @@ impl InternalApp {
         sampled_images_allocator.push(self.scene.texture.image_view);
         sampled_images_allocator.push(self.scene.texture2.image_view);
         sampled_images_allocator.push(self.scene.texture3.image_view);
+        sampled_images_allocator.push(self.scene.texture4.image_view);
 
 
         
@@ -1295,6 +1298,16 @@ impl InternalApp {
         let group_count = self.scene.texture3.size.map(|x| x.div_ceil(4));
         self.device.cmd_dispatch(cmd, group_count.w, group_count.h, group_count.d);
 
+        self.device.cmd_bind_pipeline(
+            cmd,
+            vk::PipelineBindPoint::COMPUTE,
+            self.compute_pipelines[COMPUTE_LIGHTPROBES]["main2"],
+        );
+
+
+        let group_count = self.scene.texture3.size.map(|x| x.div_ceil(4));
+        self.device.cmd_dispatch(cmd, group_count.w, group_count.h, group_count.d);
+
         
         
         let skybox_subresource_range = vk::ImageSubresourceRange::default()
@@ -1768,7 +1781,7 @@ unsafe fn compile_all_shaders(
         file_name_without_extension: COMPUTE_SDF,
     }, pipeline::PipelineCreateSettings {
         pipeline_debug_name: "compute lightprobes shader",
-        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["main"] },
+        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["main", "main2"] },
         spec_constants: Some(&spec_constants),
         file_name_without_extension: COMPUTE_LIGHTPROBES,
     }];
