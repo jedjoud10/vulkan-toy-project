@@ -11,6 +11,7 @@ use rayon::iter::ParallelIterator;
 use smallvec::SmallVec;
 use crate::material::GpuMaterialInfo;
 use crate::ray_tracing;
+use crate::scene;
 use crate::sdf_texture;
 use crate::query_pool_statistics;
 use crate::debug_text;
@@ -144,7 +145,7 @@ pub struct InternalApp {
     materials: Vec<Material>,
     materials_buffer: buffer::Buffer,
 
-    scene: crate::scene::Scene,
+    scene: scene::Scene,
     
     // voxels: SparseVoxelOctree,
     // voxels2: TestingStructure,
@@ -368,7 +369,7 @@ impl InternalApp {
             vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST
         );
 
-        let scene = crate::scene::Scene::new(&mut ctx);
+        let scene = scene::Scene::new(&mut ctx);
         let counters_of_various_types = buffer::create_buffer_default_flags(&mut ctx, size_of::<u32>() * 100, "counters");
 
 
@@ -636,10 +637,10 @@ impl InternalApp {
         storage_images_allocator.push(self.skybox.clouds_image_view);
         storage_images_allocator.push(self.scene.texture.image_view);
         storage_images_allocator.push(self.scene.texture2.image_view);
-        storage_images_allocator.push(self.scene.texture3.image_view);
+        storage_images_allocator.push(self.scene.vxgi_texture.image_view);
         
         let sdf_storage_images_start_index = storage_images_allocator.current();
-        for image_mip in self.scene.texture3.specific_mip_image_views.as_ref().unwrap().iter() {
+        for image_mip in self.scene.vxgi_texture.specific_mip_image_views.as_ref().unwrap().iter() {
             storage_images_allocator.push(*image_mip);
         }
 
@@ -700,10 +701,10 @@ impl InternalApp {
         sampled_images_allocator.push(render_targets.rendered_image_view);
         sampled_images_allocator.push(self.scene.texture.image_view);
         sampled_images_allocator.push(self.scene.texture2.image_view);
-        sampled_images_allocator.push(self.scene.texture3.image_view);
+        sampled_images_allocator.push(self.scene.vxgi_texture.image_view);
         
         let sdf_sampled_images_start_index = sampled_images_allocator.current();
-        for image_mip in self.scene.texture3.specific_mip_image_views.as_ref().unwrap().iter() {
+        for image_mip in self.scene.vxgi_texture.specific_mip_image_views.as_ref().unwrap().iter() {
             sampled_images_allocator.push(*image_mip);
         }
 
@@ -1230,8 +1231,8 @@ impl InternalApp {
                     &self.scene.blases[2]
                 );
             } else if self.click_type == 1 {
-                let aabb_index = 1 & crate::scene::INSTANCE_CUSTOM_INDEX_AABB_LOOKUP_INDEX_MASK;
-                let is_local_sdf = crate::scene::INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK;
+                let aabb_index = 1 & scene::INSTANCE_CUSTOM_INDEX_AABB_LOOKUP_INDEX_MASK;
+                let is_local_sdf = scene::INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK;
 
                 self.scene.blases_instances.push(ray_tracing::instantiate_blas(
                     vek::Quaternion::identity(),
@@ -1312,7 +1313,7 @@ impl InternalApp {
         );
 
 
-        let group_count = self.scene.texture3.size.map(|x| x.div_ceil(4));
+        let group_count = self.scene.vxgi_texture.size.map(|x| x.div_ceil(4));
         self.device.cmd_dispatch(cmd, group_count.w, group_count.h, group_count.d);
 
         let full_image_barrier = vk::ImageMemoryBarrier2::default()
@@ -1324,13 +1325,13 @@ impl InternalApp {
             .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)
-            .image(self.scene.texture3.image)
+            .image(self.scene.vxgi_texture.image)
             .subresource_range(subresource_range);
         let image_memory_barriers = [full_image_barrier];
         let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
-        let mips = self.scene.texture3.specific_mip_image_views.as_ref().unwrap();
+        let mips = self.scene.vxgi_texture.specific_mip_image_views.as_ref().unwrap();
 
         for mip_index in 0..mips.len() {
             let mip_index = mip_index as u32;
@@ -1349,7 +1350,7 @@ impl InternalApp {
                 .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
                 .src_queue_family_index(self.queue_family_index)
                 .dst_queue_family_index(self.queue_family_index)
-                .image(self.scene.texture3.image)
+                .image(self.scene.vxgi_texture.image)
                 .subresource_range(previous_mip_level_subresource_range);
             let barriers = [previous_mip_image_memory_barrier];
             let dep = vk::DependencyInfo::default().image_memory_barriers(&barriers);
@@ -1365,7 +1366,7 @@ impl InternalApp {
 
             let scaling_factor = 2 << mip_index;
 
-            let group_count = self.scene.texture3.size.map(|x| (x / scaling_factor).div_ceil(4));
+            let group_count = self.scene.vxgi_texture.size.map(|x| (x / scaling_factor).div_ceil(4));
 
             let pc = [sdf_storage_images_start_index + mip_index, sdf_storage_images_start_index + mip_index + 1];
             self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytes_of(&pc));
@@ -1833,6 +1834,7 @@ unsafe fn compile_all_shaders(
         spec_constants_bitflags,
         skybox::SKYBOX_RESOLUTION, skybox::CLOUDS_RESOLUTION, skybox::AMBIENT_SKYBOX_RESOLUTION,
         args.downscale_factor,
+        scene::VXGI_TEXTURE_SIZE
     ];
 
     let settings = [pipeline::PipelineCreateSettings {

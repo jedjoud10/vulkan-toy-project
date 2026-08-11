@@ -4,8 +4,9 @@
 #include "bindless.slang"
 #include "sdf.slang"
 
-public static const uint GI_TEXTURE_SIZE = 128;
-public static const float GI_TEXTURE_SCALING = 1/4.0;
+
+public static const float VXGI_TEXTURE_SCALING = 1/4.0;
+public static const float VXGI_VOXEL_SIZE = VXGI_TEXTURE_SIZE * VXGI_TEXTURE_SCALING;
 
 // using during the rendering stage
 public static const float NORMAL_OFFSET = 0.5;
@@ -16,7 +17,7 @@ public static const uint STEP_COUNT = 32;
 public static const float DIFFUSE_AMBIENT_HALF_ANGLE_RADIAN = 0.5;
 
 public float4 sample_vxgi(float4 position_lod) {
-	return sampled_images_3d[SDF_TEXTURE3_SAMPLED_IMAGE_IDX].SampleLevel(samplers[LINEAR_CLAMPED_SAMPLER_IDX], ((position_lod.xyz / GI_TEXTURE_SCALING) / GI_TEXTURE_SIZE) + 0.5, position_lod.w);
+	return sampled_images_3d[VXGI_SAMPLED_IMAGE_IDX].SampleLevel(samplers[LINEAR_CLAMPED_SAMPLER_IDX], ((position_lod.xyz / VXGI_TEXTURE_SCALING) / VXGI_TEXTURE_SIZE) + 0.5, position_lod.w);
 }
 
 // https://github.com/jedjoud10/URP-Testing/blob/main/Assets/VoxelGlobalIllumination.compute#L161-L206
@@ -37,6 +38,7 @@ public float3 trace_vxgi(float3 position, float3 normal, float half_angle_radian
         float sphere_radius = dist * tanned;
 
         // compute mip based on sphere radius. if sphere radius is 0.5, this should result in a mip of 0, since radius would span over an entire voxel
+        // FIXME: doesn't account for voxel size frick
         float mip_level = clamp(log(sphere_radius + 1) * inv_log_2, 0, MIP_COUNT_LIMIT);
 
 		// sample from specific mip
@@ -57,7 +59,6 @@ public float3 trace_vxgi(float3 position, float3 normal, float half_angle_radian
         ray_pos += step;
     }
 
-	// return colour + get_environment_diffuse(normal) * 0.2;
 	return colour;
 }
 
@@ -65,6 +66,8 @@ public float3 trace_vxgi(float3 position, float3 normal, float half_angle_radian
 public static const float MAX_DISTANCE_THESHOLD = 1.5;
 public static const float INSIDE_DISTANCE_OPACITY_MULTIPLIER = 8;
 public static const float RADIANCE_MULTIPLIER = 4;
+
+// does this need to be equal to NORMAL_OFFSET?
 public static const float OUTSETTING = 0.5;
 
 #ifdef FINITE_DIFF_NORMALS

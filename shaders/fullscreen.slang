@@ -42,6 +42,9 @@ void main(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID) {
                 uint64_t clock2 = clockARB();
                 col = min((float64_t)(clock2-clock) / ((float64_t)100000.0), 1);
                 break;
+            case 5: 
+                col = trace_vxgi(ray_pos, ray_dir, 0.0);
+                break;
             default:
                 col = 0.0; 
         }

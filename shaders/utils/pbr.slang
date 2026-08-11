@@ -231,6 +231,7 @@ public float3 trace_scene_singlebounce(uint2 id, float3 ray_pos, float3 ray_dir)
 	if (res.hit) {  
 		float3 world = res.pos;
 		float3 normal = res.normal;
+		float3 geometry_normal = res.normal;
 
 		float3 diffuse = 1.0; 
 		float3 arm = float3(1, 1, 0);
@@ -263,9 +264,6 @@ public float3 trace_scene_singlebounce(uint2 id, float3 ray_pos, float3 ray_dir)
 			arm = lerp(arm, float3(1, 1.0, 0.0), res.data.material);
 			normal = normalize(lerp(normal, res.normal, res.data.material));
 		}
-
-
-
 		
 		PbrSurfaceData surface = PbrSurfaceData(res.pos, diffuse, normal, AoRoughnessMetallic(arm));
 		CameraData camera = CameraData(camera_view);
@@ -282,16 +280,28 @@ public float3 trace_scene_singlebounce(uint2 id, float3 ray_pos, float3 ray_dir)
 		float3 ks = fresnelRoughness(f0, surface.normal, camera.view, surface.arm.roughness);
 		float3 kd = (1 - ks) * (1 - surface.arm.metallic);
 
-		float3 sampled_ambient = trace_vxgi(world, normal, DIFFUSE_AMBIENT_HALF_ANGLE_RADIAN);
+		float3 sampled_ambient = trace_vxgi(world, geometry_normal, DIFFUSE_AMBIENT_HALF_ANGLE_RADIAN);
 		/*
+		// this is "more correct", to approximate diffuse lighting, but surprisingly, shooting only one cone works fine for now
 		float3 sampled_ambient = 0.0;
 		for (int r = 0; r < 8; r++) {
 			sampled_ambient += trace_vxgi(world, normalize(normal + ((hash33(r * 100.5342 + world * 54.23423) - 0.5) * 1.0)), DIFFUSE_AMBIENT_HALF_ANGLE_RADIAN) / 8.0;
 		}
 		*/
-		sampled_ambient += get_environment_diffuse(normal) * 0.2;
+		sampled_ambient += get_environment_diffuse(geometry_normal) * 0.2;
 		float3 ambient = surface.albedo * kd * surface.arm.ao * sampled_ambient;
 		col += radiance + ambient;
+
+		// HACK: hacky way to get reflections
+		// ideally we would figure out if a ray is "mirror like", and instead trace a new ray from scratch instead of using the VXGI map 
+		// horribly slow on the mud material, probably because of high thread divergence and chache line misses
+		/*
+		if (surface.arm.roughness < 1.0) {
+			float3 reflected = reflect(ray_dir, normal);
+			col += trace_vxgi(world, reflected, surface.arm.roughness * 0.1) * ks;
+			col += sample_skybox_and_clouds(world, reflected) * ks * (1 - surface.arm.roughness);
+		}
+		*/
 
 		if ((uniforms.toggles_bitmask & 8) != 0) {
 			col = ambient;
@@ -301,18 +311,7 @@ public float3 trace_scene_singlebounce(uint2 id, float3 ray_pos, float3 ray_dir)
 			float4 k = sample_vxgi(float4(world - res.normal * 0.3, 0));
 			col = k.xyz;
 		}
-
-
-		// HACK: hacky way to get reflections
-		// ideally we would figure out if a ray is "mirror like", and instead trace a new ray from scratch instead of using the VXGI map 
-		/*
-		if (surface.arm.roughness < 1.0) {
-			float3 reflected = reflect(ray_dir, normal);
-			col += surface.albedo * trace_vxgi(world, reflected, surface.arm.roughness * 0.1) * ks;
-			col += sample_skybox_and_clouds(world, reflected) * ks * (1 - surface.arm.roughness);
-		}
-		*/
-
+		
 	} else {
 		col = sample_skybox_and_clouds(res.pos, res.dir);
 	}

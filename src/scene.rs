@@ -27,8 +27,7 @@ pub const INSTANCE_CUSTOM_INDEX_AABB_LOOKUP_INDEX_MASK: u32 = 15;
 pub const INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK: u32 = 16;
 pub const INSTANCE_CUSTOM_INDEX_LOOKUP_AABB_USING_PRIMITIVE_INDEX_FLAG_MASK: u32 = 32;
 
-pub const GI_TEXTURE_SIZE: u32 = 128;
-
+pub const VXGI_TEXTURE_SIZE: u32 = 128;
 pub const SPAWN_TREES: bool = false;
 
 pub struct Scene {
@@ -47,7 +46,8 @@ pub struct Scene {
 
     pub texture2: sdf_texture::SdfImage,
 
-    pub texture3: sdf_texture::SdfImage,
+    pub vxgi_texture: sdf_texture::SdfImage,
+    
     pub texture4: sdf_texture::SdfImage,
     
 
@@ -58,8 +58,8 @@ impl Scene {
     pub unsafe fn new(mut ctx: &mut GraphicsContext) -> Self {
         let texture = sdf_texture::create_voxel_image(ctx, vek::Extent3::broadcast(256), vk::Format::R16_SFLOAT, None);
         let texture2 = sdf_texture::create_voxel_image(ctx, vek::Extent3::broadcast(64), vk::Format::R16G16_SFLOAT, None);
-        let texture3 = sdf_texture::create_voxel_image(ctx, vek::Extent3::broadcast(GI_TEXTURE_SIZE), vk::Format::R16G16B16A16_SFLOAT, Some(6));
-        let texture4 = sdf_texture::create_voxel_image(ctx, vek::Extent3::broadcast(GI_TEXTURE_SIZE), vk::Format::R16G16B16A16_SFLOAT, None);
+        let vxgi_texture = sdf_texture::create_voxel_image(ctx, vek::Extent3::broadcast(VXGI_TEXTURE_SIZE), vk::Format::R16G16B16A16_SFLOAT, Some(6));
+        let texture4 = sdf_texture::create_voxel_image(ctx, vek::Extent3::broadcast(128), vk::Format::R16G16B16A16_SFLOAT, None);
 
         let cmd = others::begin_recording(&mut ctx);
         let mut writer = buffer::begin_buffer_writer(&mut ctx);
@@ -233,7 +233,7 @@ impl Scene {
             texture2,
             primitives,
             primitives_buffer,
-            texture3,
+            vxgi_texture,
             texture4,
             modifiable_aabb: Aabb { min: vek::Vec3::broadcast(100f32), max: vek::Vec3::broadcast(-100f32) },
         }
@@ -242,7 +242,7 @@ impl Scene {
     pub unsafe fn destroy(self, device: &ash::Device, acceleration_structure_device: &ash::khr::acceleration_structure::Device, mut allocator: &mut gpu_allocator::vulkan::Allocator) {
         self.texture.destroy(&device, &mut allocator);
         self.texture2.destroy(&device, &mut allocator);
-        self.texture3.destroy(&device, &mut allocator);
+        self.vxgi_texture.destroy(&device, &mut allocator);
         self.texture4.destroy(&device, &mut allocator);
         
         

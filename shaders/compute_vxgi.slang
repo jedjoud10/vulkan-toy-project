@@ -9,15 +9,18 @@ void voxelize (uint3 id : SV_DispatchThreadID) {
     float3 p = (id.xyz + 1.0);
 
     // [-TEXTURE_SIZE/2..TEXTURE_SIZE/2]
-    p -= GI_TEXTURE_SIZE/2;
+    p -= VXGI_TEXTURE_SIZE/2;
 
     // [-MAP_SIZE/2..MAP_SIZE/2]
-    p *= GI_TEXTURE_SCALING;
+    p *= VXGI_TEXTURE_SCALING;
 
     uniforms = load_per_frame_uniforms();
+
     float2 da = d(p);
 
-    storage_images_3d[SDF_TEXTURE3_STORAGE_IMAGE_IDX].Store(id, float4(0));
+	// TODO: it would be here where we "inject" the BLAS instances, since they would not be stored in the global function `d`
+
+    storage_images_3d[VXGI_STORAGE_IMAGE_IDX].Store(id, float4(0));
 
     // why exactly?
     if (da.x > MAX_DISTANCE_THESHOLD) {
@@ -53,7 +56,7 @@ void voxelize (uint3 id : SV_DispatchThreadID) {
 
     // pre-multiplied opacity for some fucking reason
     // actual reaon: cells well within the surface itself should have "more strong" colour compared to one on the outer surface
-    storage_images_3d[SDF_TEXTURE3_STORAGE_IMAGE_IDX].Store(id, float4(colour*opacity, opacity));
+    storage_images_3d[VXGI_STORAGE_IMAGE_IDX].Store(id, float4(colour*opacity, opacity));
     
 }
 

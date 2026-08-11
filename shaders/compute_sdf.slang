@@ -57,6 +57,7 @@ void main(uint3 id: SV_DispatchThreadID, uniform uint add) {
     float3 pos = uniforms.position.xyz + uniforms.forward.xyz * 5.0;
 
     float sdf = sdRoundBox(p - pos, 0.8, 0.2);
+    // float sdf = length(p - pos) - 0.4;
     if (add == 1) {
         prev = min(prev, sdf);
     } else {
