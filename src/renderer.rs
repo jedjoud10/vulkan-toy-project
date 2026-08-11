@@ -1257,6 +1257,7 @@ impl InternalApp {
         let group_count = self.scene.texture2.size.map(|x| x.div_ceil(4));
         self.device.cmd_dispatch(cmd, group_count.w, group_count.h, group_count.d);
 
+        self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, query_pool_statistics::SDF_PASS_TO_VXGI_PASS_QUERY);
 
         let skybox_subresource_range = vk::ImageSubresourceRange::default()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -1366,7 +1367,7 @@ impl InternalApp {
 
             let group_count = self.scene.texture3.size.map(|x| (x / scaling_factor).div_ceil(4));
 
-            let pc = [sdf_sampled_images_start_index + mip_index, sdf_storage_images_start_index + mip_index + 1];
+            let pc = [sdf_storage_images_start_index + mip_index, sdf_storage_images_start_index + mip_index + 1];
             self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytes_of(&pc));
 
             self.device.cmd_dispatch(cmd, group_count.w, group_count.h, group_count.d);
@@ -1462,7 +1463,7 @@ impl InternalApp {
             self.compute_pipelines[COMPUTE_FULLSCREEN]["main"],
         );
 
-        self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, query_pool_statistics::SDF_PASS_TO_MAIN_FRAME_QUERY);
+        self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, query_pool_statistics::VXGI_PASS_TO_MAIN_FRAME_QUERY);
 
         self.device.cmd_dispatch(cmd, size.x.div_ceil(8), size.y.div_ceil(8), 1);
 

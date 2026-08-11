@@ -4,7 +4,7 @@ use ash::vk;
 
 use crate::per_frame_data;
 
-pub const NUM_TIMESTAMP_QUERIES: usize = 5;
+pub const NUM_TIMESTAMP_QUERIES: usize = 6;
 pub const BUFFER_SIZE: usize = 8;
 
 struct SingleRegion {
@@ -40,15 +40,17 @@ pub const ENTIRE_FRAME_QUERY_START: u32 = 0;
 
 pub const SKYBOX_PASS_TO_SDF_PASS_QUERY: u32 = 1;
 
-pub const SDF_PASS_TO_MAIN_FRAME_QUERY: u32 = 2;
+pub const SDF_PASS_TO_VXGI_PASS_QUERY: u32 = 2;
 
-pub const MAIN_FRAME_TO_POST_PROCESS_QUERY: u32 = 3;
+pub const VXGI_PASS_TO_MAIN_FRAME_QUERY: u32 = 3;
 
-pub const ENTIRE_FRAME_QUERY_FINISH: u32 = 4;
+pub const MAIN_FRAME_TO_POST_PROCESS_QUERY: u32 = 4;
+
+pub const ENTIRE_FRAME_QUERY_FINISH: u32 = 5;
 
 
 pub struct QueryPoolStatistics {
-    regions: [SingleRegion; 5]
+    regions: [SingleRegion; 6]
 }
 
 impl QueryPoolStatistics {
@@ -57,14 +59,16 @@ impl QueryPoolStatistics {
 
         let skybox_region = SingleRegion::new("skybox pass", ENTIRE_FRAME_QUERY_START, SKYBOX_PASS_TO_SDF_PASS_QUERY);
 
-        let sdf_generation_pass = SingleRegion::new("SDF generation pass", SKYBOX_PASS_TO_SDF_PASS_QUERY, SDF_PASS_TO_MAIN_FRAME_QUERY);
+        let sdf_generation_pass = SingleRegion::new("SDF generation pass", SKYBOX_PASS_TO_SDF_PASS_QUERY, SDF_PASS_TO_VXGI_PASS_QUERY);
 
-        let compute_region = SingleRegion::new("main frame pass", SDF_PASS_TO_MAIN_FRAME_QUERY, MAIN_FRAME_TO_POST_PROCESS_QUERY);
+        let vxgi_pass = SingleRegion::new("vxgi pass", SDF_PASS_TO_VXGI_PASS_QUERY, VXGI_PASS_TO_MAIN_FRAME_QUERY);
+
+        let compute_region = SingleRegion::new("main frame pass", VXGI_PASS_TO_MAIN_FRAME_QUERY, MAIN_FRAME_TO_POST_PROCESS_QUERY);
 
         let bloom_region = SingleRegion::new("postprocess pass", MAIN_FRAME_TO_POST_PROCESS_QUERY, ENTIRE_FRAME_QUERY_FINISH);
     
         Self {
-            regions: [entire_frame, skybox_region, sdf_generation_pass, compute_region, bloom_region]
+            regions: [entire_frame, skybox_region, sdf_generation_pass, vxgi_pass, compute_region, bloom_region]
         }
     }
 
@@ -98,7 +102,7 @@ impl QueryPoolStatistics {
     }
 
     pub fn get_compute_region_duration_in_ms(&self) -> f64 {
-        self.regions[3].get_average_in_ms()
+        self.regions[4].get_average_in_ms()
     }
 }
 

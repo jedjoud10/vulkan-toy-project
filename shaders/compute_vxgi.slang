@@ -1,21 +1,6 @@
 #include "utils/bindless.slang"
 #include "utils/pbr.slang"
-
-static const int TEXTURE_RES = GI_TEXTURE_SIZE;
-static const float MAX_DISTANCE_THESHOLD = 1.5;
-
-float3 test(float3 p)
-{
-    float eps = 0.01;
-    float x = d(p - float3(eps, 0, 0)).x;
-    float y = d(p - float3(0, eps, 0)).x;
-    float z = d(p - float3(0, 0, eps)).x;
-    float b = d(p).x;
-
-
-    return (float3(b-x, b-y, b-z) / eps);
-}
-
+#include "utils/vxgi.slang"
 
 [shader("compute")]
 [numthreads(4,4,4)]
@@ -34,71 +19,20 @@ void voxelize (uint3 id : SV_DispatchThreadID) {
 
     storage_images_3d[SDF_TEXTURE3_STORAGE_IMAGE_IDX].Store(id, float4(0));
 
+    // why exactly?
     if (da.x > MAX_DISTANCE_THESHOLD) {
         return;
     }
 
     float m = da.y;
+    float3 n = get_vxgi_sdf_normal(p);
 
-
-    /*
-    DifferentialPair<float3> dp_a = diffPair(p);
-    bwd_diff(d)(dp_a, 1.0);
-    float3 n = normalize(dp_a.d); 
-    */
-
-    float3 n = normalize(test(p));
-
+    // SDF might be broken at some weird boundaries idk
     if (any(isnan(n))) {
         n = 0;
     }
 
-    // offset point by normal a bit
-    //p -= n;
-
-    /*
-	int count = 0;
-
-	// TODO: optimize this using sparse structure
-	// this kernel is taking 2.5ms on my machine. That is nearly 50% of the entire time spent doing VXGI (total of 5.5ms)
-	for (int i = 0; i < numBoundsStuff; i++) {
-		Bound t = unpack_bound(voxelizationObjectBounds[i]);
-
-		float3 center = (t.max.xyz + t.min.xyz) * 0.5;
-		float3 size = (t.max.xyz - t.min.xyz) * 0.5;
-
-		
-		// we only use the matrices for rotations since we already know center and size
-		float3 rotated = rotate_vector(center - p, q_inverse(t.quaternion));
-
-		// float4 sampled = sdgBox(center - p, size, 0);
-		float4 sampled = sdgBox(rotated, size, 0.0);
-
-		// we just need to find the FIRST intersecting OBB
-		// we can exit afterwards
-		if (sampled.x < threshold) {
-			colour += float4(t.emissive.xyz, 1);
-			n += rotate_vector(normalize(sampled.yzw), t.quaternion).xyz;
-			count += 1;
-		}
-	}
-    
-    
-	mainTex[id.xyz] = colour / max(count, 1);
-	normalsTex[id.xyz] = float4(-normalize(n), 1);
-    */
-
-    /*
-    if (any(isnan(n))) {
-        storage_images_3d[SDF_TEXTURE3_STORAGE_IMAGE_IDX].Store(id, float4(100));
-        return;
-    }    
-    */
-
-    float inside_distance_opacity_multiplier = 2;
-    float radiance_multiplier = 8;
-    float outsetting = 0.5;
-    float3 outsetted = p + n * outsetting;
+    float3 outsetted = p + n * OUTSETTING;
 
     float3 diffuse = get_diffuse_colour_only(outsetted, n, m);
     PbrSurfaceData surface = PbrSurfaceData(outsetted, diffuse, n, AoRoughnessMetallic(float3(1, 1, 0)));
@@ -109,50 +43,40 @@ void voxelize (uint3 id : SV_DispatchThreadID) {
     // globally illuminate other objects depending on the viewing angle
     CameraData camera = CameraData(n);
       
-	float3 colour = radiance_sun(surface, camera, sun) * radiance_multiplier;
-
-    // colour += sample_skybox_and_clouds(p, n) * 0.5;
-
+	float3 colour = radiance_sun(surface, camera, sun) * RADIANCE_MULTIPLIER;
     if (any(isnan(colour))) {
         colour = 0;
     }
 
     //float opacity = 1.000;
-    float opacity = saturate(-da.x*inside_distance_opacity_multiplier);
+    float opacity = saturate(-da.x*INSIDE_DISTANCE_OPACITY_MULTIPLIER);
 
+    // pre-multiplied opacity for some fucking reason
+    // actual reaon: cells well within the surface itself should have "more strong" colour compared to one on the outer surface
     storage_images_3d[SDF_TEXTURE3_STORAGE_IMAGE_IDX].Store(id, float4(colour*opacity, opacity));
-    //storage_images_3d[SDF_TEXTURE4_STORAGE_IMAGE_IDX].Store(id, float4(n, 1));
     
 }
 
 [shader("compute")]
 [numthreads(4,4,4)]
-void mip_map_downsample(uint3 id : SV_DispatchThreadID, uniform uint src_mip_sampled_image_index, uniform uint dst_storage_mip_index) {
+void mip_map_downsample(uint3 id : SV_DispatchThreadID, uniform uint src_storage_mip_index, uniform uint dst_storage_mip_index) {
 	float4 summed = 0;
-	const static int size = 2;
+	const static int size = 1;
 	const static int volume = (size*2 + 1) * (size*2 + 1) * (size*2 + 1); 
-	const static float scale = 2.5;
-
-	float max_alpha = 0;
+	const static int scale = 1;
 
 	for (int x = -size; x <= size; x++) {
 		for (int y = -size; y <= size; y++) {
 			for (int z = -size; z <= size; z++) {
-                float3 texture_position = id.xyz * 2 + float3(x,y,z) * scale;
+                int3 texture_position = id.xyz * 2 + int3(x,y,z) * scale;
 
-				float4 loaded = sampled_images_3d[src_mip_sampled_image_index].Sample(samplers[LINEAR_CLAMPED_SAMPLER_IDX], texture_position / TEXTURE_RES);
-				//summed += loaded * loaded.w;
-                summed += loaded;
-                max_alpha = max(max_alpha, loaded.w);
+				float4 loaded = storage_images_3d[src_storage_mip_index].Load(texture_position);
+				summed += loaded;
 			}
 		}	
 	}
 
-    float4 a = float4(summed.xyz / volume, max_alpha);
-    float4 b = summed / volume;
-    
-
-	storage_images_3d[dst_storage_mip_index].Store(id, a);
+	storage_images_3d[dst_storage_mip_index].Store(id, summed / volume);
 }
 
 /*

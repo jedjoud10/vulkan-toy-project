@@ -6,6 +6,7 @@
 #include "ray_stuff_other.slang"
 #include "sdf.slang"
 #include "triplanar.slang"
+#include "vxgi.slang"
 
 #define PI 3.1415926538
 
@@ -219,177 +220,8 @@ float3 get_diffuse_colour_only(float3 world, float3 normal, float material) {
 	return diffuse;
 }
 
-static const uint GI_TEXTURE_SIZE = 128;
-static const float GI_TEXTURE_SCALING = 1/4.0;
-
-
-static const float startOffset = 0.5;
-static const float mipMapCountLimit = 3;
-static const float minOpacityBreak = 0.8;
-static const float vxgiRayLength = 15.0;
-static const uint stepCount = 64;
-static const float diffuseAmbientHalfAngleRadian = 0.2;
-
-
-
-float4 sample_vxgi(float4 position_lod) {
-	return sampled_images_3d[SDF_TEXTURE3_SAMPLED_IMAGE_IDX].SampleLevel(samplers[LINEAR_CLAMPED_SAMPLER_IDX], ((position_lod.xyz / GI_TEXTURE_SCALING) / GI_TEXTURE_SIZE) + 0.5, position_lod.w);
-}
-
-// https://github.com/jedjoud10/URP-Testing/blob/main/Assets/VoxelGlobalIllumination.compute#L161-L206
-float3 trace_vxgi(float3 position, float3 normal, float half_angle_radian) {
-    float3 ray_pos = position + normal * startOffset;
-    
-	float3 colour = 0.0;
-    float opacity = 0.0;
-
-    float step_size = vxgiRayLength / stepCount;
-    float3 step = normal * step_size;
-    float dist = startOffset;
-    float inv_log_2 = 1.0 / 0.301029;
-    float tanned = tan(clamp(half_angle_radian, 0, 3.141 * 0.5));
-
-    for (int i = 0; i < stepCount; i++) {
-        // uses the distance and the half angle to approximate sphere radius at specific distance along cone
-        float sphere_radius = dist * tanned;
-
-        // compute mip based on sphere radius. if sphere radius is 0.5, this should result in a mip of 0, since radius would span over an entire voxel
-        float mip_level = clamp(log(sphere_radius + 1) * inv_log_2, 0, mipMapCountLimit);
-
-		// sample from specific mip
-		float4 pos = float4(ray_pos, mip_level);
-
-		float4 sampled = sample_vxgi(pos);
-
-		// https://kth.diva-portal.org/smash/get/diva2:1886204/FULLTEXT01.pdf
-        colour += (1 - opacity) * sampled.w * sampled.xyz;
-		opacity += (1 - opacity) * sampled.w;
-
-		// exit if the sampled voxel is too opaque (meaning that there would be no point in sampling after this voxel; everything would be occluded)
-		if (sampled.w > minOpacityBreak) {
-			break;
-		}
-
-		dist += step_size;
-        ray_pos += step;
-    }
-
-	return colour;
-}
-
-
-public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) {
-	float3 col = 0.0;
-	float3 mask = 1.0;
-	InitRandom(id.xy, (uint32_t)uniforms.frame_count);
-
-	float3 camera_view = -ray_dir;
-
-	// https://dubiousconst282.github.io/2024/10/03/voxel-ray-tracing/
-	for (int bounce = 0; bounce < 2; bounce++) {
-		TraceRes res = trace(ray_pos, ray_dir);
-
-    	if (res.hit) {  
-			float3 world = res.pos;
-			float3 normal = res.normal;
-
-			float3 diffuse = 1.0; 
-			float3 arm = float3(1, 1, 0);
-
-			if (res.data.instance_custom_index != 0) {
-				arm = float3(1, 0.8, 0);
-
-				// tree colours
-				float3 trunk = hex2col(0x564631) * (noise(world * 20.2) * 0.2 + 0.9);
-				float3 leaf = hex2col(0x588732) * (noise(world * 10.0) * 0.2 + 0.9);
-				diffuse = lerp(trunk, leaf, res.data.material);
-				
-
-				// cheese colours
-				//diffuse = hex2col(0xf7de51) * (noise(world * 10.0) * 0.3 + 0.5);
-			}
-
-			if ((uniforms.toggles_bitmask & 4) == 0 && res.data.instance_custom_index == 0) {
-				// TODO: file a bug report SOMEWHERE because these NonUniformResourceIndex are not doing anything
-				// (even tried with a simpler setup that uses NonUniformResourceIndex into a texture sample, still does not work) 
-				uint material_index = NonUniformResourceIndex(floor((snoise(world.xz * 0.03) * 0.5 + 0.5) * 4));
-				uint index = NonUniformResourceIndex(storage_buffers_readonly[STORAGE_BUFFER_MATERIALS_BUFFER].Load<uint32_t>(NonUniformResourceIndex(material_index * 4)));
-			
-
-				diffuse = sample_triplanar(index, world, normal);
-				arm = sample_triplanar(index+1, world, normal);
-				normal = sample_triplanar_normal(index+2, world, normal);
-			
-				diffuse = lerp(diffuse, 1.0, res.data.material);
-				arm = lerp(arm, float3(1, 0.0, 1.0), res.data.material);
-				normal = normalize(lerp(normal, res.normal, res.data.material));
-			}
-
-
-
-			
-			PbrSurfaceData surface = PbrSurfaceData(res.pos, diffuse, normal, AoRoughnessMetallic(arm));
-			CameraData camera = CameraData(camera_view);
-			
-			bool trace_refractive_ray = false;
-			if (!trace_refractive_ray) {
-				// opaque surface, non refractive
-				float3 sun = uniforms.sun.xyz;
-    	    	float3 sun_colour = sun_colour(sun.xyz);
-    	    	SunData light = SunData(sun.xyz, 16.0);
-
-				float3 radiance = radiance_sun(surface, camera, light);
-
-				// IBL diffuse term
-				float3 f0 = lerp(0.04, surface.albedo, surface.arm.metallic);
-				float3 ks = fresnelRoughness(f0, surface.normal, camera.view, surface.arm.roughness);
-				float3 kd = (1 - ks) * (1 - surface.arm.metallic);
-				
-				// TODO: there's still a problem here. plasticy materials (roughness~0, metallic~0) look like metals. I'm forgetting to account for something here. I don't know my PBR
-				col += mask * radiance;
-				//float3 ambient = surface.albedo * kd * surface.arm.ao;
-				mask *= lerp(fresnelRoughness(surface.albedo, surface.normal, camera.view, surface.arm.roughness), surface.albedo, surface.arm.metallic);
-
-				float3 random_normal = normal + GetRandomSphereDir();
-				float3 reflected_ray_dir = reflect(ray_dir, normal);
-
-				// TODO: this is also wrong. instead of shooting *one* ray for the surface we need to shoot the ambient and reflection rays separately. we cannot just shoot one to approximate both effect
-				ray_dir = normalize(lerp(reflected_ray_dir, random_normal, surface.arm.roughness));
-				ray_pos = res.pos + ray_dir * 0.01;
-				camera_view = -ray_dir;
-			} else {
-				// refractive surface, just change mask and next ray params
-				mask *= 0.5;
-
-				float3 random_normal = normal + GetRandomSphereDir();
-				float3 normal_for_refraction = normalize(lerp(normal, random_normal, 0.1));
-				
-
-				ray_dir = normalize(refract(ray_dir, normal_for_refraction, 0.95));
-				ray_pos = move_point_to_surface(world, ray_dir) + ray_dir * 0.01;
-				camera_view = -ray_dir;
-			}
-
-
-			//col += sampled_images_3d[SDF_TEXTURE3_SAMPLED_IMAGE_IDX].Sample(samplers[LINEAR_CLAMPED_SAMPLER_IDX], ((world / GI_TEXTURE_SCALING) / GI_TEXTURE_SIZE) + 0.5).xyz * mask;
-    	} else {
-    	    col += mask * sample_skybox_and_clouds(res.pos, res.dir);
-			break;
-    	}
-
-		if ((uniforms.toggles_bitmask & 1) != 0) {
-			break;
-		}
-	}
-
-
-	return col;
-}
-
-
 public float3 trace_scene_singlebounce(uint2 id, float3 ray_pos, float3 ray_dir) {
 	float3 col = 0.0;
-	float3 mask = 1.0;
 
 	float3 camera_view = -ray_dir;
 
@@ -450,30 +282,19 @@ public float3 trace_scene_singlebounce(uint2 id, float3 ray_pos, float3 ray_dir)
 		float3 ks = fresnelRoughness(f0, surface.normal, camera.view, surface.arm.roughness);
 		float3 kd = (1 - ks) * (1 - surface.arm.metallic);
 
-		float3 sampled_ambient = trace_vxgi(world, normal, diffuseAmbientHalfAngleRadian);
-
-		float3 ambient = surface.albedo * kd * surface.arm.ao * sampled_ambient;
-		
-		
-		// TODO: there's still a problem here. plasticy materials (roughness~0, metallic~0) look like metals. I'm forgetting to account for something here. I don't know my PBR
-		col += mask * radiance + mask * ambient;
-		mask *= lerp(fresnelRoughness(surface.albedo, surface.normal, camera.view, surface.arm.roughness), surface.albedo, surface.arm.metallic);
-
-		float3 random_normal = normal + GetRandomSphereDir();
-		float3 reflected_ray_dir = reflect(ray_dir, normal);
-
+		float3 sampled_ambient = trace_vxgi(world, normal, DIFFUSE_AMBIENT_HALF_ANGLE_RADIAN);
 		/*
-		// TODO: this is also wrong. instead of shooting *one* ray for the surface we need to shoot the ambient and reflection rays separately. we cannot just shoot one to approximate both effect
-		ray_dir = normalize(lerp(reflected_ray_dir, random_normal, surface.arm.roughness));
-		ray_pos = res.pos + ray_dir * 0.01;
-		camera_view = -ray_dir;
+		float3 sampled_ambient = 0.0;
+		for (int r = 0; r < 8; r++) {
+			sampled_ambient += trace_vxgi(world, normalize(normal + ((hash33(r * 100.5342 + world * 54.23423) - 0.5) * 1.0)), DIFFUSE_AMBIENT_HALF_ANGLE_RADIAN) / 8.0;
+		}
 		*/
-
-		//col = trace_vxgi(world + res.normal * 2.0, reflect(ray_dir, res.normal), 0.03);
+		sampled_ambient += get_environment_diffuse(normal) * 0.2;
+		float3 ambient = surface.albedo * kd * surface.arm.ao * sampled_ambient;
+		col += radiance + ambient;
 
 		if ((uniforms.toggles_bitmask & 8) != 0) {
 			col = ambient;
-			//col += trace_vxgi(world, reflect(ray_dir, normal), 0.2);
 		}
 
 		if ((uniforms.toggles_bitmask & 16) != 0) {
@@ -481,9 +302,19 @@ public float3 trace_scene_singlebounce(uint2 id, float3 ray_pos, float3 ray_dir)
 			col = k.xyz;
 		}
 
-		//col += ks * sampled_images_3d[SDF_TEXTURE4_SAMPLED_IMAGE_IDX].Sample(samplers[LINEAR_CLAMPED_SAMPLER_IDX], ((world / GI_TEXTURE_SCALING) / GI_TEXTURE_SIZE) + 0.5).xyz;
+
+		// HACK: hacky way to get reflections
+		// ideally we would figure out if a ray is "mirror like", and instead trace a new ray from scratch instead of using the VXGI map 
+		/*
+		if (surface.arm.roughness < 1.0) {
+			float3 reflected = reflect(ray_dir, normal);
+			col += surface.albedo * trace_vxgi(world, reflected, surface.arm.roughness * 0.1) * ks;
+			col += sample_skybox_and_clouds(world, reflected) * ks * (1 - surface.arm.roughness);
+		}
+		*/
+
 	} else {
-		col += mask * sample_skybox_and_clouds(res.pos, res.dir);
+		col = sample_skybox_and_clouds(res.pos, res.dir);
 	}
 
 
