@@ -5,7 +5,6 @@ use gpu_allocator::vulkan::{Allocation, Allocator};
 
 use crate::renderer::GraphicsContext;
 
-
 pub struct Texture {
     pub image: vk::Image,
     pub image_view: vk::ImageView,
@@ -20,12 +19,17 @@ impl Texture {
     }
 }
 
+pub enum TextureType {
+    Albedo,
+    Arm,
+    NormalMap,
+}
+
 pub unsafe fn create_texture(
     ctx: &mut GraphicsContext,
     bytes: Option<&[u8]>,
     size: u32,
-    srgb: bool,
-    mipmapping: bool,
+    texture_type: TextureType,
 ) -> Texture {
     log::debug!("creating texture ({size}x{size}) (from bytes: {})", bytes.is_some());
     let GraphicsContext {
@@ -38,8 +42,25 @@ pub unsafe fn create_texture(
     } = ctx;
 
     let queue_family_indices = [*queue_family_index];
-    let format = if srgb { vk::Format::R8G8B8A8_SRGB } else { vk::Format::R8G8B8A8_UNORM };
-    let mip_levels = if mipmapping { size.ilog2() - 1 } else { 1 }.max(1);
+
+    let format = match texture_type {
+        TextureType::Albedo => vk::Format::BC1_RGB_SRGB_BLOCK,
+        TextureType::Arm => vk::Format::BC1_RGB_UNORM_BLOCK,
+        TextureType::NormalMap => vk::Format::BC5_UNORM_BLOCK,
+    };
+
+    let srgb = match texture_type {
+        TextureType::Albedo => true,
+        _ => false,
+    };
+
+    let ctt_compressed_format = match texture_type {
+        TextureType::Albedo => ctt::Format::BC1_RGBA_UNORM_BLOCK,
+        TextureType::Arm => ctt::Format::BC1_RGBA_UNORM_BLOCK,
+        TextureType::NormalMap => ctt::Format::BC5_UNORM_BLOCK,
+    };
+
+    let mip_levels = (size.ilog2() - 1).max(1);
 
     let image_create_info = vk::ImageCreateInfo::default()
         .extent(vk::Extent3D {
@@ -88,30 +109,48 @@ pub unsafe fn create_texture(
 
     host_image_copy_device.transition_image_layout(&[transition]).unwrap();
 
-    if let Some(bytes) = bytes {
-        let image2 = image::RgbaImage::from_raw(size, size, bytes.to_vec()).unwrap();
-        let mut dynamic_image = image::DynamicImage::ImageRgba8(image2);
-        
-        for mip in 0..mip_levels {
-            log::debug!("generating mip level {mip}");
-            let mip_size = size >> mip;
-            let mip_area = mip_size * mip_size;
-            log::debug!("mip size {mip_size}");
-            log::debug!("mip area {mip_area}");
+    if let Some(original_image_bytes) = bytes {
             
-            
-            dynamic_image = dynamic_image.resize_exact(mip_size, mip_size, image::imageops::FilterType::Triangle);
+        let surface = ctt::Surface {
+            data: original_image_bytes.to_vec(),
+            width: size,
+            height: size,
+            depth: 1,
+            stride: size * 4,
+            slice_stride: 0,
+            format: ctt::Format::R8G8B8A8_UNORM,
+            color_space: if srgb { ctt::ColorSpace::Srgb } else { ctt::ColorSpace::Linear },
+            alpha: ctt::AlphaMode::Opaque,
+        };
 
+        let ctt_image = ctt::Image { surfaces: vec![vec![surface]], kind: ctt::TextureKind::Texture2D };
+
+        let output = ctt::convert(ctt_image, ctt::ConvertSettings {
+            format: Some(ctt::TargetFormat::Compressed { format: ctt_compressed_format, encoder: ctt::encoders::Encoder::Auto }),
+            container: ctt::Container::Raw,
+            mipmap: true,
+            mipmap_filter: ctt::MipmapFilter::CatmullRom,
+            ..Default::default()
+        }).unwrap();
+
+        let mips = match output {
+            ctt::PipelineOutput::Encoded(_) => unreachable!(),
+            ctt::PipelineOutput::Raw(ref bytes) => &bytes.surfaces[0],
+        };
+
+        log::debug!("uploading {mip_levels} compressed mips using HIC");
+        for mip in 0..mip_levels {
+            let mip_size = size >> mip;
+            let mip_bytes = mips[mip as usize].data.as_slice();
+            
             let image_subresource_layers = vk::ImageSubresourceLayers::default()
                 .aspect_mask(vk::ImageAspectFlags::COLOR)
                 .mip_level(mip)
                 .layer_count(1)
                 .base_array_layer(0);
-            
-            let bytes = dynamic_image.as_rgba8().unwrap().as_flat_samples().samples;
-            
+
             let region = vk::MemoryToImageCopyEXT::default()
-                .host_pointer(bytes.as_ptr() as *const _)
+                .host_pointer(mip_bytes.as_ptr() as *const _)
                 .image_extent(vk::Extent3D::default().height(mip_size).width(mip_size).depth(1))
                 .image_subresource(image_subresource_layers);
             let regions = [region];

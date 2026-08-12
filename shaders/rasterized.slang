@@ -150,8 +150,12 @@ float4 frag_main(VertexOutput in_vert, uniform PushConstants pc) : SV_Target {
     
     // calculate world space normal perturbed by sampled tangent normal map
     if ((uniforms.toggles_bitmask & 2) == 2) {
-        float3 tangent_normal = sampled_images[pc.material_base_sampled_image_index+2].Sample(sampler, in_vert.uv).xyz * 2.0 - 1.0;
-        normal = normalize(mul(tangent_normal, tbn)); 
+        // texture encoded using bc5, only have the RG channels, reconstruct the B channel
+        float2 tangent_normal = sampled_images[pc.material_base_sampled_image_index+2].Sample(sampler, in_vert.uv).xy * 2.0 - 1.0;
+        
+        // 1 - x^2 + y^2 = z^2 
+        float reconstructed_z = sqrt(1 - (pow(tangent_normal.x, 2) + pow(tangent_normal.y, 2)));
+        normal = normalize(mul(float3(tangent_normal, reconstructed_z), tbn)); 
     }
 
     // construct PBR data

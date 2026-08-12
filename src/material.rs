@@ -5,7 +5,7 @@ use bytemuck::{bytes_of, cast_slice};
 use gpu_allocator::vulkan::{Allocation, Allocator};
 use image::{EncodableLayout, GenericImage, GenericImageView};
 
-use crate::{buffer, others, per_frame_data, renderer::GraphicsContext, texture::{Texture, create_texture}};
+use crate::{buffer, others, per_frame_data, renderer::GraphicsContext, texture::{self, Texture, create_texture}};
 
 pub struct Material {
     pub albedo_texture: Texture,
@@ -19,7 +19,7 @@ unsafe fn load_image_and_create_texture(
     ctx: &mut GraphicsContext,
     image_file_bytes: &[u8],
     size: u32,
-    srgb: bool,
+    texture_type: crate::texture::TextureType,
 ) -> Texture {
     let dynamic_image = image::load_from_memory(image_file_bytes).unwrap();
 
@@ -30,7 +30,7 @@ unsafe fn load_image_and_create_texture(
     };
 
     let img = dynamic_image.to_rgba8();
-    create_texture(ctx, Some(img.as_bytes()), size, srgb, true)
+    create_texture(ctx, Some(img.as_bytes()), size, texture_type)
 }
 
 fn store_in_channel(
@@ -61,10 +61,9 @@ impl Material {
             others::load_material_texture(&format!("{name}_{thing_in_middle}_1k.png")).or_else(|| others::load_material_texture(&format!("{name}_{thing_in_middle}_1k.jpg")))
         };
 
-        // TODO: implement compressed textures using DXT / BC formats
         let size = 256;
-        let albedo_texture = load_image_and_create_texture(ctx, &load_file("color").unwrap(), size, true);
-        let normal_texture = load_image_and_create_texture(ctx, &load_file("normal_opengl").unwrap(), size, false);
+        let albedo_texture = load_image_and_create_texture(ctx, &load_file("color").unwrap(), size, texture::TextureType::Albedo);
+        let normal_texture = load_image_and_create_texture(ctx, &load_file("normal_opengl").unwrap(), size, texture::TextureType::NormalMap);
 
         let mut arm_texture = image::RgbaImage::new(size, size).into_flat_samples();
         if let Some(ao_image_file_bytes) = load_file("ao") {
@@ -83,7 +82,7 @@ impl Material {
         }
 
         let img = arm_texture.samples;
-        let arm_texture = create_texture(ctx, Some(&img), size, false, true);
+        let arm_texture = create_texture(ctx, Some(&img), size, texture::TextureType::Arm);
 
 
         Self {
