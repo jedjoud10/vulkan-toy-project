@@ -58,6 +58,8 @@ impl Scene {
     pub unsafe fn new(mut ctx: &mut GraphicsContext) -> Self {
         let texture = sdf_texture::create_voxel_image(ctx, vek::Extent3::broadcast(256), vk::Format::R16_SFLOAT, None);
         let texture2 = sdf_texture::create_voxel_image(ctx, vek::Extent3::broadcast(64), vk::Format::R16G16_SFLOAT, None);
+
+        // for some reason, using R8G8B8A8_UNORM actually harms the render time instead of improving it... wut? 
         let vxgi_texture = sdf_texture::create_voxel_image(ctx, vek::Extent3::broadcast(VXGI_TEXTURE_SIZE), vk::Format::R16G16B16A16_SFLOAT, Some(6));
         let texture4 = sdf_texture::create_voxel_image(ctx, vek::Extent3::broadcast(128), vk::Format::R16G16B16A16_SFLOAT, None);
 

@@ -6,7 +6,6 @@
 
 
 public static const float VXGI_TEXTURE_SCALING = 1/4.0;
-public static const float VXGI_VOXEL_SIZE = VXGI_TEXTURE_SIZE * VXGI_TEXTURE_SCALING;
 
 // using during the rendering stage
 public static const float NORMAL_OFFSET = 0.5;
