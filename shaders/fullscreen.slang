@@ -1,6 +1,5 @@
 #language slang 2026
 #include "utils/bindless.slang"
-#include "utils/ray_stuff_other.slang"
 #include "utils/sky.slang"
 #include "utils/pbr.slang"
 
@@ -22,7 +21,11 @@ void main(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID) {
     float3 col = 0;
 
     if (uniforms.debug_type == 0) {
-        col = trace_scene_singlebounce(id.xy, ray_pos, ray_dir);
+        if (is_bit_set(uniforms.toggles_bitmask, 0)) {
+            col = trace_scene_multibounce(id.xy, ray_pos, ray_dir);
+        } else {
+            col = trace_scene_singlebounce(id.xy, ray_pos, ray_dir);
+        }
     } else {
         uint64_t clock = clockARB();
 
