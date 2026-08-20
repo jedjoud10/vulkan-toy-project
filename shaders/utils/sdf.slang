@@ -9,56 +9,7 @@
 
 [Differentiable]
 float2 d(float3 p) {
-    float t = uniforms.time;
-
-    // float s = length(p - 10*clamp(round(p/10.0), -float3(100, 1, 100), float3(100, 1, 100))) - 2;
-    float sphere = length(p + float3(0, -1, 0)) - 2;
-    float octa = sdOctahedron(p - float3(0, 20, 0), 2.0);
-    
-    float a = sdHexPrism(p + float3(-10, -2, 0,), float2(2, 4));
-    float b = sdHexPrism(p + float3(-10, -2, 0,), float2(1, 5));
-
-    float hex = max(-b, a);
-    float cyl = sdCylinder(p + float3(10, 0, 0), float3(0, 0, 2));
-
-    float3x3 rot = AngleAxis3x3(2.4, normalize(float3(1, 1, 1)));
-    float3 torus_origin = float3(2, 2, 5);
-    float tor = sdTorus(mul(p - torus_origin, rot), float2(5, 2)) + sin(p.y * 20.0) * 0.05 + 0.05;
-
-    float ground = p.y /* + snoise(p.xz * 2.0) * 0.2 + 0.1 */;
-    //ground = max(ground, tex_sample(p * 50.0 - 4.2312) / 50.0);
-    //ground = min(ground, p.y+0.8);
-
-    float sdf = min(sphere, min(ground, min(min(octa, cyl), min(hex, tor))));
-
-    /*
-    for (int i = 0; i < 0; i++) {
-        Primitive prim = storage_buffers_readonly[STORAGE_BUFFER_TERRAIN_AABB_BOUNDS].Load<Primitive>(i * 16);
-    
-        //float primitive_sdf = length(p - prim.position) - 1.0;
-        float primitive_sdf = sdTorus(p - prim.position, float2(0.5, 0.25));
-
-        if (prim.flags == 1) {
-            sdf = min(sdf, primitive_sdf);
-        } else {
-            sdf = max(sdf, -primitive_sdf);
-        }
-    }
-    */
-
-    float other = tex_sample(p);
-    
-    float mat = 0.0;
-    
-    if (other < sdf) {
-        mat = 1.0;    
-    }
-
-    sdf = smin(sdf, other, SMOOTHING_FACTOR_MAP_TEXTURE);
-
-    //sdf = smin(sdf, d2(p), 0.5);
-    // sdf = min(sdf, tex_sample(p - float3(0, 10, 0)));
-    return float2(sdf, mat);
+    return float2(p.y, 0);
 }
 
 struct Primitive {
@@ -126,10 +77,17 @@ float2 ray_box_get_tmin_tmax(
     return float2(tmin,tmax);
 }
 
-const static uint INSTANCE_CUSTOM_INDEX_AABB_LOOKUP_INDEX_MASK = 15;
-const static uint INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK = 16;
-const static uint INSTANCE_CUSTOM_INDEX_LOOKUP_AABB_USING_PRIMITIVE_INDEX_FLAG_MASK = 32;
+// only way I got it to work was to "scalarize" the loads instead of loading a float3
+// TODO: FIX THIS. ALIGNMENT / PACKING ISSUE. MIGHT NEED TO CONVERT TO FLOAT4 INSTEAD
+float3 load_aabb_axii_from_buffer(uint byte_offset) {
+    float x = storage_buffers_readonly[STORAGE_BUFFER_SCENE_REPR_BUFFER].Load<float>(byte_offset);
+    float y = storage_buffers_readonly[STORAGE_BUFFER_SCENE_REPR_BUFFER].Load<float>(byte_offset+4);
+    float z = storage_buffers_readonly[STORAGE_BUFFER_SCENE_REPR_BUFFER].Load<float>(byte_offset+8);
 
+    return float3(x,y,z);
+}
+
+const static uint INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK = 1 << 20;
 
 void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls, inout float material) {
     /*
@@ -143,16 +101,26 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls,
     // 24 bits
     uint instance_custom_index = sq.CandidateRayInstanceCustomIndex();
 
+
+    /*
+    const static uint INSTANCE_CUSTOM_INDEX_AABB_LOOKUP_INDEX_MASK = 15;
+    const static uint INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK = 16;
+    const static uint INSTANCE_CUSTOM_INDEX_LOOKUP_AABB_USING_PRIMITIVE_INDEX_FLAG_MASK = 32;
+
     // extract flags
-    bool local_sdf = (instance_custom_index & INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK) != 0;
     bool aabb_index_from_primitive_index = (instance_custom_index & INSTANCE_CUSTOM_INDEX_LOOKUP_AABB_USING_PRIMITIVE_INDEX_FLAG_MASK) != 0;
     uint aabb_lookup_index = select(aabb_index_from_primitive_index, sq.CandidateRayPrimitiveIndex(), instance_custom_index & INSTANCE_CUSTOM_INDEX_AABB_LOOKUP_INDEX_MASK);
+    */
+    
+    bool local_sdf = (instance_custom_index & INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK) != 0;
+    uint aabb_lookup_index = instance_custom_index;
+    aabb_lookup_index = 0;
 
     float local_distance_scaling_factor = select(local_sdf, 0.8, 1.0);
 
     // software AABB test lmao to get min and max dists of ray into  AABB
-    float3 min_bounds = storage_buffers_readonly[STORAGE_BUFFER_SCENE_REPR_BUFFER].Load<float3>(aabb_lookup_index * 3*4*2);
-    float3 max_bounds = storage_buffers_readonly[STORAGE_BUFFER_SCENE_REPR_BUFFER].Load<float3>(aabb_lookup_index * 3*4*2 + 3*4);
+    float3 min_bounds = load_aabb_axii_from_buffer(aabb_lookup_index * 3 * 4 * 2);
+    float3 max_bounds = load_aabb_axii_from_buffer(aabb_lookup_index * 3 * 4 * 2 + 3 * 4);
     float2 tmin_tmax = ray_box_get_tmin_tmax(sq.CandidateRayObjectRayOrigin(), sq.CandidateObjectRayDirection(), min_bounds, max_bounds);
     float distance = max(tmin_tmax.x, 0);
 
@@ -180,7 +148,8 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls,
             float3 local_position = mul(sq.CandidateWorldToObject3x4(), float4(point, 1)).xyz;
             float instance_index = sq.CandidateInstanceIndex();
             // closest_distance_and_material = tree2(local_position * 2.5, instance_index) / 2.5;
-            closest_distance_and_material = sample_tree(local_position);
+            //closest_distance_and_material = sample_tree(local_position);
+            closest_distance_and_material = float2(length(local_position) - 0.5, 1.0);
         }
         sdf_calls += 1;
 
@@ -221,7 +190,7 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
 
     while (sq.Proceed()) {
         if(sq.CandidateType() == CANDIDATE_PROCEDURAL_PRIMITIVE) {
-            
+
             trace_inner(sq, i, sdf_calls, material);
             
             if (i == MAX_ITERS) {
@@ -234,7 +203,7 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
         float3 point = sq.WorldRayOrigin() + sq.WorldRayDirection() * sq.CommittedRayT();
 
         float3 normal = 0.0;
-        if ((sq.CommittedRayInstanceCustomIndex() & INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK) == 0) {
+        if (/*(sq.CommittedRayInstanceCustomIndex() & INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK) == 0*/ true) {
             DifferentialPair<float3> dp_a = diffPair(point);
             bwd_diff(d)(dp_a, 1.0);
             normal = normalize(dp_a.d); 
@@ -247,7 +216,7 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
             normal = mul(sq.CommittedObjectToWorld3x4(), float4(object_normal, 0)).xyz;
         }
 
-        return TraceRes(i, true, point, ray_dir, normal, sdf_calls, TraceResHitObj((sq.CommittedRayInstanceCustomIndex() & INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK), material));
+        return TraceRes(i, true, point, ray_dir, normal, sdf_calls, TraceResHitObj((/* sq.CommittedRayInstanceCustomIndex() & INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK) */ 0), material));
     } else {
         return TraceRes(i, false, ray_pos, ray_dir, 0.0, sdf_calls, TraceResHitObj());
     }

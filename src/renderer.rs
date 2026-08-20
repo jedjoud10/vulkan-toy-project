@@ -632,9 +632,11 @@ impl InternalApp {
         storage_images_allocator.push(self.skybox.skybox_array_image_view);
         storage_images_allocator.push(self.skybox.ambient_skybox_array_image_view);
         storage_images_allocator.push(self.skybox.clouds_image_view);
+        /*
         storage_images_allocator.push(self.scene.texture.image_view);
         storage_images_allocator.push(self.scene.texture2.image_view);
         storage_images_allocator.push(self.scene.texture3.image_view);
+        */
 
         // add bloom storage image views
         let bloom_storage_images_start_index = storage_images_allocator.current();
@@ -661,11 +663,11 @@ impl InternalApp {
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
             vk::DescriptorBufferInfo::default()
-                .buffer(self.scene.scene_blas_aabbs_buffer.buffer)
+                .buffer(self.scene.aabbs_buffer.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
             vk::DescriptorBufferInfo::default()
-                .buffer(self.scene.primitives_buffer.buffer)
+                .buffer(self.scene.aabbs_buffer.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
             vk::DescriptorBufferInfo::default()
@@ -687,9 +689,11 @@ impl InternalApp {
         sampled_images_allocator.push(self.skybox.ambient_skybox_image_view);
         sampled_images_allocator.push(self.skybox.clouds_image_view);
         sampled_images_allocator.push(render_targets.rendered_image_view);
+        /*
         sampled_images_allocator.push(self.scene.texture.image_view);
         sampled_images_allocator.push(self.scene.texture2.image_view);
         sampled_images_allocator.push(self.scene.texture3.image_view);
+        */
 
 
         
@@ -846,8 +850,10 @@ impl InternalApp {
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene_representation_for_sdf), self.scene_representation_for_sdf_buffer.buffer, size_of::<u32>() as u64);
         */
 
-        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.scene_blas_aabbs), self.scene.scene_blas_aabbs_buffer.buffer, 0);
-        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.primitives), self.scene.primitives_buffer.buffer, 0);
+        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.aabbs), self.scene.aabbs_buffer.buffer, 0);
+        
+        
+        // buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.primitives), self.scene.primitives_buffer.buffer, 0);
         
         // rebuild TLAS
         ray_tracing::rebuild_tlas(
@@ -950,8 +956,9 @@ impl InternalApp {
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)
             .size(vk::WHOLE_SIZE);
+        
         let scene_aabbs_buffer_barrier = vk::BufferMemoryBarrier2::default()
-            .buffer(self.scene.scene_blas_aabbs_buffer.buffer)
+            .buffer(self.scene.aabbs_buffer.buffer)
             .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
             .dst_access_mask(vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::MEMORY_WRITE)
             .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
@@ -959,6 +966,7 @@ impl InternalApp {
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)
             .size(vk::WHOLE_SIZE);
+        /*
         let scene_primitives_buffer_barrier = vk::BufferMemoryBarrier2::default()
             .buffer(self.scene.primitives_buffer.buffer)
             .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
@@ -968,6 +976,7 @@ impl InternalApp {
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)
             .size(vk::WHOLE_SIZE);
+        */
         let counters_of_various_types_buffer_barrier = vk::BufferMemoryBarrier2::default()
             .buffer(self.counters_of_various_types.buffer)
             .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
@@ -977,7 +986,7 @@ impl InternalApp {
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)
             .size(vk::WHOLE_SIZE);
-        let buffer_memory_barriers = [uniform_buffer_barrier, debug_text_buffer_barrier, materials_gpu_buffer_barrier, scene_aabbs_buffer_barrier, scene_primitives_buffer_barrier, counters_of_various_types_buffer_barrier];
+        let buffer_memory_barriers = [uniform_buffer_barrier, debug_text_buffer_barrier, materials_gpu_buffer_barrier, scene_aabbs_buffer_barrier /*, scene_primitives_buffer_barrier */, counters_of_various_types_buffer_barrier];
         let dep = vk::DependencyInfo::default().buffer_memory_barriers(&buffer_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
@@ -1149,7 +1158,12 @@ impl InternalApp {
             right = self.input.get_button(Button::Mouse(MouseButton::Right)).pressed();
         }
 
+        if left {
+            let pos = self.movement.position + self.movement.forward() * 5f32;
+            // self.scene.create_primitive(&mut ctx, pos, vek::Quaternion::identity(), vek::Vec3::new(1f32, 1f32, 1f32), &[crate::scene::IDENTBOX], true);
+        }
 
+        /*
         if  left || right {
             let pos = self.movement.position + self.movement.forward() * 5f32;
             if self.click_type == 0 || self.click_type == 2 {
@@ -1225,10 +1239,13 @@ impl InternalApp {
             }
             
         }
+        */
 
         /*
 
         */
+
+        /*
         self.device.cmd_bind_pipeline(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
@@ -1294,6 +1311,7 @@ impl InternalApp {
 
         let group_count = self.scene.texture3.size.map(|x| x.div_ceil(4));
         self.device.cmd_dispatch(cmd, group_count.w, group_count.h, group_count.d);
+        */
 
         
         
