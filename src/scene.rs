@@ -45,10 +45,6 @@ pub struct Chunk {
     pub dynamic_blas: ray_tracing::AccelerationStructureData,
 }
 
-fn test() {
-    let a = ["girl", "boy"].into_iter().map(|x| x.to_string() + "kisser").collect::<Vec<_>>()
-}
-
 pub struct Scene {
     // chunks
     // pub chunks: Vec<Chunk>,
