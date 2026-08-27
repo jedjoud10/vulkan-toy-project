@@ -673,11 +673,11 @@ impl InternalApp {
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
             vk::DescriptorBufferInfo::default()
-                .buffer(self.scene.scene_blas_aabbs_buffer.buffer)
+                .buffer(self.scene.aabbs_buffer.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
             vk::DescriptorBufferInfo::default()
-                .buffer(self.scene.primitives_buffer.buffer)
+                .buffer(vk::Buffer::null())
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
             vk::DescriptorBufferInfo::default()
@@ -866,8 +866,8 @@ impl InternalApp {
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene_representation_for_sdf), self.scene_representation_for_sdf_buffer.buffer, size_of::<u32>() as u64);
         */
 
-        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.scene_blas_aabbs), self.scene.scene_blas_aabbs_buffer.buffer, 0);
-        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.primitives), self.scene.primitives_buffer.buffer, 0);
+        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.aabbs), self.scene.aabbs_buffer.buffer, 0);
+        // buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.primitives), self.scene.primitives_buffer.buffer, 0);
         
         // rebuild TLAS
         ray_tracing::rebuild_tlas(
@@ -971,7 +971,7 @@ impl InternalApp {
             .dst_queue_family_index(self.queue_family_index)
             .size(vk::WHOLE_SIZE);
         let scene_aabbs_buffer_barrier = vk::BufferMemoryBarrier2::default()
-            .buffer(self.scene.scene_blas_aabbs_buffer.buffer)
+            .buffer(self.scene.aabbs_buffer.buffer)
             .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
             .dst_access_mask(vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::MEMORY_WRITE)
             .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
@@ -980,7 +980,7 @@ impl InternalApp {
             .dst_queue_family_index(self.queue_family_index)
             .size(vk::WHOLE_SIZE);
         let scene_primitives_buffer_barrier = vk::BufferMemoryBarrier2::default()
-            .buffer(self.scene.primitives_buffer.buffer)
+            .buffer(vk::Buffer::null())
             .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
             .dst_access_mask(vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::MEMORY_WRITE)
             .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
@@ -1169,7 +1169,7 @@ impl InternalApp {
             right = self.input.get_button(Button::Mouse(MouseButton::Right)).pressed();
         }
 
-
+        /*
         if  left || right {
             let pos = self.movement.position + self.movement.forward() * 5f32;
             if self.click_type == 0 || self.click_type == 2 {
@@ -1245,6 +1245,7 @@ impl InternalApp {
             }
             
         }
+        */
 
         /*
 
