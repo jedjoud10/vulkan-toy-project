@@ -16,20 +16,27 @@ struct Node {
 [Differentiable]
 float2 d(float3 p) {
     float sdf = p.y;
+    float material = 0.0;
 
     uint3 offset = (uint3)floor(p + 64);
     uint packed4_node_indices = storage_images_3d_uint[LOOKUP_TEXTURE].Load(offset);
 
     for (int k = 0; k < 4; k++) {
-        uint8_t byte_node_index = (packed4_node_indices >> 8 * k) & 0xFF;
+        uint byte_node_index = (packed4_node_indices >> 8 * k) & 0xFF;
 
         if (byte_node_index != 0) {
             Node node = storage_buffers[STORAGE_BUFFER_PRIMITIVE_FLAT_LIST_BUFFER].Load<Node>(byte_node_index * 4 * 4);
-            sdf = smin(sdf, sdHexPrism(p - node.position, 0.6), 0.1);
+            let tmp = sdf;
+            let box = sdBox(p - node.position, 0.6);
+            sdf = smin(sdf, box, 0.1);
+
+            if (box < tmp) {
+                material = 1.0;
+            }
         }
     }
 
-    return float2(sdf, 0);
+    return float2(sdf, material);
 }
 
 struct TraceResHitObj {

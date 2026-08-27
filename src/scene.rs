@@ -206,6 +206,8 @@ impl Scene {
             0xFF,
         ));
 
+        log::info!("{}", self.primitive_flat_list.len());
+
         for x in -2..=2 {
             for y in -2..=2 {
                 for z in -2..=2 {
