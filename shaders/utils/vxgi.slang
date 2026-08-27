@@ -3,15 +3,15 @@
 
 #include "bindless.slang"
 #include "sdf.slang"
-
+#include "sky.slang"
 
 public static const float VXGI_TEXTURE_SCALING = 1/4.0;
 
 // using during the rendering stage
 public static const float NORMAL_OFFSET = 0.5;
 public static const float MIP_COUNT_LIMIT = 5;
-public static const float MIN_OPACITY_BREAK = 1.25;
-public static const float VXGI_RAY_LENGTH = 16.0;
+public static const float MIN_OPACITY_BREAK = 0.1;
+public static const float VXGI_RAY_LENGTH = 32.0;
 public static const uint STEP_COUNT = 32;
 public static const float DIFFUSE_AMBIENT_HALF_ANGLE_RADIAN = 0.5;
 
@@ -59,6 +59,50 @@ public float3 trace_vxgi(float3 position, float3 normal, float half_angle_radian
     }
 
 	return colour;
+}
+
+
+// https://github.com/jedjoud10/URP-Testing/blob/main/Assets/VoxelGlobalIllumination.compute#L161-L206
+public float trace_vxgi_ao(float3 position, float3 normal, float half_angle_radian) {
+    float3 ray_pos = position + normal * NORMAL_OFFSET;
+    
+	float3 colour = 0.0;
+    float opacity = 0.0;
+
+    float step_size = VXGI_RAY_LENGTH / STEP_COUNT;
+    float3 step = normal * step_size;
+    float dist = NORMAL_OFFSET;
+    float inv_log_2 = 1.0 / 0.301029;
+    float tanned = tan(clamp(half_angle_radian, 0, 3.141 * 0.5));
+
+    int i = 0;
+    for (; i < STEP_COUNT; i++) {
+        // uses the distance and the half angle to approximate sphere radius at specific distance along cone
+        float sphere_radius = dist * tanned;
+
+        // compute mip based on sphere radius. if sphere radius is 0.5, this should result in a mip of 0, since radius would span over an entire voxel
+        // FIXME: doesn't account for voxel size frick
+        float mip_level = clamp(log(sphere_radius + 1) * inv_log_2, 0, MIP_COUNT_LIMIT);
+
+		// sample from specific mip
+		float4 pos = float4(ray_pos, mip_level);
+
+		float4 sampled = sample_vxgi(pos);
+
+		// https://kth.diva-portal.org/smash/get/diva2:1886204/FULLTEXT01.pdf
+        colour += (1 - opacity) * sampled.w * sampled.xyz;
+		opacity += (1 - opacity) * sampled.w;
+
+        // exit if the sampled voxel is too opaque (meaning that there would be no point in sampling after this voxel; everything would be occluded)
+		if (sampled.w > MIN_OPACITY_BREAK) {
+			break;
+		}
+
+		dist += step_size;
+        ray_pos += step;
+    }
+
+	return float(i) / float(STEP_COUNT);
 }
 
 // used during the voxelization stage

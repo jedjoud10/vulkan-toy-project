@@ -15,10 +15,11 @@ float2 d(float3 p) {
     float sphere = length(p + float3(0, -1, 0)) - 2;
     float octa = sdOctahedron(p - float3(0, 20, 0), 2.0);
     
-    float a = sdHexPrism(p + float3(-10, -2, 0,), float2(2, 4));
-    float b = sdHexPrism(p + float3(-10, -2, 0,), float2(1, 5));
+    //float a = sdHexPrism(p + float3(-10, -2, 0,), float2(2, 4));
+    //float b = sdHexPrism(p + float3(-10, -2, 0,), float2(1, 5));
 
-    float hex = max(-b, a);
+    //float hex = max(-b, a);
+    float hex = sdBox(p + float3(-10, -2, 0,), float3(2,2,4));
     float cyl = sdCylinder(p + float3(10, 0, 0), float3(0, 0, 2));
 
     float3x3 rot = AngleAxis3x3(2.4, normalize(float3(1, 1, 1)));

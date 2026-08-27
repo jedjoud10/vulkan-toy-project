@@ -238,7 +238,7 @@ public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) 
 				normal = sample_triplanar_normal(index+2, world, normal);
 			
 				diffuse = lerp(diffuse, 1.0, res.data.material);
-				arm = lerp(arm, float3(1, 0.0, 1.0), res.data.material);
+				arm = lerp(arm, float3(1, smoothstep(-0.2, 0.2, snoise(world * 0.8)), 1.0), res.data.material);
 				normal = normalize(lerp(normal, res.normal, res.data.material));
 			}
 
@@ -342,15 +342,15 @@ public float3 trace_scene_singlebounce(uint2 id, float3 ray_pos, float3 ray_dir)
 		float3 ks = fresnelRoughness(f0, surface.normal, camera.view, surface.arm.roughness);
 		float3 kd = (1 - ks) * (1 - surface.arm.metallic);
 
-		float3 sampled_ambient = trace_vxgi(world, geometry_normal, DIFFUSE_AMBIENT_HALF_ANGLE_RADIAN);
-		/*
+		// float3 sampled_ambient = trace_vxgi(world, geometry_normal, DIFFUSE_AMBIENT_HALF_ANGLE_RADIAN);
 		// this is "more correct", to approximate diffuse lighting, but surprisingly, shooting only one cone works fine for now
 		float3 sampled_ambient = 0.0;
-		for (int r = 0; r < 8; r++) {
-			sampled_ambient += trace_vxgi(world, normalize(normal + ((hash33(r * 100.5342 + world * 54.23423) - 0.5) * 1.0)), DIFFUSE_AMBIENT_HALF_ANGLE_RADIAN) / 8.0;
+		for (int r = 0; r < 4; r++) {
+			sampled_ambient += trace_vxgi(world, normalize(normal + ((hash33(r * 100.5342 + world * 54.23423) - 0.5) * 1.5)), DIFFUSE_AMBIENT_HALF_ANGLE_RADIAN) / 4.0;
+			//sampled_ambient += (trace_vxgi_ao(world, normalize(normal + ((hash33(r * 100.5342 + world * 54.23423) - 0.5) * 1.5)), DIFFUSE_AMBIENT_HALF_ANGLE_RADIAN) / 4.0) * get_environment_diffuse(geometry_normal) * 2.0;
 		}
-		*/
-		sampled_ambient += get_environment_diffuse(geometry_normal) * 0.2;
+		
+		//sampled_ambient += get_environment_diffuse(geometry_normal) * 0.2;
 		float3 ambient = surface.albedo * kd * surface.arm.ao * sampled_ambient;
 		col += radiance + ambient;
 
