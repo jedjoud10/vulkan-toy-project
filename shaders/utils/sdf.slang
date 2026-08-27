@@ -7,9 +7,29 @@
 #include "sdf_iq.slang"
 #include "sdf_ext.slang"
 
+
+struct Node {
+    float3 position;
+    uint next_node_index;
+}
+
 [Differentiable]
 float2 d(float3 p) {
-    return float2(p.y, 0);
+    float sdf = p.y;
+
+    uint3 offset = (uint3)floor(p + 64);
+    uint packed4_node_indices = storage_images_3d_uint[LOOKUP_TEXTURE].Load(offset);
+
+    for (int k = 0; k < 4; k++) {
+        uint8_t byte_node_index = (packed4_node_indices >> 8 * k) & 0xFF;
+
+        if (byte_node_index != 0) {
+            Node node = storage_buffers[STORAGE_BUFFER_PRIMITIVE_FLAT_LIST_BUFFER].Load<Node>(byte_node_index * 4 * 4);
+            sdf = smin(sdf, sdHexPrism(p - node.position, 0.6), 0.1);
+        }
+    }
+
+    return float2(sdf, 0);
 }
 
 struct TraceResHitObj {
@@ -49,7 +69,7 @@ void capture_performance_sdf_call() {
 
 static const uint MAX_ITERS = 256;
 static const float MAX_DISTANCE = 10000;
-static const float THRESHOLD_DISTANCE = 0.001;
+static const float THRESHOLD_DISTANCE = 0.01;
 static const float DISTANCE_SCALING_FACTOR = 0.9;
 
 

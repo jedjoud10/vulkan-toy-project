@@ -38,7 +38,7 @@ const static uint CLOUDS_STORAGE_IMAGE_IDX = 4;
 const static uint SDF_TEXTURE_STORAGE_IMAGE_IDX = 5;
 const static uint SDF_TEXTURE2_STORAGE_IMAGE_IDX = 6;
 const static uint VXGI_STORAGE_IMAGE_IDX = 7;
-const static uint SDF_TEXTURE4_STORAGE_IMAGE_IDX = 8;
+const static uint LOOKUP_TEXTURE = 8;
 
 
 const static uint UNIFORM_BUFFER_THINGY_IDX = 0;
@@ -52,7 +52,7 @@ const static uint READBACK_BUFFER_RAYS_TRACED_QUERY_INDEX = 1;
 
 const static uint STORAGE_BUFFER_MATERIALS_BUFFER = 3;
 const static uint STORAGE_BUFFER_SCENE_REPR_BUFFER = 4;
-const static uint STORAGE_BUFFER_TERRAIN_AABB_BOUNDS = 5;
+const static uint STORAGE_BUFFER_PRIMITIVE_FLAT_LIST_BUFFER = 5;
 
 const static uint SKYBOX_SAMPLER_IMAGE_IDX = 0;
 const static uint AMBIENT_SKYBOX_SAMPLER_IMAGE_IDX = 1;
@@ -75,6 +75,9 @@ RWTexture3D<float4> storage_images_3d[];
 
 [[vk::binding(0, 0)]]
 RWTexture3D<float> storage_images_3d_float[];
+
+[[vk::binding(0, 0)]]
+RWTexture3D<uint> storage_images_3d_uint[];
 
 [[vk::binding(0, 0)]]
 readonly RWTexture3D<float> readonly_storage_images_3d_float[];
