@@ -9,8 +9,32 @@
 
 
 struct Node {
-    float3 position;
-    uint next_node_index;
+    uint transform_index;
+    uint type;
+}
+
+enum SdfType {
+    Box,
+    BoxWithCutout
+}
+
+[Differentiable]
+float get_sdf_from_type(float3 local, SdfType type) {
+
+    switch (type) {
+        case SdfType.Box:
+            return sdBox(local, 0.99);
+        case SdfType.BoxWithCutout:
+            float box = sdBox(local, 0.99);
+            box = max(box, -sdCylinder(local.xyz, float3(0.0, 0.0, 0.6)));
+            box = max(box, -sdCylinder(local.xzy, float3(0.0, 0.0, 0.6)));
+            box = max(box, -sdCylinder(local.yxz, float3(0.0, 0.0, 0.6)));
+            
+            box = max(box, sdSphere(local, 1.0));            
+            return box;
+    }
+
+    return 0.0;
 }
 
 [Differentiable]
@@ -25,12 +49,24 @@ float2 d(float3 p) {
         uint byte_node_index = (packed4_node_indices >> 8 * k) & 0xFF;
 
         if (byte_node_index != 0) {
-            Node node = storage_buffers[STORAGE_BUFFER_PRIMITIVE_FLAT_LIST_BUFFER].Load<Node>(byte_node_index * 4 * 4);
+            Node node = storage_buffers[STORAGE_BUFFER_PRIMITIVE_FLAT_LIST_BUFFER].Load<Node>(byte_node_index * sizeof(Node));
             let tmp = sdf;
-            let box = sdBox(p - node.position, 0.6);
-            sdf = smin(sdf, box, 0.1);
+            uint transform_byte_offset = node.transform_index * 4 * 4 * 3;
+            
 
-            if (box < tmp) {
+            // 3x4 = 3 rows, 4 columns
+            // matrix must be the INVERSE of the transform matrix
+            float3x4 transform = storage_buffers[STORAGE_BUFFER_TRANSFORMS_BUFFER].Load<float3x4>(transform_byte_offset);
+
+            // 3x4 * 4x1 = 3x1 vector
+            float3 local = mul(transform, float4(p, 1));
+            
+            float obj_sdf = get_sdf_from_type(local.xyz, SdfType(node.type)); 
+            sdf = min(sdf, obj_sdf);
+            // sdf = smin(sdf, obj_sdf, 0.2);
+            
+
+            if (obj_sdf < tmp) {
                 material = 1.0;
             }
         }

@@ -685,6 +685,10 @@ impl InternalApp {
                 .buffer(self.counters_of_various_types.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
+            vk::DescriptorBufferInfo::default()
+                .buffer(self.scene.inverse_transforms_buffer.buffer)
+                .offset(0)
+                .range(vk::WHOLE_SIZE),
         ];
 
         let storage_buffer_write = vk::WriteDescriptorSet::default()
@@ -866,15 +870,26 @@ impl InternalApp {
         // write actual scene repr data
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene_representation_for_sdf), self.scene_representation_for_sdf_buffer.buffer, size_of::<u32>() as u64);
         */
+        self.scene.update(elapsed);
 
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.aabbs), self.scene.aabbs_buffer.buffer, 0);
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.primitive_flat_list), self.scene.primitive_flat_buffer.buffer, 0);
+        
+        // update ray-tracing BLAS instances transform matrices
+        for (dst, src) in self.scene.blases_instances.iter_mut().map(|instance| &mut instance.transform).zip(self.scene.transforms.iter()) {
+            *dst = vk::TransformMatrixKHR { matrix: ray_tracing::to_3x4_mat(ray_tracing::calculate_matrix(src.rotation, src.position, src.scale)) };
+        }
 
-        let o = scratch_buffer.write_bytes(cast_slice(&self.scene.lookup_texture_r32_cpu));
+        // send INVERSE transform matrices to GPU
+        let transforms = self.scene.transforms.iter().map(|src| ray_tracing::to_3x4_mat(ray_tracing::calculate_matrix(src.rotation, src.position, src.scale).inverted())).collect::<Vec<_>>();
+        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&transforms), self.scene.inverse_transforms_buffer.buffer, 0);
 
+        // write CPU texture to GPU texture using scratch buffer
+        // TODO: generalize into function?
+        let written_bytes = scratch_buffer.write_bytes(cast_slice(&self.scene.lookup_texture_r32_cpu));
         let extent = vk::Extent3D::default().depth(128).height(128).width(128);
         let subresource_layers = vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).layer_count(1).mip_level(0).base_array_layer(0);
-        let regions = [vk::BufferImageCopy2::default().buffer_image_height(0).buffer_row_length(0).buffer_offset(o.buffer_offset_start).image_extent(extent).image_subresource(subresource_layers)];
+        let regions = [vk::BufferImageCopy2::default().buffer_image_height(0).buffer_row_length(0).buffer_offset(written_bytes.buffer_offset_start).image_extent(extent).image_subresource(subresource_layers)];
         let copy_info = vk::CopyBufferToImageInfo2::default()
             .dst_image(self.scene.lookup_texture.image)
             .dst_image_layout(vk::ImageLayout::GENERAL)
@@ -1269,9 +1284,9 @@ impl InternalApp {
                 vek::Quaternion::identity(),
                 vek::Vec3::one(), // cannot do non-uniform scale! cannot do scale in general unless we account for it in the shader side!
                 false,
-                self.scene.prefabs[0]
-            );
-            
+                0,
+                self.scene.brick_prefab
+            );            
         }
 
         self.device.cmd_bind_pipeline(

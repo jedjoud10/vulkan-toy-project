@@ -86,6 +86,14 @@ float sdRoundBox( vec3 p, vec3 b, float r )
 
 // https://iquilezles.org/articles/distfunctions/
 [Differentiable]
+float sdSphere( vec3 p, float r )
+{
+  return length(p) - r;
+}
+
+
+// https://iquilezles.org/articles/distfunctions/
+[Differentiable]
 float sdBox( vec3 p, vec3 b )
 {
   vec3 q = abs(p) - b;
@@ -145,6 +153,21 @@ float sdFbm( vec3 p, float d )
        s = 0.22*s;
    }
    return d;
+}
+
+
+
+[BackwardDerivativeOf(sdFbm)]
+void bwd_sd_fbm(inout DifferentialPair<float3> p_pair, inout DifferentialPair<float> d_pair, float dOut)
+{
+    float eps = 0.001;
+    float x = sdFbm(p_pair.p - float3(eps, 0, 0), d_pair.p);
+    float y = sdFbm(p_pair.p - float3(0, eps, 0), d_pair.p);
+    float z = sdFbm(p_pair.p - float3(0, 0, eps), d_pair.p);
+    float b = sdFbm(p_pair.p, d_pair.p);
+
+
+    p_pair = diffPair<float3>(p_pair.p, (float3(b-x, b-y, b-z) / eps) * dOut);
 }
 
 #endif

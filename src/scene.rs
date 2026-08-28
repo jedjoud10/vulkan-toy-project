@@ -2,9 +2,9 @@ use ash::vk;
 use bytemuck::{Pod, Zeroable, cast_slice};
 use rand::{RngExt, SeedableRng};
 
-use crate::{buffer, others, ray_tracing, renderer::GraphicsContext, sdf_texture::{self, SdfImage}};
+use crate::{buffer, others, ray_tracing::{self, calculate_matrix}, renderer::GraphicsContext, sdf_texture::{self, SdfImage}};
 
-#[derive(Clone, Copy, Zeroable, Pod)]
+#[derive(Default, Clone, Copy, Zeroable, Pod)]
 #[repr(C)]
 pub struct Aabb {
     pub min: vek::Vec3<f32>,
@@ -30,7 +30,7 @@ pub const VXGI_TEXTURE_SIZE: u32 = 128;
 
 pub const SPAWN_TREES: bool = false;
 
-#[derive(Clone, Copy)]
+#[derive(Default, Clone, Copy)]
 pub struct Prefab {
     aabb_start_index: usize,
     blas_index: usize,
@@ -40,8 +40,20 @@ pub struct Prefab {
 #[derive(Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
 pub struct Node {
+    pub transform_index: u32,
+    pub sdf_type: u32,
+}
+
+pub struct Transform {
     pub position: vek::Vec3<f32>,
-    pub next_node_index: u32,
+    pub rotation: vek::Quaternion<f32>,
+    pub scale: vek::Vec3<f32>,
+}
+
+#[derive(Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+pub struct PackedTransform {
+    pub matrix: [f32; 12]
 }
 
 pub struct Scene {
@@ -51,6 +63,9 @@ pub struct Scene {
     // primitive BLASes are unique to avoid duplicating them
     pub blases: Vec<ray_tracing::AccelerationStructureData>,
     pub blases_instances: Vec<vk::AccelerationStructureInstanceKHR>,
+
+    pub transforms: Vec<Transform>,
+    pub inverse_transforms_buffer: buffer::Buffer,
 
     pub lookup_texture: SdfImage,
     pub lookup_texture_r32_cpu: Vec<u32>,
@@ -66,8 +81,10 @@ pub struct Scene {
     pub texture2: SdfImage,
     pub vxgi_texture: SdfImage,
     pub texture4: SdfImage,
-    
-    pub prefabs: Vec<Prefab>,
+
+    pub identity_prefab: Prefab,
+    pub tree_prefab: Prefab,
+    pub brick_prefab: Prefab
 }
 
 impl Scene {
@@ -92,6 +109,9 @@ impl Scene {
         let primitive_flat_buffer = buffer::create_buffer_default_flags(ctx, size_of::<Node>() * 1000, "a");     
         let lookup_texture_r32_cpu = vec![0u32; 128*128*128];
 
+        let transforms = Vec::<Transform>::new();
+        let transforms_buffer = buffer::create_buffer_default_flags(ctx, size_of::<PackedTransform>() * 1000, "a");     
+
 
         let mut this = Self {
             tlas,
@@ -107,54 +127,64 @@ impl Scene {
             primitive_flat_list,
             primitive_flat_buffer,
             lookup_texture_r32_cpu,
-            prefabs: Vec::new(),
+            identity_prefab: Prefab::default(),
+            tree_prefab: Prefab::default(),
+            brick_prefab: Prefab::default(),
+            transforms,
+            inverse_transforms_buffer: transforms_buffer,
         };
 
-        let prefab = this.create_primitive_prefab(ctx, &[IDENTBOX]);
-        this.create_primitive(-vek::Vec3::unit_y(), vek::Quaternion::identity(), vek::Vec3::new(1000f32, 1f32, 1000f32), false, prefab);
+        this.identity_prefab = this.create_primitive_prefab(ctx, &[IDENTBOX]);
+        this.create_primitive(-vek::Vec3::unit_y(), vek::Quaternion::identity(), vek::Vec3::new(1000f32, 1f32, 1000f32), false, 0, this.identity_prefab);
 
-        let tree_prefab = this.create_primitive_prefab(ctx, &[Aabb {
+        this.tree_prefab = this.create_primitive_prefab(ctx, &[Aabb {
             min: vek::Vec3::new(-3f32, -5f32, -3f32),
             max: vek::Vec3::new(3f32, 5f32, 3f32),
         }]);
 
         let mut rng = rand::rngs::SmallRng::seed_from_u64(432);
-        for x in -1..1 {
-            for z in -1..1 {
+        for x in -4..4 {
+            for z in -4..4 {
                 this.create_primitive(
                     vek::Vec3::new(rng.random_range(-40f32..40f32), 1f32, rng.random_range(-40f32..40f32)),
                     vek::Quaternion::default(),
                     vek::Vec3::new(1f32, 1f32, 1f32),
                     false, 
-                    prefab,
+                    rng.random_range(0u32..=1u32),
+                    this.brick_prefab,
                 );
             }
         }
 
-
-
-        
-        /*
         if SPAWN_TREES {
-            for x in -50..50 {
-                for z in -50..50 {
+            for x in -5..5 {
+                for z in -5..5 {
                     
                     this.create_primitive(
                         vek::Vec3::new(rng.random_range(-400f32..400f32), 4f32, rng.random_range(-400f32..400f32)),
                         vek::Quaternion::rotation_y(rng.random_range(0f32..std::f32::consts::TAU)),
                         vek::Vec3::new(1f32, 1f32, 1f32),
                         true, 
-                        tree_prefab,
+                        0,
+                        this.tree_prefab,
                     );
                 }
             }
         }
-        */
 
 
         this
     }
 
+    pub fn update(&mut self, elapsed: f32) {
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(elapsed.floor() as u64);
+        for i in self.transforms.iter_mut().skip(1) {
+            i.rotation = i.rotation.rotated_x(rng.random_range(-1f32..1f32) * 0.01);
+            i.rotation = i.rotation.rotated_y(rng.random_range(-1f32..1f32) * 0.01);
+            i.rotation = i.rotation.rotated_z(rng.random_range(-1f32..1f32) * 0.01);
+            
+        }
+    }
 
     pub unsafe fn create_primitive_prefab(&mut self, mut ctx: &mut GraphicsContext, aabbs: &[Aabb]) -> Prefab {
         let cmd = others::begin_recording(&mut ctx);
@@ -176,17 +206,14 @@ impl Scene {
 
         self.blases.push(blas1);
 
-        let prefab = Prefab {
+        Prefab {
             blas_index: s,
             aabb_start_index: self.blases.len()-1,
             full_aabb: aabbs.iter().copied().reduce(|a, b| Aabb { min: vek::Vec3::partial_min(a.min, b.min), max: vek::Vec3::partial_min(a.max, b.max) }).unwrap()
-        };
-
-        self.prefabs.push(prefab);
-        prefab
+        }
     }
 
-    pub unsafe fn create_primitive(&mut self, position: vek::Vec3<f32>, rotation: vek::Quaternion<f32>, scale: vek::Vec3<f32>, is_local: bool, prefab: Prefab) {
+    pub unsafe fn create_primitive(&mut self, position: vek::Vec3<f32>, rotation: vek::Quaternion<f32>, scale: vek::Vec3<f32>, is_local: bool, sdf_type: u32, prefab: Prefab) {
         if is_local {
             assert!((scale.partial_cmpeq(&vek::Vec3::one())).reduce_and(), "scale must be one when dealing with local SDF prims");
         }
@@ -206,41 +233,46 @@ impl Scene {
             0xFF,
         ));
 
-        log::info!("{}", self.primitive_flat_list.len());
+        self.transforms.push(Transform {
+            position,
+            rotation,
+            scale,
+        });
 
-        for x in -2..=2 {
-            for y in -2..=2 {
-                for z in -2..=2 {
-                    
-                    let offset = (position.floor() + 64f32).as_::<i32>() + vek::Vec3::new(x,y,z);
-                    let index = crate::utils::offset_to_index(offset.as_::<usize>(), 128);
-                    
-                    let previous = &mut self.lookup_texture_r32_cpu[index];
-                    
-                    let current = self.primitive_flat_list.len() as u32;
-                    assert!(current < u8::MAX as u32);
-                    let current = current as u8;
+        if !is_local {
+            for x in -2..=2 {
+                for y in -2..=2 {
+                    for z in -2..=2 {
 
-                    let mut bytes = previous.to_ne_bytes();
+                        let offset = (position.floor() + 64f32).as_::<i32>() + vek::Vec3::new(x,y,z);
+                        let index = crate::utils::offset_to_index(offset.as_::<usize>(), 128);
 
-                    for (i, k) in bytes.iter().enumerate() {
-                        if *k == 0 {
-                            bytes[i] = current;
-                            break;
+                        let previous = &mut self.lookup_texture_r32_cpu[index];
+
+                        let current = self.primitive_flat_list.len() as u32;
+                        assert!(current < u8::MAX as u32);
+                        let current = current as u8;
+
+                        let mut bytes = previous.to_ne_bytes();
+
+                        for (i, k) in bytes.iter().enumerate() {
+                            if *k == 0 {
+                                bytes[i] = current;
+                                break;
+                            }
                         }
+
+                        self.lookup_texture_r32_cpu[index] = u32::from_ne_bytes(bytes);
                     }
-                    
-                    self.lookup_texture_r32_cpu[index] = u32::from_ne_bytes(bytes);
                 }
             }
+
+            self.primitive_flat_list.push(Node {
+                transform_index: (self.transforms.len() - 1) as u32,
+                sdf_type,
+            })
         }
 
-
-
-        self.primitive_flat_list.push(Node {
-            position,
-            next_node_index: 0,
-        })
     }
 
     pub unsafe fn destroy(self, device: &ash::Device, acceleration_structure_device: &ash::khr::acceleration_structure::Device, mut allocator: &mut gpu_allocator::vulkan::Allocator) {
