@@ -23,7 +23,7 @@ float get_sdf_from_type(float3 local, SdfType type) {
 
     switch (type) {
         case SdfType.Box:
-            return sdBox(local, 0.99);
+            return sdBox(local, 0.8);
         case SdfType.BoxWithCutout:
             float box = sdBox(local, 0.99);
             box = max(box, -sdCylinder(local.xyz, float3(0.0, 0.0, 0.6)));
@@ -62,8 +62,8 @@ float2 d(float3 p) {
             float3 local = mul(transform, float4(p, 1));
             
             float obj_sdf = get_sdf_from_type(local.xyz, SdfType(node.type)); 
-            sdf = min(sdf, obj_sdf);
-            // sdf = smin(sdf, obj_sdf, 0.2);
+            // sdf = min(sdf, obj_sdf);
+            sdf = smin(sdf, obj_sdf, 0.1);
             
 
             if (obj_sdf < tmp) {
@@ -134,18 +134,13 @@ float2 ray_box_get_tmin_tmax(
     return float2(tmin,tmax);
 }
 
-// only way I got it to work was to "scalarize" the loads instead of loading a float3
-// TODO: FIX THIS. ALIGNMENT / PACKING ISSUE. MIGHT NEED TO CONVERT TO FLOAT4 INSTEAD
-float3 load_aabb_axii_from_buffer(uint byte_offset) {
-    float x = storage_buffers_readonly[STORAGE_BUFFER_SCENE_REPR_BUFFER].Load<float>(byte_offset);
-    float y = storage_buffers_readonly[STORAGE_BUFFER_SCENE_REPR_BUFFER].Load<float>(byte_offset+4);
-    float z = storage_buffers_readonly[STORAGE_BUFFER_SCENE_REPR_BUFFER].Load<float>(byte_offset+8);
-
-    return float3(x,y,z);
-}
-
 const static uint INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK = 1 << 20;
 const static uint INSTANCE_CUSTOM_INDEX_AABB_START_INDEX = (1 << 20) - 1;
+
+struct GpuAabb {
+    half4 min;
+    half4 max;
+};
 
 void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls, inout float material) {
     // 24 bits
@@ -154,9 +149,8 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls,
     uint aabb_lookup_index = (instance_custom_index & INSTANCE_CUSTOM_INDEX_AABB_START_INDEX) + sq.CandidatePrimitiveIndex();
 
     // software AABB test lmao to get min and max dists of ray into  AABB
-    float3 min_bounds = load_aabb_axii_from_buffer(aabb_lookup_index * 3 * 4 * 2);
-    float3 max_bounds = load_aabb_axii_from_buffer(aabb_lookup_index * 3 * 4 * 2 + 3 * 4);
-    float2 tmin_tmax = ray_box_get_tmin_tmax(sq.CandidateRayObjectRayOrigin(), sq.CandidateObjectRayDirection(), min_bounds, max_bounds);
+    GpuAabb aabb = storage_buffers_readonly[STORAGE_BUFFER_SCENE_REPR_BUFFER].Load<GpuAabb>(aabb_lookup_index * sizeof(GpuAabb));
+    float2 tmin_tmax = ray_box_get_tmin_tmax(sq.CandidateRayObjectRayOrigin(), sq.CandidateObjectRayDirection(), aabb.min.xyz, aabb.max.xyz);
     float distance = max(tmin_tmax.x, 0);
 
     // cache ray data

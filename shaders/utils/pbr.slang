@@ -87,6 +87,11 @@ public struct AoRoughnessMetallic {
         get { return inner.z; }
 		set { inner.z = newValue; }
 	}
+
+	public static AoRoughnessMetallic DIFFUSE = AoRoughnessMetallic(float3(1, 1, 0));
+	public static AoRoughnessMetallic SHINY = AoRoughnessMetallic(float3(1, 0, 0));
+	public static AoRoughnessMetallic MIRROR = AoRoughnessMetallic(float3(1, 0, 1));
+	public static AoRoughnessMetallic METALLIC = AoRoughnessMetallic(float3(1, 0.3, 1.0));
 }
 
 public struct PbrSurfaceData {
@@ -171,47 +176,55 @@ public float3 lighting2(
 	return radiance + ambient * 0.1;
 }
 
-float3 goo_material(float3 world) {
-	return hash33(floor(world/10));
+struct PbrMaterial {
+	float3 diffuse;
+	float3 normal;
+	AoRoughnessMetallic arm;
+
+	static PbrMaterial blend(PbrMaterial a, PbrMaterial b, float x) {
+		return PbrMaterial(lerp(a.diffuse, b.diffuse, x), normalize(lerp(a.normal, b.normal, x)), AoRoughnessMetallic(lerp(a.arm.inner, b.arm.inner, x)));
+	}
 }
 
-float3 get_diffuse_colour_only(float3 world, float3 normal, float material) {
-	float3 diffuse = 1.0;
+PbrMaterial goo_material(float3 world, float3 normal) {
+	PbrMaterial material;
+	material.diffuse = hash33(floor(world/10));
+	float roughness = smoothstep(-0.2, 0.2, snoise(world * 0.8));
+	material.arm = AoRoughnessMetallic(float3(1, roughness, 0));
+	material.normal = normal;
+	return material;
+}
 
-	if ((uniforms.toggles_bitmask & 4) == 0) {
-		// TODO: file a bug report SOMEWHERE because these NonUniformResourceIndex are not doing anything
-		// (even tried with a simpler setup that uses NonUniformResourceIndex into a texture sample, still does not work) 
-		uint material_index = NonUniformResourceIndex(floor((snoise(world.xz * 0.03) * 0.5 + 0.5) * 4));
-		uint index = NonUniformResourceIndex(storage_buffers_readonly[STORAGE_BUFFER_MATERIALS_BUFFER].Load<uint32_t>(NonUniformResourceIndex(material_index * 4)));
-	
-	
-		diffuse = sample_triplanar(index, world, normal);
+PbrMaterial debug_material(float3 world, float3 normal) {
+	float colour = smoothstep(-0.1, 0.1, sin(world.x)+sin(world.z));
+	return PbrMaterial(colour, normal, AoRoughnessMetallic.DIFFUSE);
+}
 
-		diffuse = lerp(diffuse, goo_material(world), material);
+PbrMaterial floor_material(float3 world, float3 normal) {
+	PbrMaterial material;
+
+	// TODO: file a bug report SOMEWHERE because these NonUniformResourceIndex are not doing anything
+	// (even tried with a simpler setup that uses NonUniformResourceIndex into a texture sample, still does not work) 
+	uint material_index = NonUniformResourceIndex(floor((snoise(world.xz * 0.03) * 0.5 + 0.5) * 4));
+	uint index = NonUniformResourceIndex(storage_buffers_readonly[STORAGE_BUFFER_MATERIALS_BUFFER].Load<uint32_t>(NonUniformResourceIndex(material_index * 4)));
+
+	material.diffuse = sample_triplanar(index, world, normal);
+	material.arm = AoRoughnessMetallic(sample_triplanar(index+1, world, normal));
+	material.normal = sample_triplanar_normal(index+2, world, normal);
+
+	return material;
+}
+
+PbrMaterial get_main_material(float3 world, float3 normal, float material) {
+	// debug white material
+	if ((uniforms.toggles_bitmask & 4) != 0) {
+		return debug_material(world, normal);
 	}
 
-	return diffuse;
-}
-
-
-
-public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) {
-	float3 col = 0.0;
-	float3 mask = 1.0;
-	InitRandom(id.xy, (uint32_t)uniforms.frame_count);
-
-	float3 camera_view = -ray_dir;
-
-	// https://dubiousconst282.github.io/2024/10/03/voxel-ray-tracing/
-	for (int bounce = 0; bounce < 2; bounce++) {
-		TraceRes res = trace(ray_pos, ray_dir);
-
-    	if (res.hit) {  
-			float3 world = res.pos;
-			float3 normal = res.normal;
-
-			float3 diffuse = 1.0; 
-			float3 arm = float3(1, 1, 0);
+	/*
+				
+			// default PBR material
+			PbrMaterial pbr_material = PbrMaterial(1, geometry_normal, AoRoughnessMetallic.DIFFUSE);
 
 			if (res.data.instance_custom_index != 0) {
 				arm = float3(1, 0.8, 0);
@@ -226,75 +239,19 @@ public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) 
 				//diffuse = hex2col(0xf7de51) * (noise(world * 10.0) * 0.3 + 0.5);
 			}
 
-			if ((uniforms.toggles_bitmask & 4) == 0 && res.data.instance_custom_index == 0) {
-				// TODO: file a bug report SOMEWHERE because these NonUniformResourceIndex are not doing anything
-				// (even tried with a simpler setup that uses NonUniformResourceIndex into a texture sample, still does not work) 
-				uint material_index = NonUniformResourceIndex(floor((snoise(world.xz * 0.03) * 0.5 + 0.5) * 4));
-				uint index = NonUniformResourceIndex(storage_buffers_readonly[STORAGE_BUFFER_MATERIALS_BUFFER].Load<uint32_t>(NonUniformResourceIndex(material_index * 4)));
-			
 
-				diffuse = sample_triplanar(index, world, normal);
-				arm = sample_triplanar(index+1, world, normal);
-				normal = sample_triplanar_normal(index+2, world, normal);
-			
-				diffuse = lerp(diffuse, 1.0, res.data.material);
-				arm = lerp(arm, float3(1, smoothstep(-0.2, 0.2, snoise(world * 0.8)), 1.0), res.data.material);
-				normal = normalize(lerp(normal, res.normal, res.data.material));
+
+	*/
+
+	/*
+		// floor material
+			if ((uniforms.toggles_bitmask & 4) == 0 && res.data.instance_custom_index == 0) {
+				pbr_material = floor_material(world, geometry_normal);
 			}
 
+	*/
 
-
-			
-			PbrSurfaceData surface = PbrSurfaceData(res.pos, diffuse, normal, AoRoughnessMetallic(arm));
-			CameraData camera = CameraData(camera_view);
-			
-			// opaque surface, non refractive
-			float3 sun = uniforms.sun.xyz;
-			float3 sun_colour = sun_colour(sun.xyz);
-			SunData light = SunData(sun.xyz, 16.0);
-
-			float3 radiance = radiance_sun(surface, camera, light);
-
-			// IBL diffuse term
-			float3 f0 = lerp(0.04, surface.albedo, surface.arm.metallic);
-			float3 ks = fresnelRoughness(f0, surface.normal, camera.view, surface.arm.roughness);
-			float3 kd = (1 - ks) * (1 - surface.arm.metallic);
-			
-			// TODO: there's still a problem here. plasticy materials (roughness~0, metallic~0) look like metals. I'm forgetting to account for something here. I don't know my PBR
-			col += mask * radiance;
-			//float3 ambient = surface.albedo * kd * surface.arm.ao;
-			mask *= lerp(fresnelRoughness(surface.albedo, surface.normal, camera.view, surface.arm.roughness), surface.albedo, surface.arm.metallic);
-
-			float3 random_normal = normal + GetRandomSphereDir();
-			float3 reflected_ray_dir = reflect(ray_dir, normal);
-
-			// TODO: this is also wrong. instead of shooting *one* ray for the surface we need to shoot the ambient and reflection rays separately. we cannot just shoot one to approximate both effect
-			ray_dir = normalize(lerp(reflected_ray_dir, random_normal, surface.arm.roughness));
-			ray_pos = res.pos + ray_dir * 0.01;
-			camera_view = -ray_dir;
-    	} else {
-    	    col += mask * sample_skybox_and_clouds(res.pos, res.dir);
-			break;
-    	}
-	}
-
-
-	return col;
-}
-
-public float3 trace_scene_singlebounce(uint2 id, float3 ray_pos, float3 ray_dir) {
-	float3 col = 0.0;
-
-	float3 camera_view = -ray_dir;
-
-	TraceRes res = trace(ray_pos, ray_dir);
-	InitRandom(id.xy, (uint32_t)uniforms.frame_count);
-
-	if (res.hit) {  
-		float3 world = res.pos;
-		float3 normal = res.normal;
-		float3 geometry_normal = res.normal;
-
+			/*
 		float3 diffuse = 1.0; 
 		float3 arm = float3(1, 1, 0);
 
@@ -326,10 +283,87 @@ public float3 trace_scene_singlebounce(uint2 id, float3 ray_pos, float3 ray_dir)
 			arm = lerp(arm, float3(1, 1.0, 0.0), res.data.material);
 			normal = normalize(lerp(normal, res.normal, res.data.material));
 		}
+		*/
+
+	return PbrMaterial.blend(floor_material(world, normal), goo_material(world, normal), material);
+}
+
+float3 get_diffuse_colour_only(float3 world, float3 normal, float material) {
+	return get_main_material(world, normal, material).diffuse;
+}
+
+
+
+public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) {
+	float3 col = 0.0;
+	float3 mask = 1.0;
+	InitRandom(id.xy, (uint32_t)uniforms.frame_count);
+
+	float3 camera_view = -ray_dir;
+
+	// https://dubiousconst282.github.io/2024/10/03/voxel-ray-tracing/
+	for (int bounce = 0; bounce < 2; bounce++) {
+		TraceRes res = trace(ray_pos, ray_dir);
+
+    	if (res.hit) {  
+			float3 world = res.pos;
+			float3 geometry_normal = res.normal;
+			PbrMaterial pbr_material = get_main_material(world, geometry_normal, res.data.material);
+
+			
+			PbrSurfaceData surface = PbrSurfaceData(res.pos, pbr_material.diffuse, pbr_material.normal, pbr_material.arm);
+			CameraData camera = CameraData(camera_view);
+			
+			// opaque surface, non refractive
+			float3 sun = uniforms.sun.xyz;
+			float3 sun_colour = sun_colour(sun.xyz);
+			SunData light = SunData(sun.xyz, 16.0);
+
+			float3 radiance = radiance_sun(surface, camera, light);
+
+			// IBL diffuse term
+			float3 f0 = lerp(0.04, surface.albedo, surface.arm.metallic);
+			float3 ks = fresnelRoughness(f0, surface.normal, camera.view, surface.arm.roughness);
+			float3 kd = (1 - ks) * (1 - surface.arm.metallic);
+			
+			// TODO: there's still a problem here. plasticy materials (roughness~0, metallic~0) look like metals. I'm forgetting to account for something here. I don't know my PBR
+			col += mask * radiance;
+			//float3 ambient = surface.albedo * kd * surface.arm.ao;
+			mask *= lerp(fresnelRoughness(surface.albedo, surface.normal, camera.view, surface.arm.roughness), surface.albedo, surface.arm.metallic);
+
+			float3 random_normal = surface.normal + GetRandomSphereDir();
+			float3 reflected_ray_dir = reflect(ray_dir, surface.normal);
+
+			// TODO: this is also wrong. instead of shooting *one* ray for the surface we need to shoot the ambient and reflection rays separately. we cannot just shoot one to approximate both effect
+			ray_dir = normalize(lerp(reflected_ray_dir, random_normal, surface.arm.roughness));
+			ray_pos = res.pos + ray_dir * 0.01;
+			camera_view = -ray_dir;
+    	} else {
+    	    col += mask * sample_skybox_and_clouds(res.pos, res.dir);
+			break;
+    	}
+	}
+
+
+	return col;
+}
+
+public float3 trace_scene_singlebounce(uint2 id, float3 ray_pos, float3 ray_dir) {
+	float3 col = 0.0;
+
+	float3 camera_view = -ray_dir;
+
+	TraceRes res = trace(ray_pos, ray_dir);
+	InitRandom(id.xy, (uint32_t)uniforms.frame_count);
+
+	if (res.hit) {  
+		float3 world = res.pos;
+		float3 geometry_normal = res.normal;
+		PbrMaterial pbr_material = get_main_material(world, geometry_normal, res.data.material);	
 		
-		PbrSurfaceData surface = PbrSurfaceData(res.pos, diffuse, normal, AoRoughnessMetallic(arm));
+		PbrSurfaceData surface = PbrSurfaceData(res.pos, pbr_material.diffuse, pbr_material.normal, pbr_material.arm);
 		CameraData camera = CameraData(camera_view);
-		
+
 		// opaque surface, non refractive
 		float3 sun = uniforms.sun.xyz;
 		float3 sun_colour = sun_colour(sun.xyz);
@@ -347,7 +381,7 @@ public float3 trace_scene_singlebounce(uint2 id, float3 ray_pos, float3 ray_dir)
 		float3 sampled_ambient = 0.0;
 		static const int NUM_SAMPLES = 8;
 		for (int r = 0; r < NUM_SAMPLES; r++) {
-			float3 randomized_normal = normalize(normal + ((hash33(r * 100.5342 + world * 54.23423) - 0.5) * 1.5));
+			float3 randomized_normal = normalize(surface.normal + ((hash33(r * 100.5342 + world * 54.23423) - 0.5) * 1.5));
 			sampled_ambient += trace_vxgi(world, randomized_normal, DIFFUSE_AMBIENT_HALF_ANGLE_RADIAN) / NUM_SAMPLES;
 			//sampled_ambient += (trace_vxgi_ao(world, normalize(normal + ((hash33(r * 100.5342 + world * 54.23423) - 0.5) * 1.5)), DIFFUSE_AMBIENT_HALF_ANGLE_RADIAN) / 4.0) * get_environment_diffuse(geometry_normal) * 2.0;
 		}

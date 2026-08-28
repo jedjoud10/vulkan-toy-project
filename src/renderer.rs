@@ -674,7 +674,7 @@ impl InternalApp {
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
             vk::DescriptorBufferInfo::default()
-                .buffer(self.scene.aabbs_buffer.buffer)
+                .buffer(self.scene.gpu_packed_aabbs_buffer.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
             vk::DescriptorBufferInfo::default()
@@ -862,17 +862,10 @@ impl InternalApp {
         let gpu_material_data = self.materials.iter().map(|x| GpuMaterialInfo { base_index: x.base_index }).collect::<Vec<_>>();
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&gpu_material_data), self.materials_buffer.buffer, 0);
 
-        /*
-        // write count
-        let cnt = self.scene_representation_for_sdf.len() as u32;
-        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, bytes_of(&cnt), self.scene_representation_for_sdf_buffer.buffer, 0);
 
-        // write actual scene repr data
-        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene_representation_for_sdf), self.scene_representation_for_sdf_buffer.buffer, size_of::<u32>() as u64);
-        */
         self.scene.update(elapsed);
 
-        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.aabbs), self.scene.aabbs_buffer.buffer, 0);
+        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.gpu_packed_aabbs), self.scene.gpu_packed_aabbs_buffer.buffer, 0);
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.primitive_flat_list), self.scene.primitive_flat_buffer.buffer, 0);
         
         // update ray-tracing BLAS instances transform matrices
@@ -1000,7 +993,7 @@ impl InternalApp {
             .dst_queue_family_index(self.queue_family_index)
             .size(vk::WHOLE_SIZE);
         let scene_aabbs_buffer_barrier = vk::BufferMemoryBarrier2::default()
-            .buffer(self.scene.aabbs_buffer.buffer)
+            .buffer(self.scene.gpu_packed_aabbs_buffer.buffer)
             .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
             .dst_access_mask(vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::MEMORY_WRITE)
             .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
@@ -1277,15 +1270,27 @@ impl InternalApp {
         }
         */
 
-        if  left || right {
+        if  left {
             let pos = self.movement.position + self.movement.forward() * 5f32;
             self.scene.create_primitive(
-                pos,
+                pos.floor(),
                 vek::Quaternion::identity(),
                 vek::Vec3::one(), // cannot do non-uniform scale! cannot do scale in general unless we account for it in the shader side!
                 false,
                 0,
                 self.scene.brick_prefab
+            );            
+        }
+
+        if  right {
+            let pos = self.movement.position + self.movement.forward() * 5f32;
+            self.scene.create_primitive(
+                pos.floor(),
+                vek::Quaternion::identity(),
+                vek::Vec3::one(), // cannot do non-uniform scale! cannot do scale in general unless we account for it in the shader side!
+                true,
+                0,
+                self.scene.tree_prefab
             );            
         }
 

@@ -10,6 +10,22 @@ pub struct Aabb {
     pub min: vek::Vec3<f32>,
     pub max: vek::Vec3<f32>,
 }
+impl Aabb {
+    fn to_gpu_format(&self) -> GpuAabb {
+        let min = self.min;
+        let max = self.max;
+        
+        // TODO: why is `vec3::with_w` not const??? :(
+        GpuAabb { min: vek::Vec4::new(min.x, min.y, min.z, 0f32).map(|x| half::f16::from_f32(x)), max: vek::Vec4::new(max.x, max.y, max.z, 0f32).map(|x| half::f16::from_f32(x)) }
+    }
+}
+
+#[derive(Default, Clone, Copy, Zeroable, Pod)]
+#[repr(C)]
+pub struct GpuAabb {
+    pub min: vek::Vec4<half::f16>,
+    pub max: vek::Vec4<half::f16>,
+}
 
 pub const IDENTBOX: Aabb = Aabb { min: vek::Vec3::broadcast(-1f32), max: vek::Vec3::broadcast(1f32) };
 
@@ -34,7 +50,6 @@ pub const SPAWN_TREES: bool = false;
 pub struct Prefab {
     aabb_start_index: usize,
     blas_index: usize,
-    full_aabb: Aabb
 }
 
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -64,18 +79,22 @@ pub struct Scene {
     pub blases: Vec<ray_tracing::AccelerationStructureData>,
     pub blases_instances: Vec<vk::AccelerationStructureInstanceKHR>,
 
+    // transforms for all primitives. added whenever we instantiate a primitive
     pub transforms: Vec<Transform>,
     pub inverse_transforms_buffer: buffer::Buffer,
 
+    // lookup texture to see what primitives intersect the same voxels
     pub lookup_texture: SdfImage,
     pub lookup_texture_r32_cpu: Vec<u32>,
+
+    // primitive nodes (that apply to the global SDF)
     pub primitive_flat_list: Vec<Node>,
     pub primitive_flat_buffer: buffer::Buffer,    
 
     // to be able to advance the ray during a HWRT possible intersection, we need to do a software ray-AABB test and get tmin value
     // for that, we need to store the AABBs of the geometries
-    pub aabbs_buffer: buffer::Buffer,
-    pub aabbs: Vec<Aabb>,
+    pub gpu_packed_aabbs_buffer: buffer::Buffer,
+    pub gpu_packed_aabbs: Vec<GpuAabb>,
 
     pub texture: SdfImage,
     pub texture2: SdfImage,
@@ -98,7 +117,7 @@ impl Scene {
         
         let tlas = ray_tracing::pre_create_tlas(&mut ctx);
         
-        let aabbs_buffer = buffer::create_buffer_default_flags(&mut ctx, size_of::<Aabb>() * 100, "scene BLAS AABBs buffer");
+        let aabbs_buffer = buffer::create_buffer_default_flags(&mut ctx, size_of::<GpuAabb>() * 1000, "scene BLAS AABBs buffer");
         let aabbs = vec![];
 
         let blases = Vec::new();
@@ -117,8 +136,8 @@ impl Scene {
             tlas,
             blases,
             blases_instances,
-            aabbs_buffer,
-            aabbs,
+            gpu_packed_aabbs_buffer: aabbs_buffer,
+            gpu_packed_aabbs: aabbs,
             texture,
             texture2,
             vxgi_texture,
@@ -142,6 +161,7 @@ impl Scene {
             max: vek::Vec3::new(3f32, 5f32, 3f32),
         }]);
 
+        /*
         let mut rng = rand::rngs::SmallRng::seed_from_u64(432);
         for x in -4..4 {
             for z in -4..4 {
@@ -171,6 +191,7 @@ impl Scene {
                 }
             }
         }
+        */
 
 
         this
@@ -190,8 +211,8 @@ impl Scene {
         let cmd = others::begin_recording(&mut ctx);
         let mut writer = buffer::begin_buffer_writer(&mut ctx);
         
-        let s = self.aabbs.len();
-        self.aabbs.extend_from_slice(aabbs);
+        let s = self.gpu_packed_aabbs.len();
+        self.gpu_packed_aabbs.extend(aabbs.iter().map(|x| x.to_gpu_format()));
         let written = writer.write_bytes(cast_slice(&aabbs));
 
         let geometry = ray_tracing::BlasGeometry::AABBs {
@@ -209,7 +230,6 @@ impl Scene {
         Prefab {
             blas_index: s,
             aabb_start_index: self.blases.len()-1,
-            full_aabb: aabbs.iter().copied().reduce(|a, b| Aabb { min: vek::Vec3::partial_min(a.min, b.min), max: vek::Vec3::partial_min(a.max, b.max) }).unwrap()
         }
     }
 
@@ -291,7 +311,7 @@ impl Scene {
         self.tlas.destroy(&acceleration_structure_device, &device, &mut allocator);
         log::info!("destroyed TLAS");
 
-        self.aabbs_buffer.destroy(&device, &mut allocator);
+        self.gpu_packed_aabbs_buffer.destroy(&device, &mut allocator);
         // self.primitives_buffer.destroy(device, &mut allocator);
         log::info!("destroyed gpu repr");
     }
