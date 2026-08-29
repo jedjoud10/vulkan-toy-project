@@ -639,6 +639,7 @@ impl InternalApp {
         storage_images_allocator.push(self.scene.texture2.image_view);
         storage_images_allocator.push(self.scene.vxgi_texture.image_view);
         storage_images_allocator.push(self.scene.lookup_texture.image_view);  
+       
         
         let sdf_storage_images_start_index = storage_images_allocator.current();
         for image_mip in self.scene.vxgi_texture.specific_mip_image_views.as_ref().unwrap().iter() {
@@ -689,6 +690,10 @@ impl InternalApp {
                 .buffer(self.scene.inverse_transforms_buffer.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
+            vk::DescriptorBufferInfo::default()
+                .buffer(self.scene.chunk_buffer_lookup.buffer)
+                .offset(0)
+                .range(vk::WHOLE_SIZE),
         ];
 
         let storage_buffer_write = vk::WriteDescriptorSet::default()
@@ -713,6 +718,13 @@ impl InternalApp {
             sampled_images_allocator.push(*image_mip);
         }
 
+        
+        let mut indicestest = vec![];
+        for chunk in self.scene.chunks.iter() {            
+            let index = sampled_images_allocator.push(chunk.texture.image_view);  
+            //dbg!(index);
+            indicestest.push(index);
+        }
         
         //sampled_images_allocator.push(self.scene.texture4.image_view);
 
@@ -867,6 +879,7 @@ impl InternalApp {
 
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.gpu_packed_aabbs), self.scene.gpu_packed_aabbs_buffer.buffer, 0);
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.primitive_flat_list), self.scene.primitive_flat_buffer.buffer, 0);
+        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&indicestest), self.scene.chunk_buffer_lookup.buffer, 0);
         
         // update ray-tracing BLAS instances transform matrices
         for (dst, src) in self.scene.blases_instances.iter_mut().map(|instance| &mut instance.transform).zip(self.scene.transforms.iter()) {
@@ -1280,8 +1293,9 @@ impl InternalApp {
                 rot,
                 vek::Vec3::one(), // cannot do non-uniform scale! cannot do scale in general unless we account for it in the shader side!
                 false,
+                None,
                 0,
-                self.scene.brick_prefab
+                self.scene.identity_prefab
             );            
         }
 
@@ -1292,6 +1306,7 @@ impl InternalApp {
                 vek::Quaternion::identity(),
                 vek::Vec3::one(), // cannot do non-uniform scale! cannot do scale in general unless we account for it in the shader side!
                 true,
+                None,
                 0,
                 self.scene.tree_prefab
             );            

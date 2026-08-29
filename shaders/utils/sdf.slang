@@ -154,7 +154,10 @@ float2 ray_box_get_tmin_tmax(
 }
 
 const static uint INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK = 1 << 20;
-const static uint INSTANCE_CUSTOM_INDEX_AABB_START_INDEX = (1 << 20) - 1;
+const static uint INSTANCE_CUSTOM_INDEX_AABB_START_INDEX = (1 << 5) - 1;
+const static uint INSTANCE_CUSTOM_INDEX_CHUNK_SDF_FLAG_MASK = 1 << 5;
+const static uint INSTANCE_CUSTOM_INDEX_CHUNK_SDF_MASK = ((1 << 20) - 1) & ~((1 << 5) - 1);
+
 
 struct GpuAabb {
     half4 min;
@@ -166,6 +169,8 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls,
     uint instance_custom_index = sq.CandidateRayInstanceCustomIndex();   
     bool local_sdf = (instance_custom_index & INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK) != 0;
     uint aabb_lookup_index = (instance_custom_index & INSTANCE_CUSTOM_INDEX_AABB_START_INDEX) + sq.CandidatePrimitiveIndex();
+    bool chunk = (instance_custom_index & INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK) != 0;
+    uint chunk_start_index = (instance_custom_index & INSTANCE_CUSTOM_INDEX_CHUNK_SDF_MASK) >> 5;
 
     // software AABB test lmao to get min and max dists of ray into  AABB
     GpuAabb aabb = storage_buffers_readonly[STORAGE_BUFFER_SCENE_REPR_BUFFER].Load<GpuAabb>(aabb_lookup_index * sizeof(GpuAabb));
@@ -196,7 +201,15 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls,
             float3 local_position = mul(sq.CandidateWorldToObject3x4(), float4(point, 1)).xyz;
             float instance_index = sq.CandidateInstanceIndex();
             // closest_distance_and_material = tree2(local_position * 2.5, instance_index) / 2.5;
-            closest_distance_and_material = sample_tree(local_position);
+
+            if (chunk) {
+                uint target_texture_index = storage_buffers_readonly[STORAGE_BUFFER_CHUNKS_BUFFER].Load<uint>(chunk_start_index * 4);
+                //printf("%d", target_texture_index);
+                float4 poop =  sample_non_uniform_3d(target_texture_index, samplers[LINEAR_UNCAMPLED_SAMPLER_IDX], (local_position-0.5) / 32.0);
+                closest_distance_and_material = poop.x;
+            } else {
+                closest_distance_and_material = sample_tree(local_position);
+            }
             //closest_distance_and_material = float2(length(local_position) - 0.5, 1.0);
         }
         sdf_calls += 1;

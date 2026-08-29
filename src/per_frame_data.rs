@@ -78,6 +78,7 @@ impl PerFrameData {
     }
 }
 
+// TODO: add a way to detect if we have allocated MORE than the total allowed number of descriptors for each type
 pub struct PerFrameAllocator {
     pub data: Vec<vk::DescriptorImageInfo>,
 }
