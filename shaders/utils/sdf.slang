@@ -66,36 +66,57 @@ float2 d(float3 p) {
     
     uint packed4_node_indices = storage_images_3d_uint[LOOKUP_TEXTURE].Load(offset);
 
-    for (int k = 0; k < 4; k++) {
-        uint node_index = (packed4_node_indices >> 8 * k) & 0xFF;
+    if (packed4_node_indices != 0) {
 
-        if (node_index != 0) {
-            uint node_byte_offset = node_index * sizeof(Node); 
-            Node node = storage_buffers[STORAGE_BUFFER_PRIMITIVE_FLAT_LIST_BUFFER].Load<Node>(node_byte_offset);
-            let tmp = sdf;
-            
-            
-            // 3x4 = 3 rows, 4 columns
-            // matrix must be the INVERSE of the transform matrix
-            uint transform_byte_offset = node.transform_index * 4 * 4 * 3;
-            float3x4 transform = storage_buffers[STORAGE_BUFFER_TRANSFORMS_BUFFER].Load<float3x4>(transform_byte_offset);
+        // compiler seems to shit itself when you try to exit early from this loop
+        // unsure if its the driver compiler or slang that causes this problem
+        [ForceUnroll]
+        for (int k = 0; k < 3; k++) {
+            uint node_index = (packed4_node_indices >> 8 * k) & 0xFF;
 
-            // 3x4 * 4x1 = 3x1 vector
-            float3 local = mul(transform, float4(p, 1));
-            
-            float obj_sdf = get_sdf_from_type(local.xyz, SdfType(node.type), node_index); 
-            // sdf = min(sdf, obj_sdf);
-            sdf = smin(sdf, obj_sdf, 0.1);
-            // sdf = max(sdf, -obj_sdf);
+            if (node_index != 0) {
+                uint node_byte_offset = node_index * sizeof(Node); 
+                Node node = storage_buffers[STORAGE_BUFFER_PRIMITIVE_FLAT_LIST_BUFFER].Load<Node>(node_byte_offset);
+                let tmp = sdf;
 
-            if (obj_sdf < tmp) {
-                material = 1.0;
+
+                // 3x4 = 3 rows, 4 columns
+                // matrix must be the INVERSE of the transform matrix
+                uint transform_byte_offset = node.transform_index * 4 * 4 * 3;
+                float3x4 transform = storage_buffers[STORAGE_BUFFER_TRANSFORMS_BUFFER].Load<float3x4>(transform_byte_offset);
+
+                // 3x4 * 4x1 = 3x1 vector
+                float3 local = mul(transform, float4(p, 1));
+
+                float obj_sdf = get_sdf_from_type(local.xyz, SdfType(node.type), node_index); 
+                // sdf = min(sdf, obj_sdf);
+                sdf = smin(sdf, obj_sdf, 0.1);
+                // sdf = max(sdf, -obj_sdf);
+
+                if (obj_sdf < tmp) {
+                    material = 1.0;
+                }
+            } else {
+                break;
             }
         }
     }
     
+    
     return float2(sdf, material);
 }
+
+// wtf the difference between using this vs the auto-diff normal is NUTS
+// at 720p, this changes the frame timing (w path-tracing) from 12ms to 5ms. wtf
+float3 get_normal_test(float3 p) {
+    float eps = 0.01;
+    float x = d(p - float3(eps, 0, 0)).x;
+    float y = d(p - float3(0, eps, 0)).x;
+    float z = d(p - float3(0, 0, eps)).x;
+    float b = d(p).x;
+    return normalize(float3(b-x, b-y, b-z));
+}
+
 
 struct TraceResHitObj {
     int instance_custom_index;
@@ -193,32 +214,11 @@ void bwd_sample_poopy2(inout DifferentialPair<float3> p_pair, float dOut)
     p_pair = diffPair<float3>(p_pair.p, (float3(b-x, b-y, b-z) / eps) * dOut.x);
 }
 
-float sample_poopy(float3 local_position, uint instance_custom_index) {
-    bool chunk = (instance_custom_index & INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK) != 0;
-    uint chunk_start_index = (instance_custom_index & INSTANCE_CUSTOM_INDEX_CHUNK_SDF_MASK) >> 5;
-
-    uint target_texture_index = storage_buffers_readonly[STORAGE_BUFFER_CHUNKS_BUFFER].Load<uint>(chunk_start_index * 4);
-    float4 poop =  sample_non_uniform_3d(target_texture_index, samplers[LINEAR_UNCAMPLED_SAMPLER_IDX], (local_position+0.5) / 33.0);
-    return poop.x;
-}
-
-float3 sample_normal_poopy(float3 local_position, uint instance_custom_index) {
-    float eps = 0.01;
-    float x = sample_poopy(local_position - float3(eps, 0, 0), instance_custom_index).x;
-    float y = sample_poopy(local_position - float3(0, eps, 0), instance_custom_index).x;
-    float z = sample_poopy(local_position - float3(0, 0, eps), instance_custom_index).x;
-    float b = sample_poopy(local_position, instance_custom_index).x;
-
-    return (float3(b-x, b-y, b-z) / eps);
-}
-
 void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls, inout float material) {
     // 24 bits
     uint instance_custom_index = sq.CandidateRayInstanceCustomIndex();   
     bool local_sdf = (instance_custom_index & INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK) != 0;
     uint aabb_lookup_index = (instance_custom_index & INSTANCE_CUSTOM_INDEX_AABB_START_INDEX) + sq.CandidatePrimitiveIndex();
-    bool chunk = (instance_custom_index & INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK) != 0;
-    uint chunk_start_index = (instance_custom_index & INSTANCE_CUSTOM_INDEX_CHUNK_SDF_MASK) >> 5;
 
     // software AABB test lmao to get min and max dists of ray into  AABB
     GpuAabb aabb = storage_buffers_readonly[STORAGE_BUFFER_SCENE_REPR_BUFFER].Load<GpuAabb>(aabb_lookup_index * sizeof(GpuAabb));
@@ -249,14 +249,7 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls,
             float3 local_position = mul(sq.CandidateWorldToObject3x4(), float4(point, 1)).xyz;
             float instance_index = sq.CandidateInstanceIndex();
             // closest_distance_and_material = tree2(local_position * 2.5, instance_index) / 2.5;
-
-            if (chunk) {
-                uint target_texture_index = storage_buffers_readonly[STORAGE_BUFFER_CHUNKS_BUFFER].Load<uint>(chunk_start_index * 4);
-                float4 poop =  sample_non_uniform_3d(target_texture_index, samplers[LINEAR_UNCAMPLED_SAMPLER_IDX], (local_position+0.5) / 33.0);
-                closest_distance_and_material = poop.x;
-            } else {
-                closest_distance_and_material = sample_tree(local_position);
-            }
+            closest_distance_and_material = sample_tree(local_position);
             //closest_distance_and_material = float2(length(local_position) - 0.5, 1.0);
         }
         sdf_calls += 1;
@@ -318,18 +311,15 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
         if (!local_sdf) {
             DifferentialPair<float3> dp_a = diffPair(point);
             bwd_diff(d)(dp_a, 1.0);
-            normal = normalize(dp_a.d); 
+            // normal = normalize(dp_a.d); 
+            normal = get_normal_test(point);
         } else {
-            normal = sample_normal_poopy(mul(sq.CommittedWorldToObject3x4(), float4(point, 1)).xyz, instance_custom_index);
-            normal = normalize(normal);
-            /*
             DifferentialPair<float3> dp_a = diffPair(mul(sq.CommittedWorldToObject3x4(), float4(point, 1)).xyz);
             DifferentialPair<float> dp_i = diffPair(sq.CommittedInstanceIndex());
             bwd_diff(sample_tree)(dp_a, 1.0);  
             
             float3 object_normal = normalize(dp_a.d);
             normal = mul(sq.CommittedObjectToWorld3x4(), float4(object_normal, 0)).xyz;
-            */
         }
 
         return TraceRes(i, true, point, ray_dir, normal, sdf_calls, TraceResHitObj((0), material));
@@ -339,6 +329,10 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
 #else
     float3 point = ray_pos;
     int i = 0;
+
+    // experiment 2026-08-29: implemented outer DDA loop to see if that would speed up anything
+    // it does seem to do *something*, but still too slow relative to HWRT traversal. this helped pin-point a performance bottleneck: calculating the normal
+    // auto-diff normal is really slow.
 
     // neat trick: threshold increase proportionally to distance AND pixel "factor" which takes partial derivative of ray dir (to give a sense of how "large" a ray is)
     // float pixel_thing = max(length(ddx(ray_dir)), length(ddy(ray_dir)));
@@ -350,16 +344,8 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
         let k = d(point).x;
 
         if (k < THRESHOLD_DISTANCE) {
-            // if (k < max(THRESHOLD_DISTANCE * distance * pixel_thing * 1000.0, THRESHOLD_DISTANCE)) {
-            DifferentialPair<float3> dp_a = diffPair(point);
-            
-            bwd_diff(d)(dp_a, 1.0);  
-            float3 normal = normalize(dp_a.d);
+            let normal = get_normal_test(point);
             return TraceRes(i, true, point, ray_dir, normal, i);
-        }
-
-        if (k > MAX_DISTANCE) {
-            break;
         }
 
         point += ray_dir * k;

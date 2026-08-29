@@ -49,6 +49,7 @@ pub const INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK: u32 = 1 << 20;
 pub const VXGI_TEXTURE_SIZE: u32 = 128;
 
 pub const SPAWN_TREES: bool = false;
+pub const SPAWN_CHUNKS: bool = false;
 
 #[derive(Default, Clone, Copy)]
 pub struct Prefab {
@@ -177,60 +178,62 @@ impl Scene {
             chunk_lookup_texture_r32_cpu,
         };
 
-        /*
-        let mut chunk = 0;
-        for x in -2..2 {
-            for y in 0..1 {
-                for z in -2..2 {
-                    let chunk_position = vek::Vec3::new(x,y,z);
-                    let texels = sdf_texture::generate_terrain_chunk_data2(chunk_position, 64);
 
-                    
-                    let mut chunk_aabb = Aabb {
-                        min: vek::Vec3::broadcast(32f32),
-                        max: vek::Vec3::zero(),
-                    };
-                    
-                    for (k, s) in texels.iter().enumerate() {
-                        let pos = index_to_offset(k, 64).as_::<f32>();
-                    
-                        if f16::to_f32(*s) < 1f32 {
-                            chunk_aabb.min = vek::Vec3::partial_min(chunk_aabb.min, pos);
-                            chunk_aabb.max = vek::Vec3::partial_max(chunk_aabb.max, pos);
+        if SPAWN_CHUNKS {
+            let mut chunk = 0;
+            for x in -2..2 {
+                for y in 0..1 {
+                    for z in -2..2 {
+                        let chunk_position = vek::Vec3::new(x,y,z);
+                        let texels = sdf_texture::generate_terrain_chunk_data2(chunk_position, 64);
+
+
+                        let mut chunk_aabb = Aabb {
+                            min: vek::Vec3::broadcast(32f32),
+                            max: vek::Vec3::zero(),
+                        };
+
+                        for (k, s) in texels.iter().enumerate() {
+                            let pos = index_to_offset(k, 64).as_::<f32>();
+                        
+                            if f16::to_f32(*s) < 1f32 {
+                                chunk_aabb.min = vek::Vec3::partial_min(chunk_aabb.min, pos);
+                                chunk_aabb.max = vek::Vec3::partial_max(chunk_aabb.max, pos);
+                            }
                         }
+
+                        chunk_aabb.min -= 1.0f32;
+                        chunk_aabb.max += 1.0f32;
+
+                        chunk_aabb.max *= 0.5f32;
+                        chunk_aabb.min *= 0.5f32;
+
+                        chunk_aabb.max = chunk_aabb.max.clamped(vek::Vec3::zero(), vek::Vec3::broadcast(32f32));
+                        chunk_aabb.min = chunk_aabb.min.clamped(vek::Vec3::zero(), vek::Vec3::broadcast(32f32));
+                        let prefab = this.create_primitive_prefab(ctx, &[chunk_aabb]);                    
+
+
+                        let blas_instance_index = this.create_primitive2(chunk_position.as_::<f32>() * 32f32, prefab);
+
+                        let mut img =  sdf_texture::create_voxel_image(ctx, vek::Extent3::broadcast(64), vk::Format::R16_SFLOAT, None);
+
+                        sdf_texture::write_cpu_sdf_to_image2(&mut ctx.host_image_copy_device, cast_slice(&texels), img.image, 64);
+
+                        this.chunks.push(Chunk {
+                            position: chunk_position,
+                            texture: img,
+                            blas_instance_index,
+                        });
+                        chunk += 1;
+
+                        let texel_position = (chunk_position + 64).as_::<usize>();
+                        let texel_index = offset_to_index(texel_position, 128);
+                        this.chunk_lookup_texture_r32_cpu[texel_index] = chunk;
                     }
-
-                    chunk_aabb.min -= 1.0f32;
-                    chunk_aabb.max += 1.0f32;
-
-                    chunk_aabb.max *= 0.5f32;
-                    chunk_aabb.min *= 0.5f32;
-                    
-                    chunk_aabb.max = chunk_aabb.max.clamped(vek::Vec3::zero(), vek::Vec3::broadcast(32f32));
-                    chunk_aabb.min = chunk_aabb.min.clamped(vek::Vec3::zero(), vek::Vec3::broadcast(32f32));
-                    let prefab = this.create_primitive_prefab(ctx, &[chunk_aabb]);                    
-
-
-                    let blas_instance_index = this.create_primitive2(chunk_position.as_::<f32>() * 32f32, prefab);
-                    
-                    let mut img =  sdf_texture::create_voxel_image(ctx, vek::Extent3::broadcast(64), vk::Format::R16_SFLOAT, None);
-
-                    sdf_texture::write_cpu_sdf_to_image2(&mut ctx.host_image_copy_device, cast_slice(&texels), img.image, 64);
-
-                    this.chunks.push(Chunk {
-                        position: chunk_position,
-                        texture: img,
-                        blas_instance_index,
-                    });
-                    chunk += 1;
-
-                    let texel_position = (chunk_position + 64).as_::<usize>();
-                    let texel_index = offset_to_index(texel_position, 128);
-                    this.chunk_lookup_texture_r32_cpu[texel_index] = chunk;
                 }
             }
         }
-        */
+        
 
         this.identity_prefab = this.create_primitive_prefab(ctx, &[IDENTBOX]);
         this.create_primitive(-vek::Vec3::unit_y(), vek::Quaternion::identity(), vek::Vec3::new(1000f32, 1f32, 1000f32), false, None, 0, this.identity_prefab);
