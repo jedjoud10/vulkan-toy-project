@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use ash::vk;
 use bytemuck::{Pod, Zeroable, cast_slice};
 use rand::{RngExt, SeedableRng};
@@ -44,7 +46,7 @@ pub const INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK: u32 = 1 << 20;
 
 pub const VXGI_TEXTURE_SIZE: u32 = 128;
 
-pub const SPAWN_TREES: bool = true;
+pub const SPAWN_TREES: bool = false;
 
 #[derive(Default, Clone, Copy)]
 pub struct Prefab {

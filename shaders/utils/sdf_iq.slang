@@ -140,14 +140,14 @@ const static float3x3 matty = float3x3( 0.00, 1.60, 1.20, -1.60, 0.72,-0.96, -1.
 float sdFbm( vec3 p, float d )
 {
    float s = 1.0;
-   for( int i=0; i<4; i++ )
+   for( int i=0; i<6; i++ )
    {
        // evaluate new octave
        float n = s*sdBase(p);
 	
        // add
-       n = smax(n,d-0.15*s,0.001*s);
-       d = smin(n,d      ,0.001*s);
+       n = smax(n,d-0.35*s,0.2*s);
+       d = smin(n,d      ,0.2*s);
 	
        // prepare next octave
        p = mul(p, matty);

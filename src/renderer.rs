@@ -1272,9 +1272,12 @@ impl InternalApp {
 
         if  left {
             let pos = self.movement.position + self.movement.forward() * 5f32;
+
+            // let rot = crate::utils::look_at(self.movement.position, self.movement.position + self.movement.forward().with_y(0f32));
+            let rot = vek::Quaternion::<f32>::identity();
             self.scene.create_primitive(
-                pos.floor(),
-                vek::Quaternion::identity(),
+                pos,
+                rot,
                 vek::Vec3::one(), // cannot do non-uniform scale! cannot do scale in general unless we account for it in the shader side!
                 false,
                 0,
@@ -1285,7 +1288,7 @@ impl InternalApp {
         if  right {
             let pos = self.movement.position + self.movement.forward() * 5f32;
             self.scene.create_primitive(
-                pos.floor(),
+                pos,
                 vek::Quaternion::identity(),
                 vek::Vec3::one(), // cannot do non-uniform scale! cannot do scale in general unless we account for it in the shader side!
                 true,

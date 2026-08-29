@@ -24,7 +24,7 @@ float get_sdf_from_type(float3 local, SdfType type, uint object_index) {
 
     switch (type) {
         case SdfType.Box:
-            return sdBox(local, 0.99);
+            return sdBox(local, 0.5);
         case SdfType.BoxWithCutout:
             float box = sdBox(local, 0.99);
             box = max(box, -sdCylinder(local.xyz, float3(0.0, 0.0, 0.6)));
@@ -38,7 +38,8 @@ float get_sdf_from_type(float3 local, SdfType type, uint object_index) {
         
             [ForceUnroll]
             for (int i = 0; i < 4; i++) {
-                float3 normal = normalize(float3(sin(i * 40.21), sin(i* 10.21), sin(i* -20.43)));
+                int seed = i + object_index * 52;
+                float3 normal = normalize(float3(sin(seed * 40.21), sin(seed * 10.21), sin(seed * -20.43)));
                 if (length(normal) > 0.01) {
                     float k = dot(normalize(normal), local) - 0.5;
                     s = smax(s, k, 0.01);
@@ -80,9 +81,9 @@ float2 d(float3 p) {
             float3 local = mul(transform, float4(p, 1));
             
             float obj_sdf = get_sdf_from_type(local.xyz, SdfType(node.type), node_index); 
-            sdf = min(sdf, obj_sdf);
-            //sdf = smin(sdf, obj_sdf, 0.1);
-            
+            // sdf = min(sdf, obj_sdf);
+            sdf = smin(sdf, obj_sdf, 0.1);
+            // sdf = max(sdf, -obj_sdf);
 
             if (obj_sdf < tmp) {
                 material = 1.0;
@@ -282,7 +283,7 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
         capture_performance_sdf_call();
     
 
-        let k = d(point);
+        let k = d(point).x;
 
         if (k < THRESHOLD_DISTANCE) {
             // if (k < max(THRESHOLD_DISTANCE * distance * pixel_thing * 1000.0, THRESHOLD_DISTANCE)) {
@@ -352,7 +353,7 @@ ShadowTraceRes shadow_trace(float3 ray_pos, float3 ray_dir) {
         capture_performance_sdf_call();
     
 
-        let k = d(ray_pos + ray_dir * distance);
+        let k = d(ray_pos + ray_dir * distance).x;
 
         if (k < THRESHOLD_DISTANCE) {
             return ShadowTraceRes(0.0);
