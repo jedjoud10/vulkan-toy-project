@@ -164,6 +164,25 @@ struct GpuAabb {
     half4 max;
 };
 
+float sample_poopy(float3 local_position, uint instance_custom_index) {
+    bool chunk = (instance_custom_index & INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK) != 0;
+    uint chunk_start_index = (instance_custom_index & INSTANCE_CUSTOM_INDEX_CHUNK_SDF_MASK) >> 5;
+
+    uint target_texture_index = storage_buffers_readonly[STORAGE_BUFFER_CHUNKS_BUFFER].Load<uint>(chunk_start_index * 4);
+    float4 poop =  sample_non_uniform_3d(target_texture_index, samplers[LINEAR_UNCAMPLED_SAMPLER_IDX], (local_position+0.5) / 33.0);
+    return poop.x;
+}
+
+float3 sample_normal_poopy(float3 local_position, uint instance_custom_index) {
+    float eps = 0.01;
+    float x = sample_poopy(local_position - float3(eps, 0, 0), instance_custom_index).x;
+    float y = sample_poopy(local_position - float3(0, eps, 0), instance_custom_index).x;
+    float z = sample_poopy(local_position - float3(0, 0, eps), instance_custom_index).x;
+    float b = sample_poopy(local_position, instance_custom_index).x;
+
+    return (float3(b-x, b-y, b-z) / eps);
+}
+
 void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls, inout float material) {
     // 24 bits
     uint instance_custom_index = sq.CandidateRayInstanceCustomIndex();   
@@ -194,7 +213,7 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls,
     
         float2 closest_distance_and_material = 0;
         if (!local_sdf) {
-            closest_distance_and_material = d(point);
+           closest_distance_and_material = d(point);
         } else {
             // TODO: it would be smarter to convert the point to object space first and trace using that
             // atp just duplicate trace_inner to a "local" version that takes in a local SDF instead of global one
@@ -204,8 +223,7 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls,
 
             if (chunk) {
                 uint target_texture_index = storage_buffers_readonly[STORAGE_BUFFER_CHUNKS_BUFFER].Load<uint>(chunk_start_index * 4);
-                //printf("%d", target_texture_index);
-                float4 poop =  sample_non_uniform_3d(target_texture_index, samplers[LINEAR_UNCAMPLED_SAMPLER_IDX], (local_position-0.5) / 32.0);
+                float4 poop =  sample_non_uniform_3d(target_texture_index, samplers[LINEAR_UNCAMPLED_SAMPLER_IDX], (local_position+0.5) / 33.0);
                 closest_distance_and_material = poop.x;
             } else {
                 closest_distance_and_material = sample_tree(local_position);
@@ -273,12 +291,16 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
             bwd_diff(d)(dp_a, 1.0);
             normal = normalize(dp_a.d); 
         } else {
+            normal = sample_normal_poopy(mul(sq.CommittedWorldToObject3x4(), float4(point, 1)).xyz, instance_custom_index);
+            normal = normalize(normal);
+            /*
             DifferentialPair<float3> dp_a = diffPair(mul(sq.CommittedWorldToObject3x4(), float4(point, 1)).xyz);
             DifferentialPair<float> dp_i = diffPair(sq.CommittedInstanceIndex());
             bwd_diff(sample_tree)(dp_a, 1.0);  
             
             float3 object_normal = normalize(dp_a.d);
             normal = mul(sq.CommittedObjectToWorld3x4(), float4(object_normal, 0)).xyz;
+            */
         }
 
         return TraceRes(i, true, point, ray_dir, normal, sdf_calls, TraceResHitObj((0), material));

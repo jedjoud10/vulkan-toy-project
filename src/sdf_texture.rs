@@ -4,7 +4,7 @@ use gpu_allocator::vulkan::{Allocation, Allocator};
 use half::f16;
 use noise::NoiseFn;
 use rand::{RngExt, SeedableRng};
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator};
 
 use crate::{renderer::GraphicsContext, utils::{index_to_offset, offset_to_index}};
 
@@ -240,16 +240,24 @@ pub unsafe fn generate_write_cpu_sdf_to_image(host_image_copy_device: &mut &ash:
 }
 
 // assumed to be 64x64x64
-fn jump_flood(pixels: Vec<bool>, flip: bool) -> Vec<f32> {
-    let mut size = 64;
-    let log = 6;
+fn jump_flood(pixels: Vec<f32>, flip: bool) -> Vec<f32> {
+    log::info!("calculating flood fill. flip:{flip}");
+    let sizes = [32, 16, 8, 4, 2, 1, 2, 1];
 
-    let mut colours_and_seeds = pixels.iter().enumerate().map(|(i, is_set)| (is_set ^ flip).then_some(index_to_offset(i, 64).as_::<f32>())).collect::<Vec<_>>();
+    let threshold = 3.0;
+    let mut colours_and_seeds = pixels.par_iter().enumerate().map(|(i, density)| {
+        let is_set = if flip {
+            *density > threshold
+        } else {
+            *density < -threshold
+        };
 
-    for _ in 0..log {
-        size = size / 2;
+        is_set.then_some(index_to_offset(i, 64).as_::<f32>())
+    }).collect::<Vec<_>>();
 
-        for (p, _) in pixels.iter().enumerate() {
+    for size in sizes {
+        let back_buffer = colours_and_seeds.clone();
+        pixels.par_iter().enumerate().zip(colours_and_seeds.par_iter_mut()).for_each(|((p, _), curr)| {
             let p2 = index_to_offset(p, 64).as_::<i32>();
             
             for neighbour_offset_index in 0..27 {
@@ -260,21 +268,21 @@ fn jump_flood(pixels: Vec<bool>, flip: bool) -> Vec<f32> {
                 if q2.cmpge(&vek::Vec3::broadcast(0)).reduce_and() && q2.cmplt(&vek::Vec3::broadcast(64)).reduce_and() {
                     let q = offset_to_index(q2.as_::<usize>(), 64);
                     
-                    if colours_and_seeds[p].is_none() && colours_and_seeds[q].is_some() {
-                        colours_and_seeds[p] = colours_and_seeds[q];
+                    if curr.is_none() && back_buffer[q].is_some() {
+                        *curr = back_buffer[q];
                     }
 
-                    if let Some((p_seed, q_seed)) = colours_and_seeds[p].zip(colours_and_seeds[q]) {
+                    if let Some((p_seed, q_seed)) = curr.zip(back_buffer[q]) {
                         let dist_p_s = p_seed.distance(p2.as_::<f32>());
-                        let dist_q_s_prime = q_seed.distance(q2.as_::<f32>());
+                        let dist_p_s_prime = q_seed.distance(p2.as_::<f32>());
                         
-                        if dist_p_s > dist_q_s_prime {
-                            colours_and_seeds[p] = colours_and_seeds[q];
+                        if dist_p_s > dist_p_s_prime {
+                            *curr = back_buffer[q];
                         }
                     }
                 }
             }
-        }
+        });
     }
 
     colours_and_seeds.iter().enumerate().map(|(index, seed)| {
@@ -290,7 +298,7 @@ fn jump_flood(pixels: Vec<bool>, flip: bool) -> Vec<f32> {
     }).collect::<Vec<_>>()
 }
 
-fn jump_flood_w_negative(pixels: Vec<bool>) -> Vec<f32> {
+fn jump_flood_w_negative(pixels: Vec<f32>) -> Vec<f32> {
     let a = jump_flood(pixels.clone(), false);
     let mut b = jump_flood(pixels, true);
     
@@ -326,16 +334,16 @@ pub fn generate_terrain_chunk_data2(offset: vek::Vec3<i32>, size: u32) -> Vec<f1
 
     let seeds = (0..(size*size*size)).into_par_iter().map(|i| {
         let p = index_to_offset(i as usize, size as usize);
-        let fp = p.as_::<f32>() * 0.5 + offset.as_::<f32>() * 32f32;
+        let fp = p.as_::<f32>() * 0.5 + offset.as_::<f32>() * 31f32;
 
         let mut density = fp.y - 5f32;
 
-        density += noise.get([fp.x as f64 * 0.1, fp.z as f64 * 0.1]) as f32 * 4f32;
+        density += noise.get([fp.x as f64 * 0.05, fp.z as f64 * 0.05]) as f32 * 4f32;
 
-        density < 0f32
+        density
     }).collect::<Vec<_>>();
 
-    let texels = jump_flood_w_negative(seeds).into_iter().map(|x| f16::from_f32(x * 0.5)).collect::<Vec<_>>();
+    let texels = jump_flood_w_negative(seeds).into_iter().map(|x| f16::from_f32(x * 0.25)).collect::<Vec<_>>();
 
     texels
 }

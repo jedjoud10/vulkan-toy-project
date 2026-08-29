@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use ash::vk;
 use bytemuck::{Pod, Zeroable, cast_slice};
+use half::f16;
 use rand::{RngExt, SeedableRng};
+use vek::Clamp;
 
 use crate::{buffer, others, ray_tracing::{self, calculate_matrix}, renderer::GraphicsContext, sdf_texture::{self, SdfImage}, utils::{index_to_offset, offset_to_index}};
 
@@ -179,7 +181,7 @@ impl Scene {
                     for (k, s) in texels.iter().enumerate() {
                         let pos = index_to_offset(k, 64).as_::<f32>();
                     
-                        if s.is_sign_negative() {
+                        if f16::to_f32(*s) < 1f32 {
                             chunk_aabb.min = vek::Vec3::partial_min(chunk_aabb.min, pos);
                             chunk_aabb.max = vek::Vec3::partial_max(chunk_aabb.max, pos);
                         }
@@ -191,9 +193,11 @@ impl Scene {
                     chunk_aabb.max *= 0.5f32;
                     chunk_aabb.min *= 0.5f32;
                     
+                    chunk_aabb.max = chunk_aabb.max.clamped(vek::Vec3::zero(), vek::Vec3::broadcast(32f32));
+                    chunk_aabb.min = chunk_aabb.min.clamped(vek::Vec3::zero(), vek::Vec3::broadcast(32f32));
                     
-                    chunk_aabb.max = vek::Vec3::broadcast(32f32);
-                    chunk_aabb.min = vek::Vec3::broadcast(0f32);
+                    //chunk_aabb.max = vek::Vec3::broadcast(32f32);
+                    //chunk_aabb.min = vek::Vec3::broadcast(0f32);
 
                     let prefab = this.create_primitive_prefab(ctx, &[chunk_aabb]);
 
