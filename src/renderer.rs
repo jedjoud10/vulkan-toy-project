@@ -639,6 +639,7 @@ impl InternalApp {
         storage_images_allocator.push(self.scene.texture2.image_view);
         storage_images_allocator.push(self.scene.vxgi_texture.image_view);
         storage_images_allocator.push(self.scene.lookup_texture.image_view);  
+        storage_images_allocator.push(self.scene.chunk_lookup_texture_bruh.image_view);  
        
         
         let sdf_storage_images_start_index = storage_images_allocator.current();
@@ -898,6 +899,21 @@ impl InternalApp {
         let regions = [vk::BufferImageCopy2::default().buffer_image_height(0).buffer_row_length(0).buffer_offset(written_bytes.buffer_offset_start).image_extent(extent).image_subresource(subresource_layers)];
         let copy_info = vk::CopyBufferToImageInfo2::default()
             .dst_image(self.scene.lookup_texture.image)
+            .dst_image_layout(vk::ImageLayout::GENERAL)
+            .src_buffer(scratch_buffer.buffer)
+            .regions(&regions);
+        ctx.device.cmd_copy_buffer_to_image2(cmd, &copy_info);
+
+
+
+        // write CPU texture to GPU texture using scratch buffer
+        // TODO: generalize into function?
+        let written_bytes = scratch_buffer.write_bytes(cast_slice(&self.scene.chunk_lookup_texture_r32_cpu));
+        let extent = vk::Extent3D::default().depth(128).height(128).width(128);
+        let subresource_layers = vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).layer_count(1).mip_level(0).base_array_layer(0);
+        let regions = [vk::BufferImageCopy2::default().buffer_image_height(0).buffer_row_length(0).buffer_offset(written_bytes.buffer_offset_start).image_extent(extent).image_subresource(subresource_layers)];
+        let copy_info = vk::CopyBufferToImageInfo2::default()
+            .dst_image(self.scene.chunk_lookup_texture_bruh.image)
             .dst_image_layout(vk::ImageLayout::GENERAL)
             .src_buffer(scratch_buffer.buffer)
             .regions(&regions);

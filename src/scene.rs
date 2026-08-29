@@ -115,6 +115,10 @@ pub struct Scene {
     pub chunks: Vec<Chunk>,
     pub chunk_buffer_lookup: buffer::Buffer,
 
+    pub chunk_lookup_texture_bruh: SdfImage,
+    pub chunk_lookup_texture_r32_cpu: Vec<u32>,
+    
+
     pub identity_prefab: Prefab,
     pub tree_prefab: Prefab,
 }
@@ -146,6 +150,10 @@ impl Scene {
         let chunk_buffer_lookup = buffer::create_buffer_default_flags(ctx, size_of::<u64>() * 1000, "chunk buffer");     
         let chunks = Vec::<Chunk>::new();
 
+
+        let chunk_lookup_texture_bruh = sdf_texture::create_voxel_image(ctx, vek::Extent3::broadcast(128), vk::Format::R32_UINT, None);
+        let chunk_lookup_texture_r32_cpu = vec![0u32; 128*128*128];
+
         let mut this = Self {
             tlas,
             blases,
@@ -165,18 +173,23 @@ impl Scene {
             tree_prefab: Prefab::default(),
             transforms,
             inverse_transforms_buffer,
+            chunk_lookup_texture_bruh,
+            chunk_lookup_texture_r32_cpu,
         };
 
+        /*
         let mut chunk = 0;
         for x in -2..2 {
             for y in 0..1 {
                 for z in -2..2 {
+                    let chunk_position = vek::Vec3::new(x,y,z);
+                    let texels = sdf_texture::generate_terrain_chunk_data2(chunk_position, 64);
+
+                    
                     let mut chunk_aabb = Aabb {
                         min: vek::Vec3::broadcast(32f32),
                         max: vek::Vec3::zero(),
                     };
-                    let chunk_position = vek::Vec3::new(x,y,z);
-                    let texels = sdf_texture::generate_terrain_chunk_data2(chunk_position, 64);
                     
                     for (k, s) in texels.iter().enumerate() {
                         let pos = index_to_offset(k, 64).as_::<f32>();
@@ -195,13 +208,10 @@ impl Scene {
                     
                     chunk_aabb.max = chunk_aabb.max.clamped(vek::Vec3::zero(), vek::Vec3::broadcast(32f32));
                     chunk_aabb.min = chunk_aabb.min.clamped(vek::Vec3::zero(), vek::Vec3::broadcast(32f32));
-                    
-                    //chunk_aabb.max = vek::Vec3::broadcast(32f32);
-                    //chunk_aabb.min = vek::Vec3::broadcast(0f32);
+                    let prefab = this.create_primitive_prefab(ctx, &[chunk_aabb]);                    
 
-                    let prefab = this.create_primitive_prefab(ctx, &[chunk_aabb]);
 
-                    let blas_instance_index = this.create_primitive(chunk_position.as_::<f32>() * 32f32, vek::Quaternion::identity(), vek::Vec3::one(), true, Some(chunk), 0, prefab);
+                    let blas_instance_index = this.create_primitive2(chunk_position.as_::<f32>() * 32f32, prefab);
                     
                     let mut img =  sdf_texture::create_voxel_image(ctx, vek::Extent3::broadcast(64), vk::Format::R16_SFLOAT, None);
 
@@ -213,9 +223,14 @@ impl Scene {
                         blas_instance_index,
                     });
                     chunk += 1;
+
+                    let texel_position = (chunk_position + 64).as_::<usize>();
+                    let texel_index = offset_to_index(texel_position, 128);
+                    this.chunk_lookup_texture_r32_cpu[texel_index] = chunk;
                 }
             }
         }
+        */
 
         this.identity_prefab = this.create_primitive_prefab(ctx, &[IDENTBOX]);
         this.create_primitive(-vek::Vec3::unit_y(), vek::Quaternion::identity(), vek::Vec3::new(1000f32, 1f32, 1000f32), false, None, 0, this.identity_prefab);
@@ -279,20 +294,20 @@ impl Scene {
         let cmd = others::begin_recording(&mut ctx);
         let mut writer = buffer::begin_buffer_writer(&mut ctx);
         
-        let s = self.gpu_packed_aabbs.len();
         self.gpu_packed_aabbs.extend(aabbs.iter().map(|x| x.to_gpu_format()));
         let written = writer.write_bytes(cast_slice(&aabbs));
-
+        
         let geometry = ray_tracing::BlasGeometry::AABBs {
             aabb_buffer_address: written.buffer_device_address_start,
             max_count: aabbs.len() as u32
         };
-
+        
         let blas1 = ray_tracing::create_blas(&mut ctx, cmd, geometry);
-
+        
         others::end_recording_and_submit(&mut ctx, cmd);
         buffer::end_buffer_writer(&mut ctx, writer);
-
+        
+        let s = self.blases.len();
         self.blases.push(blas1);
 
         Prefab {
@@ -301,6 +316,8 @@ impl Scene {
         }
     }
 
+
+    
     pub unsafe fn create_primitive(&mut self, position: vek::Vec3<f32>, rotation: vek::Quaternion<f32>, scale: vek::Vec3<f32>, is_local: bool, chunk_index: Option<u32>, sdf_type: u32, prefab: Prefab) -> usize {
         if is_local {
             assert!((scale.partial_cmpeq(&vek::Vec3::one())).reduce_and(), "scale must be one when dealing with local SDF prims");
@@ -362,6 +379,31 @@ impl Scene {
                 sdf_type,
             })
         }
+
+        self.blases_instances.len() - 1
+
+    }
+
+
+    
+    pub unsafe fn create_primitive2(&mut self, position: vek::Vec3<f32>, prefab: Prefab) -> usize {
+        let scale = vek::Vec3::one();
+        let rotation = vek::Quaternion::identity();
+
+        self.blases_instances.push(ray_tracing::instantiate_blas(
+            rotation,
+            position,
+            scale,
+            &self.blases[prefab.blas_index],
+            prefab.aabb_start_index as u32,
+            0xFF,
+        ));
+
+        self.transforms.push(Transform {
+            position,
+            rotation,
+            scale,
+        });
 
         self.blases_instances.len() - 1
 

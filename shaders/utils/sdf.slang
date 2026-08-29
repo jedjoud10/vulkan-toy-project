@@ -58,9 +58,12 @@ float2 d(float3 p) {
     float material = 0.0;
 
     uint3 offset = (uint3)floor(p + 64);
+
+    sdf = min(sdf, sample_poopy2(p));
     
     // contains up to 4 intersecting nodes, packed as a byte each.
     // packed as linked list, from least-significant byte
+    
     uint packed4_node_indices = storage_images_3d_uint[LOOKUP_TEXTURE].Load(offset);
 
     for (int k = 0; k < 4; k++) {
@@ -90,7 +93,7 @@ float2 d(float3 p) {
             }
         }
     }
-
+    
     return float2(sdf, material);
 }
 
@@ -163,6 +166,32 @@ struct GpuAabb {
     half4 min;
     half4 max;
 };
+
+float sample_poopy2(float3 p) {
+    uint chunk_start_index = storage_images_3d_uint[CHUNK_LOOKUP_TEXTURE].Load(floor(p / 32) + 64);
+
+    if (chunk_start_index == 0) {
+        return 1000;
+    }
+
+    uint target_texture_index = storage_buffers_readonly[STORAGE_BUFFER_CHUNKS_BUFFER].Load<uint>(chunk_start_index * 4);
+    float3 local_position = p - floor(p / 32) * 32;
+    float4 poop =  sample_non_uniform_3d(target_texture_index, samplers[LINEAR_UNCAMPLED_SAMPLER_IDX], (local_position+0.5) / 33.0);
+    return poop.x;
+}
+
+[BackwardDerivativeOf(sample_poopy2)]
+void bwd_sample_poopy2(inout DifferentialPair<float3> p_pair, float dOut)
+{
+    float eps = 0.01;
+    float x = sample_poopy2(p_pair.p - float3(eps, 0, 0)).x;
+    float y = sample_poopy2(p_pair.p - float3(0, eps, 0)).x;
+    float z = sample_poopy2(p_pair.p - float3(0, 0, eps)).x;
+    float b = sample_poopy2(p_pair.p).x;
+
+
+    p_pair = diffPair<float3>(p_pair.p, (float3(b-x, b-y, b-z) / eps) * dOut.x);
+}
 
 float sample_poopy(float3 local_position, uint instance_custom_index) {
     bool chunk = (instance_custom_index & INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK) != 0;

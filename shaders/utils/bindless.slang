@@ -39,6 +39,7 @@ const static uint SDF_TEXTURE_STORAGE_IMAGE_IDX = 5;
 const static uint SDF_TEXTURE2_STORAGE_IMAGE_IDX = 6;
 const static uint VXGI_STORAGE_IMAGE_IDX = 7;
 const static uint LOOKUP_TEXTURE = 8;
+const static uint CHUNK_LOOKUP_TEXTURE = 9;
 
 const static uint UNIFORM_BUFFER_THINGY_IDX = 0;
 const static uint STORAGE_BUFFER_DEBUG_TEXT_LINES = 1;
@@ -151,7 +152,7 @@ float4 sample_non_uniform(uint k, SamplerState s, float2 uv) {
 float4 sample_non_uniform_3d(uint k, SamplerState s, float3 uv) {
     // https://gist.github.com/JuanDiegoMontoya/55482fc04d70e83729bb9528ecdc1c61 
     // nonuniformindex still broken
-    // return sampled_images[NonUniformResourceIndex(k)].Sample(s, uv);
+    // return sampled_images_3d[NonUniformResourceIndex(k)].Sample(s, uv);
     
     while (true) {
         uint idx = WaveReadLaneFirst(k);

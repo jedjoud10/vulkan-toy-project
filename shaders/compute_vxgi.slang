@@ -5,6 +5,10 @@
 [shader("compute")]
 [numthreads(4,4,4)]
 void voxelize (uint3 id : SV_DispatchThreadID) {
+	#ifndef SINGLEBOUNCE_APPLY_VXGI
+	return;
+	#endif
+
     // [0..TEXTURE_SIZE]
     float3 p = (id.xyz + 1.0);
 
@@ -63,6 +67,10 @@ void voxelize (uint3 id : SV_DispatchThreadID) {
 [shader("compute")]
 [numthreads(4,4,4)]
 void mip_map_downsample(uint3 id : SV_DispatchThreadID, uniform uint src_storage_mip_index, uniform uint dst_storage_mip_index) {
+	#ifndef SINGLEBOUNCE_APPLY_VXGI
+	return;
+	#endif
+
 	float4 summed = 0;
 	const static int size = 1;
 	const static int volume = (size*2 + 1) * (size*2 + 1) * (size*2 + 1); 
