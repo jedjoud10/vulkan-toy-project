@@ -15,15 +15,16 @@ struct Node {
 
 enum SdfType {
     Box,
-    BoxWithCutout
+    BoxWithCutout,
+    Rock,
 }
 
 [Differentiable]
-float get_sdf_from_type(float3 local, SdfType type) {
+float get_sdf_from_type(float3 local, SdfType type, uint object_index) {
 
     switch (type) {
         case SdfType.Box:
-            return sdBox(local, 0.8);
+            return sdBox(local, 0.99);
         case SdfType.BoxWithCutout:
             float box = sdBox(local, 0.99);
             box = max(box, -sdCylinder(local.xyz, float3(0.0, 0.0, 0.6)));
@@ -32,6 +33,19 @@ float get_sdf_from_type(float3 local, SdfType type) {
             
             box = max(box, sdSphere(local, 1.0));            
             return box;
+        case SdfType.Rock:
+            float s = sdBox(local, 0.8);
+        
+            [ForceUnroll]
+            for (int i = 0; i < 4; i++) {
+                float3 normal = normalize(float3(sin(i * 40.21), sin(i* 10.21), sin(i* -20.43)));
+                if (length(normal) > 0.01) {
+                    float k = dot(normalize(normal), local) - 0.5;
+                    s = smax(s, k, 0.01);
+                }
+            }
+
+            return s;
     }
 
     return 0.0;
@@ -43,27 +57,31 @@ float2 d(float3 p) {
     float material = 0.0;
 
     uint3 offset = (uint3)floor(p + 64);
+    
+    // contains up to 4 intersecting nodes, packed as a byte each.
+    // packed as linked list, from least-significant byte
     uint packed4_node_indices = storage_images_3d_uint[LOOKUP_TEXTURE].Load(offset);
 
     for (int k = 0; k < 4; k++) {
-        uint byte_node_index = (packed4_node_indices >> 8 * k) & 0xFF;
+        uint node_index = (packed4_node_indices >> 8 * k) & 0xFF;
 
-        if (byte_node_index != 0) {
-            Node node = storage_buffers[STORAGE_BUFFER_PRIMITIVE_FLAT_LIST_BUFFER].Load<Node>(byte_node_index * sizeof(Node));
+        if (node_index != 0) {
+            uint node_byte_offset = node_index * sizeof(Node); 
+            Node node = storage_buffers[STORAGE_BUFFER_PRIMITIVE_FLAT_LIST_BUFFER].Load<Node>(node_byte_offset);
             let tmp = sdf;
-            uint transform_byte_offset = node.transform_index * 4 * 4 * 3;
             
-
+            
             // 3x4 = 3 rows, 4 columns
             // matrix must be the INVERSE of the transform matrix
+            uint transform_byte_offset = node.transform_index * 4 * 4 * 3;
             float3x4 transform = storage_buffers[STORAGE_BUFFER_TRANSFORMS_BUFFER].Load<float3x4>(transform_byte_offset);
 
             // 3x4 * 4x1 = 3x1 vector
             float3 local = mul(transform, float4(p, 1));
             
-            float obj_sdf = get_sdf_from_type(local.xyz, SdfType(node.type)); 
-            // sdf = min(sdf, obj_sdf);
-            sdf = smin(sdf, obj_sdf, 0.1);
+            float obj_sdf = get_sdf_from_type(local.xyz, SdfType(node.type), node_index); 
+            sdf = min(sdf, obj_sdf);
+            //sdf = smin(sdf, obj_sdf, 0.1);
             
 
             if (obj_sdf < tmp) {

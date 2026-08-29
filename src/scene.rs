@@ -14,7 +14,7 @@ impl Aabb {
     fn to_gpu_format(&self) -> GpuAabb {
         let min = self.min;
         let max = self.max;
-        
+
         // TODO: why is `vec3::with_w` not const??? :(
         GpuAabb { min: vek::Vec4::new(min.x, min.y, min.z, 0f32).map(|x| half::f16::from_f32(x)), max: vek::Vec4::new(max.x, max.y, max.z, 0f32).map(|x| half::f16::from_f32(x)) }
     }
@@ -44,7 +44,7 @@ pub const INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK: u32 = 1 << 20;
 
 pub const VXGI_TEXTURE_SIZE: u32 = 128;
 
-pub const SPAWN_TREES: bool = false;
+pub const SPAWN_TREES: bool = true;
 
 #[derive(Default, Clone, Copy)]
 pub struct Prefab {
@@ -117,7 +117,7 @@ impl Scene {
         
         let tlas = ray_tracing::pre_create_tlas(&mut ctx);
         
-        let aabbs_buffer = buffer::create_buffer_default_flags(&mut ctx, size_of::<GpuAabb>() * 1000, "scene BLAS AABBs buffer");
+        let gpu_packed_aabbs_buffer = buffer::create_buffer_default_flags(&mut ctx, size_of::<GpuAabb>() * 1000, "scene BLAS AABBs buffer");
         let aabbs = vec![];
 
         let blases = Vec::new();
@@ -125,18 +125,18 @@ impl Scene {
 
         let lookup_texture = sdf_texture::create_voxel_image(ctx, vek::Extent3::broadcast(128), vk::Format::R32_UINT, None);
         let primitive_flat_list = Vec::<Node>::new();
-        let primitive_flat_buffer = buffer::create_buffer_default_flags(ctx, size_of::<Node>() * 1000, "a");     
+        let primitive_flat_buffer = buffer::create_buffer_default_flags(ctx, size_of::<Node>() * 1000, "primitive flat buffer");     
         let lookup_texture_r32_cpu = vec![0u32; 128*128*128];
 
         let transforms = Vec::<Transform>::new();
-        let transforms_buffer = buffer::create_buffer_default_flags(ctx, size_of::<PackedTransform>() * 1000, "a");     
+        let inverse_transforms_buffer = buffer::create_buffer_default_flags(ctx, size_of::<PackedTransform>() * 1000, "transforms buffer");     
 
 
         let mut this = Self {
             tlas,
             blases,
             blases_instances,
-            gpu_packed_aabbs_buffer: aabbs_buffer,
+            gpu_packed_aabbs_buffer,
             gpu_packed_aabbs: aabbs,
             texture,
             texture2,
@@ -150,7 +150,7 @@ impl Scene {
             tree_prefab: Prefab::default(),
             brick_prefab: Prefab::default(),
             transforms,
-            inverse_transforms_buffer: transforms_buffer,
+            inverse_transforms_buffer,
         };
 
         this.identity_prefab = this.create_primitive_prefab(ctx, &[IDENTBOX]);
@@ -161,7 +161,6 @@ impl Scene {
             max: vek::Vec3::new(3f32, 5f32, 3f32),
         }]);
 
-        /*
         let mut rng = rand::rngs::SmallRng::seed_from_u64(432);
         for x in -4..4 {
             for z in -4..4 {
@@ -170,7 +169,7 @@ impl Scene {
                     vek::Quaternion::default(),
                     vek::Vec3::new(1f32, 1f32, 1f32),
                     false, 
-                    rng.random_range(0u32..=1u32),
+                    rng.random_range(0u32..=2u32),
                     this.brick_prefab,
                 );
             }
@@ -191,7 +190,6 @@ impl Scene {
                 }
             }
         }
-        */
 
 
         this
@@ -199,11 +197,13 @@ impl Scene {
 
     pub fn update(&mut self, elapsed: f32) {
         let mut rng = rand::rngs::SmallRng::seed_from_u64(elapsed.floor() as u64);
-        for i in self.transforms.iter_mut().skip(1) {
-            i.rotation = i.rotation.rotated_x(rng.random_range(-1f32..1f32) * 0.01);
-            i.rotation = i.rotation.rotated_y(rng.random_range(-1f32..1f32) * 0.01);
-            i.rotation = i.rotation.rotated_z(rng.random_range(-1f32..1f32) * 0.01);
-            
+        for (index, transform) in self.transforms.iter_mut().enumerate().skip(1) {
+            if (self.blases_instances[index].instance_custom_index_and_mask.low_24() & INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK) == 0 {
+                // global sdf
+                transform.rotation = transform.rotation.rotated_x(rng.random_range(-1f32..1f32) * 0.01);
+                transform.rotation = transform.rotation.rotated_y(rng.random_range(-1f32..1f32) * 0.01);
+                transform.rotation = transform.rotation.rotated_z(rng.random_range(-1f32..1f32) * 0.01);
+            }
         }
     }
 

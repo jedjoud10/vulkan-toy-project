@@ -30,7 +30,6 @@ float tree1(float3 lp) {
     return d;
 }
 
-[Differentiable]
 float2 tree2(float3 lp, float instance_index) {
     // half extent
     float box_height = 4;

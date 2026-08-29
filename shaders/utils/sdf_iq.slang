@@ -102,6 +102,7 @@ float sdBox( vec3 p, vec3 b )
 
 
 // https://iquilezles.org/articles/smin
+[Differentiable]
 float smax( float a, float b, float k )
 {
     float h = max(k-abs(a-b),0.0);
