@@ -158,6 +158,7 @@ float sdFbm( vec3 p, float d )
 
 
 
+
 [BackwardDerivativeOf(sdFbm)]
 void bwd_sd_fbm(inout DifferentialPair<float3> p_pair, inout DifferentialPair<float> d_pair, float dOut)
 {

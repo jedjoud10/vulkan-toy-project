@@ -348,6 +348,8 @@ public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) 
 	return col;
 }
 
+// #define SINGLEBOUNCE_APPLY_VXGI
+
 public float3 trace_scene_singlebounce(uint2 id, float3 ray_pos, float3 ray_dir) {
 	float3 col = 0.0;
 
@@ -379,12 +381,15 @@ public float3 trace_scene_singlebounce(uint2 id, float3 ray_pos, float3 ray_dir)
 		// float3 sampled_ambient = trace_vxgi(world, geometry_normal, DIFFUSE_AMBIENT_HALF_ANGLE_RADIAN);
 		// this is "more correct", to approximate diffuse lighting, but surprisingly, shooting only one cone works fine for now
 		float3 sampled_ambient = 0.0;
+
+		#ifdef SINGLEBOUNCE_APPLY_VXGI
 		static const int NUM_SAMPLES = 8;
 		for (int r = 0; r < NUM_SAMPLES; r++) {
 			float3 randomized_normal = normalize(surface.normal + ((hash33(r * 100.5342 + world * 54.23423) - 0.5) * 1.5));
 			sampled_ambient += trace_vxgi(world, randomized_normal, DIFFUSE_AMBIENT_HALF_ANGLE_RADIAN) / NUM_SAMPLES;
 			//sampled_ambient += (trace_vxgi_ao(world, normalize(normal + ((hash33(r * 100.5342 + world * 54.23423) - 0.5) * 1.5)), DIFFUSE_AMBIENT_HALF_ANGLE_RADIAN) / 4.0) * get_environment_diffuse(geometry_normal) * 2.0;
 		}
+		#endif
 		
 		//sampled_ambient += get_environment_diffuse(geometry_normal) * 0.2;
 		float3 ambient = surface.albedo * kd * surface.arm.ao * sampled_ambient;

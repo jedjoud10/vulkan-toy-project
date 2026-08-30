@@ -2,8 +2,9 @@ use ash::vk;
 use bytemuck::cast_slice;
 use gpu_allocator::vulkan::{Allocation, Allocator};
 use half::f16;
+use noise::NoiseFn;
 use rand::{RngExt, SeedableRng};
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator};
 
 use crate::{renderer::GraphicsContext, utils::{index_to_offset, offset_to_index}};
 
@@ -135,7 +136,7 @@ pub unsafe fn create_voxel_image(
     }
 }
 
-unsafe fn generate_write_cpu_sdf_to_image(host_image_copy_device: &mut &ash::ext::host_image_copy::Device, image: vk::Image, size: u32) {
+pub unsafe fn generate_write_cpu_sdf_to_image(host_image_copy_device: &mut &ash::ext::host_image_copy::Device, image: vk::Image, size: u32) {
     let image_subresource_layers = vk::ImageSubresourceLayers::default()
         .aspect_mask(vk::ImageAspectFlags::COLOR)
         .mip_level(0)
@@ -158,6 +159,7 @@ unsafe fn generate_write_cpu_sdf_to_image(host_image_copy_device: &mut &ash::ext
         )));
     }
 
+    /*
     log::info!("generating points using iteration");
 
     while let Some((depth, node)) = stack.pop() {
@@ -175,21 +177,22 @@ unsafe fn generate_write_cpu_sdf_to_image(host_image_copy_device: &mut &ash::ext
             }
         }
     }
+    */
 
     //stack.push((0, vek::Vec4::new(4f32, 9f32, 3f32, 16f32)));
 
-    /*
+    
     let mut src_points = vec![vek::Vec4::<f32>::default(); 32];
     // simple random spheres naive implementation
     for point in src_points.iter_mut() {
         *point = vek::Vec4::new(
-            rng.random_range(0f32..(SIZE as f32)),
-            rng.random_range(0f32..(SIZE as f32)),
-            rng.random_range(0f32..(SIZE as f32)),
-            rng.random_range(15f32..30f32)        
+            rng.random_range(0f32..(size as f32)),
+            rng.random_range(0f32..(size as f32)),
+            rng.random_range(0f32..(size as f32)),
+            rng.random_range(4f32..10f32)        
         );
     }
-    */
+    
 
     log::info!("tilings points in 3D");
     
@@ -210,7 +213,7 @@ unsafe fn generate_write_cpu_sdf_to_image(host_image_copy_device: &mut &ash::ext
         let fp = p.as_::<f32>();
     
         //let distance = (fp + vek::Vec3::new(0f32, -10f32, 0f32)).magnitude() - 5.0f32;
-        let mut distance = 1000f32;
+        let mut distance = 100000f32;
 
         for point in points.iter() {
             distance = distance.min((fp - point.xyz()).magnitude() - point.w); 
@@ -220,6 +223,138 @@ unsafe fn generate_write_cpu_sdf_to_image(host_image_copy_device: &mut &ash::ext
     }).collect::<Vec<_>>();
 
     let bytes = cast_slice::<f16, u8>(&texels);
+    
+    let region = vk::MemoryToImageCopyEXT::default()
+        .host_pointer(bytes.as_ptr() as *const _)
+        .image_extent(vk::Extent3D::default().height(size).width(size).depth(size))
+        .image_subresource(image_subresource_layers);
+    let regions = [region];
+    
+    let copy_memory_to_image_info = vk::CopyMemoryToImageInfoEXT::default()
+        .dst_image(image)
+        .dst_image_layout(vk::ImageLayout::GENERAL)
+        .flags(vk::HostImageCopyFlagsEXT::empty())
+        .regions(&regions);
+    
+    host_image_copy_device.copy_memory_to_image(&copy_memory_to_image_info).unwrap();
+}
+
+// assumed to be 64x64x64
+fn jump_flood(pixels: Vec<f32>, flip: bool) -> Vec<f32> {
+    log::info!("calculating flood fill. flip:{flip}");
+    let sizes = [32, 16, 8, 4, 2, 1, 2, 1];
+
+    let threshold = 3.0;
+    let mut colours_and_seeds = pixels.par_iter().enumerate().map(|(i, density)| {
+        let is_set = if flip {
+            *density > threshold
+        } else {
+            *density < -threshold
+        };
+
+        is_set.then_some(index_to_offset(i, 64).as_::<f32>())
+    }).collect::<Vec<_>>();
+
+    for size in sizes {
+        let back_buffer = colours_and_seeds.clone();
+        pixels.par_iter().enumerate().zip(colours_and_seeds.par_iter_mut()).for_each(|((p, _), curr)| {
+            let p2 = index_to_offset(p, 64).as_::<i32>();
+            
+            for neighbour_offset_index in 0..27 {
+                let neighbour_offset = index_to_offset(neighbour_offset_index, 3).as_::<i32>() - 1;
+
+                let q2 = p2 + neighbour_offset * size;
+
+                if q2.cmpge(&vek::Vec3::broadcast(0)).reduce_and() && q2.cmplt(&vek::Vec3::broadcast(64)).reduce_and() {
+                    let q = offset_to_index(q2.as_::<usize>(), 64);
+                    
+                    if curr.is_none() && back_buffer[q].is_some() {
+                        *curr = back_buffer[q];
+                    }
+
+                    if let Some((p_seed, q_seed)) = curr.zip(back_buffer[q]) {
+                        let dist_p_s = p_seed.distance(p2.as_::<f32>());
+                        let dist_p_s_prime = q_seed.distance(p2.as_::<f32>());
+                        
+                        if dist_p_s > dist_p_s_prime {
+                            *curr = back_buffer[q];
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    colours_and_seeds.iter().enumerate().map(|(index, seed)| {
+        let p = index_to_offset(index, 64).as_::<f32>();
+        let seed = seed.unwrap();
+        
+        if flip {
+            -p.distance(seed)
+        } else {
+            p.distance(seed)
+        }
+        
+    }).collect::<Vec<_>>()
+}
+
+fn jump_flood_w_negative(pixels: Vec<f32>) -> Vec<f32> {
+    let a = jump_flood(pixels.clone(), false);
+    let mut b = jump_flood(pixels, true);
+    
+    for (dst, src) in b.iter_mut().zip(a.into_iter()) {
+        *dst += src;
+    }
+
+    b
+}
+
+fn d(p: vek::Vec3<f32>) -> f32 {
+    let mut d = p.y;
+    let scale = 40.0f32;
+    return p.y - 5.0 + (p.x.sin() + p.z.cos()) * 10.0;
+}
+
+pub fn generate_terrain_chunk_data(offset: vek::Vec3<i32>, size: u32) -> Vec<f16> {
+    log::info!("calculating SDF");
+
+    let texels = (0..(size*size*size)).into_par_iter().map(|i| {
+        let p = index_to_offset(i as usize, size as usize);
+        let fp = p.as_::<f32>() * 0.5 + offset.as_::<f32>() * 32f32;
+        f16::from_f32(d(fp) / 2.0)
+    }).collect::<Vec<_>>();
+
+    texels
+}
+
+pub fn generate_terrain_chunk_data2(offset: vek::Vec3<i32>, size: u32) -> Vec<f16> {
+    log::info!("calculating SDF");
+
+    let noise = noise::Simplex::new(1234);
+
+    let seeds = (0..(size*size*size)).into_par_iter().map(|i| {
+        let p = index_to_offset(i as usize, size as usize);
+        let fp = p.as_::<f32>() * 0.5 + offset.as_::<f32>() * 31f32;
+
+        let mut density = fp.y - 5f32;
+
+        density += noise.get([fp.x as f64 * 0.05, fp.z as f64 * 0.05]) as f32 * 4f32;
+
+        density
+    }).collect::<Vec<_>>();
+
+    let texels = jump_flood_w_negative(seeds).into_iter().map(|x| f16::from_f32(x * 0.25)).collect::<Vec<_>>();
+
+    texels
+}
+
+pub unsafe fn write_cpu_sdf_to_image2(host_image_copy_device: &mut &ash::ext::host_image_copy::Device, bytes: &[u8], image: vk::Image, size: u32) {
+    let image_subresource_layers = vk::ImageSubresourceLayers::default()
+        .aspect_mask(vk::ImageAspectFlags::COLOR)
+        .mip_level(0)
+        .layer_count(1)
+        .base_array_layer(0);
+        
     
     let region = vk::MemoryToImageCopyEXT::default()
         .host_pointer(bytes.as_ptr() as *const _)

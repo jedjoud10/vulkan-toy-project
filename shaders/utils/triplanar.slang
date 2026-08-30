@@ -6,20 +6,6 @@ static const float TRIPLANAR_SCALE = 0.2;
 static const float TRIPLANAR_WEIGHT_POW = 20;
 static const float TRIPLANAR_NORMAL_STRENGTH = 2.0;
 
-float4 sample_non_uniform(uint k, SamplerState s, float2 uv) {
-    // https://gist.github.com/JuanDiegoMontoya/55482fc04d70e83729bb9528ecdc1c61 
-    // nonuniformindex still broken
-    // return sampled_images[NonUniformResourceIndex(k)].Sample(s, uv);
-    
-    while (true) {
-        uint idx = WaveReadLaneFirst(k);
-
-        if (idx == k) {
-            return sampled_images[NonUniformResourceIndex(idx)].Sample(s, uv);
-        }
-    }
-}
-
 // https://cprimozic.net/notes/posts/a-small-change-to-improve-triplanar-mapping/
 float3 sample_triplanar(uint index, float3 world, float3 normal) {
     // let image = sampled_images[NonUniformResourceIndex(index)];
