@@ -50,6 +50,7 @@ pub const VXGI_TEXTURE_SIZE: u32 = 128;
 
 pub const SPAWN_TREES: bool = false;
 pub const SPAWN_CHUNKS: bool = false;
+pub const SPAWN_PRIMITIVES: bool = true;
 
 #[derive(Default, Clone, Copy)]
 pub struct Prefab {
@@ -255,19 +256,22 @@ impl Scene {
         }]);
 
         let mut rng = rand::rngs::SmallRng::seed_from_u64(432);
-        for x in -4..4 {
-            for z in -4..4 {
-                this.create_primitive(
-                    vek::Vec3::new(rng.random_range(-40f32..40f32), 1f32, rng.random_range(-40f32..40f32)),
-                    vek::Quaternion::default(),
-                    vek::Vec3::new(1f32, 1f32, 1f32),
-                    false, 
-                    None,
-                    rng.random_range(0u32..=2u32),
-                    this.identity_prefab,
-                );
+        if SPAWN_PRIMITIVES {
+            for x in -4..4 {
+                for z in -4..4 {
+                    this.create_primitive(
+                        vek::Vec3::new(rng.random_range(-20f32..20f32), rng.random_range(-0f32..3f32), rng.random_range(-20f32..20f32)),
+                        vek::Quaternion::default(),
+                        vek::Vec3::new(1f32, 1f32, 1f32),
+                        false, 
+                        None,
+                        rng.random_range(0u32..=2u32),
+                        this.identity_prefab,
+                    );
+                }
             }
         }
+
 
         if SPAWN_TREES {
             for x in -5..5 {
@@ -295,9 +299,11 @@ impl Scene {
         for (index, transform) in self.transforms.iter_mut().enumerate().skip(1) {
             if (self.blases_instances[index].instance_custom_index_and_mask.low_24() & INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK) == 0 {
                 // global sdf
+                /*
                 transform.rotation = transform.rotation.rotated_x(rng.random_range(-1f32..1f32) * 0.01);
                 transform.rotation = transform.rotation.rotated_y(rng.random_range(-1f32..1f32) * 0.01);
                 transform.rotation = transform.rotation.rotated_z(rng.random_range(-1f32..1f32) * 0.01);
+                */
             }
         }
 

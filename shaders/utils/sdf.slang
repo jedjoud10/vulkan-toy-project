@@ -67,8 +67,8 @@ struct Node3D {
 };
 
 
-float2 d2(float3 p) {
-	return float2(sampled_images_3d[VXGI_SAMPLED_IMAGE_IDX].SampleLevel(samplers[LINEAR_CLAMPED_SAMPLER_IDX], ((p.xyz * 4) / VXGI_TEXTURE_SIZE) + 0.5, 0).x, 0);
+float4 d2(float3 p) {
+	return sampled_images_3d[VXGI_SAMPLED_IMAGE_IDX].SampleLevel(samplers[LINEAR_CLAMPED_SAMPLER_IDX], ((p.xyz * 4) / VXGI_TEXTURE_SIZE) + 0.5, 0);
 }
 
 float2 d(float3 p) {
@@ -97,12 +97,24 @@ float2 d(float3 p) {
         if (node.prim_count == 0) {
             if (sdf > bvh_node_sdf) {
                 if (len < capacity) {
-                    arrays[len] = node.first_index+1;
-                    arrays[len+1] = node.first_index;
+                    Node3D first_child = storage_buffers_readonly[STORAGE_BUFFER_WOW1_BUFFER].Load<Node3D>(sizeof(Node3D) * node.first_index);
+
+                    if (all(p > first_child.aabb.min.xyz & p < first_child.aabb.max.xyz)) {
+                        arrays[len] = node.first_index;
+                        arrays[len+1] = node.first_index+1;
+                    } else {
+                        arrays[len] = node.first_index+1;
+                        arrays[len+1] = node.first_index;
+                    }
+
                     len += 2;
                 }
             }
         } else {
+            if (sdf < bvh_node_sdf) {
+                continue;
+            }
+
             for (int i = 0; i < node.prim_count; i++) {
                 uint node_index = storage_buffers_readonly[STORAGE_BUFFER_WOW2_BUFFER].Load<uint>((node.first_index+i)*4);
                 uint node_byte_offset = node_index * sizeof(Node); 
@@ -122,6 +134,10 @@ float2 d(float3 p) {
                 // sdf = min(sdf, obj_sdf);
                 sdf = smin(sdf, obj_sdf, 0.1);
                 // sdf = max(sdf, -obj_sdf);
+
+                if (sdf < 0) {
+                    return sdf;
+                }
 
                 if (obj_sdf < tmp) {
                     material = 1.0;

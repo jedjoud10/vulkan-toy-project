@@ -144,13 +144,13 @@ void main(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID) {
     for (;i < MAX_ITERS; i++) {
         capture_performance_sdf_call();
 
-        let k = d2(point).x;
+        let k = d2(point);
 
-        if (k < THRESHOLD_DISTANCE) {
+        if (k.x < THRESHOLD_DISTANCE) {
             col = (float)i / MAX_ITERS;
-            
-            //float3 normal = get_normal_test(point);
-            
+            //col = k.yzw;
+            //float3 normal = k.yzw;
+            //float3 normal = 0.0;
             //col = clamp(dot(normal, uniforms.sun.xyz), 0, 1);
             
             break;
@@ -160,8 +160,8 @@ void main(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID) {
             break;
         }
 
-        point += ray_dir * k;
-        dist += k;
+        point += ray_dir * k.x;
+        dist += k.x;
     }
     
     uint64_t clock2 = clockARB();
