@@ -53,22 +53,17 @@ float get_sdf_from_type(float3 local, SdfType type, uint object_index) {
     return 0.0;
 }
 
-struct BvhAabb {
-    float4 min;
-    float4 max;
-};
-
 struct Node3D {
-    BvhAabb aabb;
-    uint32_t prim_count;
-    uint32_t first_index;
-    uint32_t meta1;
-    uint32_t meta2;
+    float16_t3 min;
+    uint16_t prim_count;
+    float16_t3 max;
+    uint16_t first_index;
 };
 
 
 float4 d2(float3 p) {
-	return sampled_images_3d[VXGI_SAMPLED_IMAGE_IDX].SampleLevel(samplers[LINEAR_CLAMPED_SAMPLER_IDX], ((p.xyz * 4) / VXGI_TEXTURE_SIZE) + 0.5, 0);
+	return float4(d(p).x, 0, 0, 0);
+    //return sampled_images_3d[VXGI_SAMPLED_IMAGE_IDX].SampleLevel(samplers[LINEAR_CLAMPED_SAMPLER_IDX], ((p.xyz * 4) / VXGI_TEXTURE_SIZE) + 0.5, 0);
 }
 
 float2 d(float3 p) {
@@ -88,8 +83,8 @@ float2 d(float3 p) {
         uint index = arrays[len];
         Node3D node = storage_buffers_readonly[STORAGE_BUFFER_WOW1_BUFFER].Load<Node3D>(sizeof(Node3D) * index);
 
-        float3 min = node.aabb.min.xyz;
-        float3 max = node.aabb.max.xyz;
+        float3 min = node.min.xyz;
+        float3 max = node.max.xyz;
         float3 center = (min+max)*0.5;
         float3 half_extent = (max-min) * 0.5;
         float bvh_node_sdf = sdBox(p-center, half_extent);
@@ -99,7 +94,7 @@ float2 d(float3 p) {
                 if (len < capacity) {
                     Node3D first_child = storage_buffers_readonly[STORAGE_BUFFER_WOW1_BUFFER].Load<Node3D>(sizeof(Node3D) * node.first_index);
 
-                    if (all(p > first_child.aabb.min.xyz & p < first_child.aabb.max.xyz)) {
+                    if (all(p > first_child.min.xyz & p < first_child.max.xyz)) {
                         arrays[len] = node.first_index;
                         arrays[len+1] = node.first_index+1;
                     } else {
@@ -130,7 +125,7 @@ float2 d(float3 p) {
                 // 3x4 * 4x1 = 3x1 vector
                 float3 local = mul(transform, float4(p, 1));
 
-                float obj_sdf = get_sdf_from_type(local.xyz, SdfType.Rock, node_index); 
+                float obj_sdf = get_sdf_from_type(local.xyz, SdfType(node.type), node_index); 
                 // sdf = min(sdf, obj_sdf);
                 sdf = smin(sdf, obj_sdf, 0.1);
                 // sdf = max(sdf, -obj_sdf);

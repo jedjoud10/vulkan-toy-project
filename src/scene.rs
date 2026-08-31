@@ -319,7 +319,7 @@ impl Scene {
             }
         } 
         let primitives = self.primitive_flat_list.iter().map(|node| TestPrimitive { transform: &self.transforms[node.transform_index as usize] }).collect::<Vec<_>>();
-        self.bvh = obvhs::bvh2::builder::build_bvh2(&primitives, obvhs::BvhBuildParams::medium_build(), &mut core_build_time);
+        self.bvh = obvhs::bvh2::builder::build_bvh2(&primitives, obvhs::BvhBuildParams::very_slow_build(), &mut core_build_time);
     }
 
     pub unsafe fn create_primitive_prefab(&mut self, mut ctx: &mut GraphicsContext, aabbs: &[Aabb]) -> Prefab {

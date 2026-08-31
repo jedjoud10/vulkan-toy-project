@@ -892,7 +892,27 @@ impl InternalApp {
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.gpu_packed_aabbs), self.scene.gpu_packed_aabbs_buffer.buffer, 0);
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.primitive_flat_list), self.scene.primitive_flat_buffer.buffer, 0);
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&indicestest), self.scene.chunk_buffer_lookup.buffer, 0);
-        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.bvh.nodes), self.scene.wow.buffer, 0);
+
+
+        #[derive(Clone, Copy, Pod, Zeroable)]
+        #[repr(C)]
+        struct PackedNode {
+            min: vek::Vec3<half::f16>,
+            prim_count: u16,
+            max: vek::Vec3<half::f16>,
+            index_start: u16,
+        }
+
+        let packed_nodes = self.scene.bvh.nodes.iter().map(|n| {
+            PackedNode {
+                min: vek::Vec3::from(n.aabb.min.to_array()).map(|x| half::f16::from_f32(x)),
+                prim_count: n.prim_count as u16,
+                max: vek::Vec3::from(n.aabb.max.to_array()).map(|x| half::f16::from_f32(x)),
+                index_start: n.first_index as u16,
+            }
+        }).collect::<Vec<_>>();
+
+        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&packed_nodes), self.scene.wow.buffer, 0);
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.bvh.primitive_indices), self.scene.wow2.buffer, 0);
         
 
