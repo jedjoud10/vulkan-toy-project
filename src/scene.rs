@@ -48,8 +48,9 @@ pub const INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK: u32 = 1 << 20;
 
 pub const VXGI_TEXTURE_SIZE: u32 = 128;
 
+pub const NUM_CHUNKS_XZ: i32 = 10;
 pub const SPAWN_TREES: bool = false;
-pub const SPAWN_CHUNKS: bool = false;
+pub const SPAWN_CHUNKS: bool = true;
 pub const SPAWN_PRIMITIVES: bool = true;
 
 #[derive(Default, Clone, Copy)]
@@ -127,7 +128,10 @@ pub struct Scene {
     pub wow: buffer::Buffer,   
     pub wow2: buffer::Buffer,    
 
-    pub bvh: obvhs::bvh2::Bvh2
+    pub bvh: obvhs::bvh2::Bvh2,
+
+    pub dirty_chunks: Vec<u32>,
+    pub chunk_positions_to_indices: HashMap<vek::Vec3<i32>, u32>,
 }
 
 impl Scene {
@@ -187,10 +191,13 @@ impl Scene {
             inverse_transforms_buffer,
             chunk_lookup_texture_bruh,
             chunk_lookup_texture_r32_cpu,
-            bvh: obvhs::bvh2::Bvh2::default()
+            dirty_chunks: Default::default(),
+            bvh: obvhs::bvh2::Bvh2::default(),
+            chunk_positions_to_indices: Default::default()
         };
 
 
+        /*
         if SPAWN_CHUNKS {
             let mut chunk = 0;
             for x in -2..2 {
@@ -240,11 +247,41 @@ impl Scene {
 
                         let texel_position = (chunk_position + 64).as_::<usize>();
                         let texel_index = offset_to_index(texel_position, 128);
-                        this.chunk_lookup_texture_r32_cpu[texel_index] = chunk;
+                        // this.chunk_lookup_texture_r32_cpu[texel_index] = chunk;
                     }
                 }
             }
         }
+        */
+
+        if SPAWN_CHUNKS {
+            let mut chunk = 0;
+
+            this.chunk_lookup_texture_r32_cpu.fill(u32::MAX);
+            for x in -NUM_CHUNKS_XZ..NUM_CHUNKS_XZ {
+                for y in 0..1 {
+                    for z in -NUM_CHUNKS_XZ..NUM_CHUNKS_XZ {
+                        let chunk_position = vek::Vec3::new(x,y,z);
+                        let mut img =  sdf_texture::create_voxel_image(ctx, vek::Extent3::broadcast(64), vk::Format::R16G16B16A16_SFLOAT, None);
+
+                        this.chunks.push(Chunk {
+                            position: chunk_position,
+                            texture: img,
+                            blas_instance_index: 0,
+                        });
+
+                        let texel_position = (chunk_position + 64).as_::<usize>();
+                        let texel_index = offset_to_index(texel_position, 128);
+                        this.chunk_lookup_texture_r32_cpu[texel_index] = chunk;
+
+                        this.chunk_positions_to_indices.insert(chunk_position, chunk);
+
+                        chunk += 1;
+                    }
+                }
+            }
+        }
+
         
 
         this.identity_prefab = this.create_primitive_prefab(ctx, &[IDENTBOX]);
@@ -380,6 +417,7 @@ impl Scene {
             scale,
         });
 
+        /*
         if !is_local {
             for x in -2..=2 {
                 for y in -2..=2 {
@@ -413,6 +451,13 @@ impl Scene {
                 sdf_type,
             })
         }
+        */
+
+        self.primitive_flat_list.push(Node {
+            transform_index: (self.transforms.len() - 1) as u32,
+            sdf_type,
+        });
+
 
         self.blases_instances.len() - 1
 

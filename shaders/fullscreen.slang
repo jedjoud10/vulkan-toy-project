@@ -3,73 +3,6 @@
 #include "utils/sky.slang"
 #include "utils/pbr.slang"
 
-
-bool dda(
-    float3 ray_dir,
-    float3 ray_pos,
-) {
-    float3 floored_pos = floor(ray_pos);
-    float3 inv_dir = 1 / ray_dir;
-    float3 dir_sign = sign(ray_dir);
-    float3 side_dist = (floored_pos - ray_pos + 0.5 + 0.5 * dir_sign);
-
-    bool hit = false;
-    for (int i = 0; i < 32; i++) {
-        if (d(floored_pos).x < 1) {
-            hit = true;
-            break;
-        }
-    
-        float3 reconst = side_dist * inv_dir;
-        int3 eqs = select(min3(reconst.x, reconst.y, reconst.z) == reconst, 1, 0);
-        floored_pos += dir_sign * eqs;
-        side_dist += dir_sign * eqs;
-    }
-
-    return hit;
-}
-
-bool dda2(
-    float3 ray_dir,
-    float3 ray_pos,
-) {
-    float3 floored_pos = floor(ray_pos);
-    float3 inv_dir = 1 / ray_dir;
-    float3 dir_sign = sign(ray_dir);
-    float3 side_dist = (floored_pos - ray_pos + 0.5 + 0.5 * dir_sign);
-
-    bool hit = false;
-    for (int i = 0; i < MAX_ITERS; i++) {
-        if (d(floored_pos).x < 1) {
-            return true;
-            /*
-            float3 point = floored_pos - ray_dir;
-            capture_performance_query_trace_ray();
-            for (; i < MAX_ITERS; i++) {
-                capture_performance_sdf_call();
-
-                let k = d(point).x;
-
-                if (k < THRESHOLD_DISTANCE) {
-                    return true;
-                }
-
-                point += ray_dir * k;
-            }
-            break;
-            */
-        }
-    
-        float3 reconst = side_dist * inv_dir;
-        int3 eqs = select(min3(reconst.x, reconst.y, reconst.z) == reconst, 1, 0);
-        floored_pos += dir_sign * eqs;
-        side_dist += dir_sign * eqs;
-    }
-
-    return hit;
-}
-
-
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void prepass(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID) {
@@ -121,6 +54,7 @@ void main(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID) {
 
     uint64_t clock = clockARB();
     float starting_distance = prepass.x;
+    // float starting_distance = max(prepass.x, trace_get_closest_to_surface(ray_pos, ray_dir)-0.1);
     float3 point = ray_pos + ray_dir * starting_distance;
     float dist = starting_distance;
     capture_performance_query_trace_ray();
@@ -135,7 +69,7 @@ void main(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID) {
             break;
         }
 
-        if (dist > MAX_DISTANCE || any(point < -16 | point > 16)) {
+        if (dist > MAX_DISTANCE) {
             break;
         }
 

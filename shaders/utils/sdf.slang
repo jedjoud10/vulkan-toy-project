@@ -17,9 +17,9 @@ enum SdfType {
     Box,
     BoxWithCutout,
     Rock,
+    Interesting1,
 }
 
-[Differentiable]
 float get_sdf_from_type(float3 local, SdfType type, uint object_index) {
 
     switch (type) {
@@ -35,7 +35,7 @@ float get_sdf_from_type(float3 local, SdfType type, uint object_index) {
             return box;
         case SdfType.Rock:
             float s = sdBox(local, 0.8);
-            float blending = noise(local * 10) * 0.05 + 0.1;
+            float blending = noise(local * 10) * 0.2 + 0.1;
 
             [ForceUnroll]
             for (int i = 0; i < 4; i++) {
@@ -47,7 +47,20 @@ float get_sdf_from_type(float3 local, SdfType type, uint object_index) {
                 }
             }
 
-            return s - 0.0;
+            return s;
+        case SdfType.Interesting1:
+            s = max(sdBox(local, 0.8), sdCylinder(local, float3(0, 0, 0.4)));
+
+            float3 k = mul(local, AngleAxis3x3(uniforms.time, normalize(hash31(object_index))));
+            k.x = abs(k.x);
+            k = k - float3(0.6, 0.4, 0.0);
+            s = min(sdSphere(k, 0.2), s);
+
+            s = min(max(sdSphere(local - float3(0, -0.3, 0), 0.6), sdSphere(local - float3(0, 0.3, 0), 0.6)), s);
+
+            s += sin(local.y*30 + uniforms.time*4.0)*0.01;
+
+            return s;
     }
 
     return 0.0;
@@ -60,7 +73,7 @@ struct Node3D {
     uint16_t first_index;
 };
 
-// #define CACHE_MY_SHIT
+#define CACHE_MY_SHIT
 
 float3 get_normal_raw(float3 p) {
     float eps = 0.001;
@@ -76,8 +89,11 @@ float3 get_normal_raw(float3 p) {
 // wtf the difference between using this vs the auto-diff normal is NUTS
 // at 720p, this changes the frame timing (w path-tracing) from 12ms to 5ms. wtf
 float3 get_normal_test(float3 p) {
+    //  get_normal_raw(p);
+    
 #ifdef CACHE_MY_SHIT
-    return sampled_images_3d[VXGI_SAMPLED_IMAGE_IDX].SampleLevel(samplers[LINEAR_CLAMPED_SAMPLER_IDX], ((p.xyz * 4) / VXGI_TEXTURE_SIZE) + 0.5, 0).yzw;
+    return sample_poop2_normals(p);
+    //return sampled_images_3d[VXGI_SAMPLED_IMAGE_IDX].SampleLevel(samplers[LINEAR_CLAMPED_SAMPLER_IDX], ((p.xyz * 4) / VXGI_TEXTURE_SIZE) + 0.5, 0).yzw;
 #else
     return get_normal_raw(p);
 #endif
@@ -86,9 +102,12 @@ float3 get_normal_test(float3 p) {
 
 
 float d2(float3 p) {
+    
 #ifdef CACHE_MY_SHIT
-    return sampled_images_3d[VXGI_SAMPLED_IMAGE_IDX].SampleLevel(samplers[LINEAR_CLAMPED_SAMPLER_IDX], (((p.xyz ) * 4) / VXGI_TEXTURE_SIZE) + 0.5, 0).x;
+    return sample_poopy2(p);
+    //return sampled_images_3d[VXGI_SAMPLED_IMAGE_IDX].SampleLevel(samplers[LINEAR_CLAMPED_SAMPLER_IDX], (((p.xyz ) * 4) / VXGI_TEXTURE_SIZE) + 0.5, 0).x;
 #else
+    // return sample_poopy2(p);
     return d(p).x;
 #endif
 }
@@ -100,7 +119,7 @@ float2 d(float3 p) {
     float sdf = p.y;
     float material = 0.0;
 
-    sdf = min(sdf, sample_poopy2(p));
+    //sdf = min(sdf, sample_poopy2(p));
         
     uint len = 0;
     const static uint capacity = 10;
@@ -159,7 +178,10 @@ float2 d(float3 p) {
                 // 3x4 * 4x1 = 3x1 vector
                 float3 local = mul(transform, float4(p, 1));
 
-                float obj_sdf = get_sdf_from_type(local.xyz, SdfType.Box, node_index); 
+                // SdfType sdf_type = SdfType(node.type);
+                SdfType sdf_type = SdfType.Rock;
+                
+                float obj_sdf = get_sdf_from_type(local.xyz, sdf_type, node_index); 
                 sdf = smin(sdf, obj_sdf, 0.1);
                 // sdf = max(sdf, -obj_sdf);
 
@@ -312,17 +334,52 @@ struct GpuAabb {
     half4 max;
 };
 
-float sample_poopy2(float3 p) {
-    uint chunk_start_index = storage_images_3d_uint[CHUNK_LOOKUP_TEXTURE].Load(floor(p / 32) + 64);
+const static float CHUNK_PHYSICAL_SIZE = 4.0;
+const static float CHUNK_LOGICAL_SIZE = 64;
 
-    if (chunk_start_index == 0) {
-        return 1000;
-    }
+const static uint CHUNK_LOOKUP_MEGA_TEXTURE_SIZE = 128;
+const static uint CHUNK_LOOKUP_MEGA_TEXTURE_HALF_SIZE = CHUNK_LOOKUP_MEGA_TEXTURE_SIZE / 2;
+
+float sample_poopy2(float3 p) {
+
+    int3 chunk_pos = (int3)floor(p / CHUNK_PHYSICAL_SIZE);
+    uint chunk_start_index = storage_images_3d_uint[CHUNK_LOOKUP_TEXTURE].Load(chunk_pos + CHUNK_LOOKUP_MEGA_TEXTURE_HALF_SIZE);
+    
+
+    if (chunk_start_index == uint.maxValue) {
+        return 100000;
+    } 
 
     uint target_texture_index = storage_buffers_readonly[STORAGE_BUFFER_CHUNKS_BUFFER].Load<uint>(chunk_start_index * 4);
-    float3 local_position = p - floor(p / 32) * 32;
-    float4 poop =  sample_non_uniform_3d(target_texture_index, samplers[LINEAR_UNCAMPLED_SAMPLER_IDX], (local_position+0.5) / 33.0);
+    float3 local_position = p - floor(p / CHUNK_PHYSICAL_SIZE) * CHUNK_PHYSICAL_SIZE;
+    float4 poop =  sample_non_uniform_3d(target_texture_index, samplers[LINEAR_CLAMPED_SAMPLER_IDX], (local_position) / CHUNK_PHYSICAL_SIZE);
     return poop.x;
+}
+
+float3 sample_poop2_normals(float3 p)
+{
+    int3 chunk_pos = (int3)floor(p / CHUNK_PHYSICAL_SIZE);
+    uint chunk_start_index = storage_images_3d_uint[CHUNK_LOOKUP_TEXTURE].Load(chunk_pos + CHUNK_LOOKUP_MEGA_TEXTURE_HALF_SIZE);
+    
+
+    if (chunk_start_index == uint.maxValue) {
+        return 100000;
+    } 
+
+    uint target_texture_index = storage_buffers_readonly[STORAGE_BUFFER_CHUNKS_BUFFER].Load<uint>(chunk_start_index * 4);
+    float3 local_position = p - floor(p / CHUNK_PHYSICAL_SIZE) * CHUNK_PHYSICAL_SIZE;
+    float4 poop =  sample_non_uniform_3d(target_texture_index, samplers[LINEAR_CLAMPED_SAMPLER_IDX], (local_position) / CHUNK_PHYSICAL_SIZE);
+    return poop.yzw;
+    /*
+    float eps = 0.01;
+    float x = sample_poopy2(p - float3(eps, 0, 0)).x;
+    float y = sample_poopy2(p - float3(0, eps, 0)).x;
+    float z = sample_poopy2(p - float3(0, 0, eps)).x;
+    float b = sample_poopy2(p).x;
+
+
+    return normalize(float3(b-x, b-y, b-z) / eps);
+    */
 }
 
 [BackwardDerivativeOf(sample_poopy2)]
@@ -391,6 +448,53 @@ void trace_inner<uint T>(inout RayQuery<T> sq, inout int i, inout int sdf_calls,
         distance += step_size;
     }
 }
+
+
+
+float trace_get_closest_to_surface(float3 ray_pos, float3 ray_dir) {
+    capture_performance_query_trace_ray();
+
+    RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_TRIANGLES | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> sq;
+    let flags = RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_TRIANGLES | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER;
+
+    RayDesc desc;		
+
+    desc.Origin = ray_pos;
+    desc.Direction = ray_dir;
+    desc.TMax = MAX_DISTANCE;
+    desc.TMin = 0.0;
+
+    sq.TraceRayInline(acceleration_structures[0], flags, 0xFF, desc);
+
+    float d = 100000;
+
+    while (sq.Proceed()) {
+        if(sq.CandidateType() == CANDIDATE_PROCEDURAL_PRIMITIVE) {
+
+            // 24 bits
+            uint instance_custom_index = sq.CandidateRayInstanceCustomIndex();   
+            bool local_sdf = (instance_custom_index & INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK) != 0;
+            uint aabb_lookup_index = (instance_custom_index & INSTANCE_CUSTOM_INDEX_AABB_START_INDEX) + sq.CandidatePrimitiveIndex();
+
+            // software AABB test lmao to get min and max dists of ray into  AABB
+            GpuAabb aabb = storage_buffers_readonly[STORAGE_BUFFER_SCENE_REPR_BUFFER].Load<GpuAabb>(aabb_lookup_index * sizeof(GpuAabb));
+            float2 tmin_tmax = ray_box_get_tmin_tmax(sq.CandidateRayObjectRayOrigin(), sq.CandidateObjectRayDirection(), aabb.min.xyz, aabb.max.xyz);
+            float distance = max(tmin_tmax.x, 0);
+
+            if (distance < d) {
+                sq.CommitProceduralPrimitiveHit(distance); 
+                d = distance;
+            }
+        }
+    }
+
+    if (sq.CommittedStatus() != COMMITTED_NOTHING) {
+        return sq.CommittedRayT();
+    } else {
+        return 100000;
+    }
+}
+
 
 
 TraceRes trace(float3 ray_pos, float3 ray_dir) {

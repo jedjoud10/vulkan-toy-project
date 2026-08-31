@@ -15,12 +15,12 @@ void voxelize (uint3 id : SV_DispatchThreadID) {
 
     // [-MAP_SIZE/2..MAP_SIZE/2]
     p *= VXGI_TEXTURE_SCALING;
-
+	/*
 #ifdef CACHE_MY_SHIT	
 	float3 n1 = get_normal_raw(p);
 	storage_images_3d[VXGI_STORAGE_IMAGE_IDX].Store(id, float4(d(p).x, n1));
 #endif
-
+	*/
 	#ifndef SINGLEBOUNCE_APPLY_VXGI
 	return;
 	#endif

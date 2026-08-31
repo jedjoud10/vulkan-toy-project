@@ -24,6 +24,7 @@ use crate::physical_device::PhysicalDeviceAndScore;
 use crate::samplers;
 use crate::query_pool_statistics::QueryPoolStatistics;
 use crate::shader_compiler;
+use crate::utils::index_to_offset;
 use winit::event::MouseButton;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -641,6 +642,12 @@ impl InternalApp {
         storage_images_allocator.push(self.scene.lookup_texture.image_view);  
         storage_images_allocator.push(self.scene.chunk_lookup_texture_bruh.image_view);  
         storage_images_allocator.push(render_targets.rendered_pre_pass_image_view);  
+
+        let mut chunk_sdf_textures_start_index = storage_images_allocator.current();
+        for chunk in self.scene.chunks.iter() {            
+            let index = storage_images_allocator.push(chunk.texture.image_view);  
+        }
+        
         
        
         
@@ -960,6 +967,14 @@ impl InternalApp {
             .src_buffer(scratch_buffer.buffer)
             .regions(&regions);
         ctx.device.cmd_copy_buffer_to_image2(cmd, &copy_info);
+        
+
+        /*
+        if (self.frame_count == 0) {
+            let range = vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR).base_mip_level(0).layer_count(1).base_array_layer(0).level_count(1);
+            ctx.device.cmd_clear_color_image(cmd, self.scene.chunk_lookup_texture_bruh.image, vk::ImageLayout::GENERAL, &vk::ClearColorValue { uint32: [u32::MAX; 4] }, &[range]);
+        }
+        */
 
         
         // rebuild TLAS
@@ -1120,6 +1135,83 @@ impl InternalApp {
         );
 
         self.device.cmd_dispatch(cmd, skybox::SKYBOX_RESOLUTION.div_ceil(8), skybox::SKYBOX_RESOLUTION.div_ceil(8), 6);
+
+        let mut chunk_index = self.frame_count as u32 % self.scene.chunks.len() as u32;
+        
+        if let Some(x) = self.scene.dirty_chunks.pop() {
+            chunk_index = x;
+        }
+        
+        let target_storage_texture = chunk_sdf_textures_start_index + chunk_index;
+        let chunk_pos = self.scene.chunks[chunk_index as usize].position;
+
+        #[derive(Clone, Copy, Pod, Zeroable)]
+        #[repr(C)]
+        struct T {
+            chunk_pos: vek::Vec3<i32>,
+            target_storage_texture: u32,
+            chunk_index: u32,
+        }
+
+        let tmp_push_constants = T {
+            target_storage_texture,
+            chunk_pos,
+            chunk_index
+        };
+
+        self.device.cmd_bind_pipeline(
+            cmd,
+            vk::PipelineBindPoint::COMPUTE,
+            self.compute_pipelines[COMPUTE_SDF]["compute_chunk_sdf"]
+        );
+
+        self.device.cmd_push_constants(
+            cmd,
+            self.main_pipeline_layout,
+            vk::ShaderStageFlags::ALL,
+            0,
+            bytes_of(&tmp_push_constants)
+        );
+
+        let sdf_subresource_range = vk::ImageSubresourceRange::default()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .level_count(1)
+            .layer_count(1);
+        let sdf_image_barrier = vk::ImageMemoryBarrier2::default()
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_STORAGE_READ)
+            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .image(self.scene.chunk_lookup_texture_bruh.image)
+            .subresource_range(sdf_subresource_range);
+        let image_memory_barriers = [sdf_image_barrier];
+        let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
+        self.device.cmd_pipeline_barrier2(cmd, &dep);
+
+        self.device.cmd_dispatch(cmd, 64u32.div_ceil(4), 64u32.div_ceil(4), 64u32.div_ceil(4));
+
+        let sdf_subresource_range = vk::ImageSubresourceRange::default()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .level_count(1)
+            .layer_count(1);
+        let sdf_image_barrier = vk::ImageMemoryBarrier2::default()
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_STORAGE_READ)
+            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .image(self.scene.chunk_lookup_texture_bruh.image)
+            .subresource_range(sdf_subresource_range);
+        let image_memory_barriers = [sdf_image_barrier];
+        let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
+        self.device.cmd_pipeline_barrier2(cmd, &dep);
 
         /*
         self.device.cmd_fill_buffer(cmd, self.terrain_aabb_bounds_buffer.buffer, 0, vk::WHOLE_SIZE, bytemuck::cast(0f32));
@@ -1354,7 +1446,16 @@ impl InternalApp {
                 None,
                 0,
                 self.scene.identity_prefab
-            );            
+            );      
+
+            for x in 0..27 {
+                let chunk_offset = index_to_offset(x, 3);
+                let chunk_position = (pos / 4f32).as_::<i32>() + chunk_offset.as_::<i32>() - 1;
+
+                if let Some(idx) = self.scene.chunk_positions_to_indices.get(&chunk_position) {
+                    self.scene.dirty_chunks.push(*idx);
+                }
+            }      
         }
 
         if  right {
@@ -1368,6 +1469,15 @@ impl InternalApp {
                 0,
                 self.scene.tree_prefab
             );            
+
+            for x in 0..8 {
+                let chunk_offset = index_to_offset(x, 2);
+                let chunk_position = (pos / 4f32).as_::<i32>() + chunk_offset.as_::<i32>();
+
+                if let Some(idx) = self.scene.chunk_positions_to_indices.get(&chunk_position) {
+                    self.scene.dirty_chunks.push(*idx);
+                }
+            }
         }
 
         self.device.cmd_bind_pipeline(
@@ -1996,7 +2106,7 @@ unsafe fn compile_all_shaders(
         file_name_without_extension: COMPUTE_FULLSCREEN,
     }, pipeline::PipelineCreateSettings {
         pipeline_debug_name: "compute SDF shader",
-        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["main", "main2", "compute_aabbs"] },
+        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["main", "main2", "compute_aabbs", "compute_chunk_sdf"] },
         spec_constants: Some(&spec_constants),
         file_name_without_extension: COMPUTE_SDF,
     }, pipeline::PipelineCreateSettings {
