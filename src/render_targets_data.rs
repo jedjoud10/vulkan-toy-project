@@ -8,12 +8,17 @@ pub struct RenderTargetsData {
     pub rendered_image_allocation: Option<Allocation>,
     pub rendered_depth_image: vk::Image,
     pub rendered_depth_image_allocation: Option<Allocation>,
-    
+
+    pub rendered_pre_pass: vk::Image,
+    pub rendered_pre_pass_allocation: Option<Allocation>,
+
+
     pub bloom_image: vk::Image,
     pub bloom_image_allocation: Option<Allocation>,
     pub bloom_mip_image_views: Vec<vk::ImageView>,
 
     pub rendered_image_view: vk::ImageView,
+    pub rendered_pre_pass_image_view: vk::ImageView,
     pub rendered_depth_image_image_view: vk::ImageView,
     pub entire_bloom_image_view: vk::ImageView,
 }
@@ -32,6 +37,9 @@ impl RenderTargetsData {
             rendered_depth_image: vk::Image::null(),
             rendered_depth_image_allocation: None,
             rendered_depth_image_image_view: vk::ImageView::null(),
+            rendered_pre_pass_allocation:None,
+            rendered_pre_pass: vk::Image::null(),
+            rendered_pre_pass_image_view: vk::ImageView::null(),
         }
     }
     
@@ -56,6 +64,11 @@ impl RenderTargetsData {
         let rendered_image_format = vk::Format::R16G16B16A16_SFLOAT;
         let (rendered_image, rendered_image_allocation) = create_image(device, rendered_image_format, allocator, queue_family_index, extent, debug_marker, scaling_factor, "Tmp Rendered Texture (pre-process)", None, vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED);
 
+
+        let prepass_image_format = vk::Format::R16G16B16A16_SFLOAT;
+        let (rendered_pre_pass, rendered_pre_pass_allocation) = create_image(device, prepass_image_format, allocator, queue_family_index, extent, debug_marker, scaling_factor*4, "Tmp Rendered Texture (pre-process)", None, vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED);
+
+
         let depth_image_format = vk::Format::D32_SFLOAT;
         let (depth_image, depth_image_allocation) = create_image(device, depth_image_format, allocator, queue_family_index, extent, debug_marker, scaling_factor, "Depth Texture", None, vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT);
 
@@ -73,6 +86,8 @@ impl RenderTargetsData {
         self.rendered_depth_image = depth_image;
         self.rendered_depth_image_allocation = Some(depth_image_allocation);
 
+        self.rendered_pre_pass = rendered_pre_pass;
+        self.rendered_pre_pass_allocation = Some(rendered_pre_pass_allocation);
 
         let subresource_range = vk::ImageSubresourceRange::default()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -111,6 +126,14 @@ impl RenderTargetsData {
             .subresource_range(entire_bloom_subresource_range)
             .view_type(vk::ImageViewType::TYPE_2D);
 
+        let rendered_pre_pass_image_view_create_info = vk::ImageViewCreateInfo::default()
+            .components(vk::ComponentMapping::default())
+            .flags(vk::ImageViewCreateFlags::empty())
+            .format(prepass_image_format)
+            .image(self.rendered_pre_pass)
+            .subresource_range(subresource_range)
+            .view_type(vk::ImageViewType::TYPE_2D);
+
         self.rendered_image_view = device
             .create_image_view(&rendered_image_view_create_info, None)
             .unwrap();
@@ -119,6 +142,9 @@ impl RenderTargetsData {
             .unwrap();
         self.rendered_depth_image_image_view = device
             .create_image_view(&rendered_depth_image_view_create_info, None)
+            .unwrap();
+        self.rendered_pre_pass_image_view = device
+            .create_image_view(&rendered_pre_pass_image_view_create_info, None)
             .unwrap();
 
         self.bloom_mip_image_views.clear();

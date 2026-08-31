@@ -640,6 +640,8 @@ impl InternalApp {
         storage_images_allocator.push(self.scene.vxgi_texture.image_view);
         storage_images_allocator.push(self.scene.lookup_texture.image_view);  
         storage_images_allocator.push(self.scene.chunk_lookup_texture_bruh.image_view);  
+        storage_images_allocator.push(render_targets.rendered_pre_pass_image_view);  
+        
        
         
         let sdf_storage_images_start_index = storage_images_allocator.current();
@@ -695,6 +697,14 @@ impl InternalApp {
                 .buffer(self.scene.chunk_buffer_lookup.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
+            vk::DescriptorBufferInfo::default()
+                .buffer(self.scene.wow.buffer)
+                .offset(0)
+                .range(vk::WHOLE_SIZE),
+            vk::DescriptorBufferInfo::default()
+                .buffer(self.scene.wow2.buffer)
+                .offset(0)
+                .range(vk::WHOLE_SIZE),
         ];
 
         let storage_buffer_write = vk::WriteDescriptorSet::default()
@@ -713,6 +723,7 @@ impl InternalApp {
         sampled_images_allocator.push(self.scene.texture.image_view);
         sampled_images_allocator.push(self.scene.texture2.image_view);
         sampled_images_allocator.push(self.scene.vxgi_texture.image_view);
+        sampled_images_allocator.push(render_targets.rendered_pre_pass_image_view);
         
         let sdf_sampled_images_start_index = sampled_images_allocator.current();
         for image_mip in self.scene.vxgi_texture.specific_mip_image_views.as_ref().unwrap().iter() {
@@ -881,7 +892,10 @@ impl InternalApp {
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.gpu_packed_aabbs), self.scene.gpu_packed_aabbs_buffer.buffer, 0);
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.primitive_flat_list), self.scene.primitive_flat_buffer.buffer, 0);
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&indicestest), self.scene.chunk_buffer_lookup.buffer, 0);
+        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.bvh.nodes), self.scene.wow.buffer, 0);
+        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.bvh.primitive_indices), self.scene.wow2.buffer, 0);
         
+
         // update ray-tracing BLAS instances transform matrices
         for (dst, src) in self.scene.blases_instances.iter_mut().map(|instance| &mut instance.transform).zip(self.scene.transforms.iter()) {
             *dst = vk::TransformMatrixKHR { matrix: ray_tracing::to_3x4_mat(ray_tracing::calculate_matrix(src.rotation, src.position, src.scale)) };
@@ -1465,6 +1479,14 @@ impl InternalApp {
         self.device.cmd_dispatch(cmd, group_count.w, group_count.h, group_count.d);
         */
         
+        self.device.cmd_bind_pipeline(
+            cmd,
+            vk::PipelineBindPoint::COMPUTE,
+            self.compute_pipelines[COMPUTE_FULLSCREEN]["prepass"],
+        );
+        
+        self.device.cmd_dispatch(cmd, (size.x/4).div_ceil(8), (size.x/4).div_ceil(8), 1);
+
         
         let skybox_subresource_range = vk::ImageSubresourceRange::default()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -1518,6 +1540,17 @@ impl InternalApp {
             .dst_queue_family_index(self.queue_family_index)
             .image(render_targets.rendered_image)
             .subresource_range(subresource_range);
+        let pre_pass_image_barrier = vk::ImageMemoryBarrier2::default()
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .src_access_mask(vk::AccessFlags2::SHADER_STORAGE_WRITE | vk::AccessFlags2::SHADER_STORAGE_READ)
+            .dst_access_mask(vk::AccessFlags2::SHADER_STORAGE_WRITE | vk::AccessFlags2::SHADER_STORAGE_READ)
+            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .image(render_targets.rendered_pre_pass)
+            .subresource_range(subresource_range);
         let depth_image_barrier = vk::ImageMemoryBarrier2::default()
             .old_layout(vk::ImageLayout::UNDEFINED)
             .new_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
@@ -1532,9 +1565,11 @@ impl InternalApp {
                 .aspect_mask(vk::ImageAspectFlags::DEPTH)
                 .level_count(1)
                 .layer_count(1));
-        let image_memory_barriers = [skybox_image_barrier, clouds_image_barrier, rendered_image_barrier, ambient_clouds_image_barrier, depth_image_barrier];
+        let image_memory_barriers = [skybox_image_barrier, clouds_image_barrier, rendered_image_barrier, pre_pass_image_barrier, ambient_clouds_image_barrier, depth_image_barrier];
         let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
+
+
 
         
         self.device.cmd_bind_pipeline(
@@ -1928,7 +1963,7 @@ unsafe fn compile_all_shaders(
         file_name_without_extension: COMPUTE_SKY,
     }, pipeline::PipelineCreateSettings {
         pipeline_debug_name: "compute fullscreen shader",
-        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["main"] },
+        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["main", "prepass"] },
         spec_constants: Some(&spec_constants),
         file_name_without_extension: COMPUTE_FULLSCREEN,
     }, pipeline::PipelineCreateSettings {

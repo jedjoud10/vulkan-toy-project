@@ -38,6 +38,8 @@ crossbeam = "0.8.4"
 half = { version = "2.7.1", features = ["bytemuck"] }
 shader-slang = { git = "https://github.com/FloatyMonkey/slang-rs.git" }
 ctt = "0.5.0"
+obvhs = "0.3.3"
+glam = "0.33.6"
 
 [build-dependencies]
 shader-slang = { git = "https://github.com/FloatyMonkey/slang-rs.git" }

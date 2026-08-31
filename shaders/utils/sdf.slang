@@ -35,35 +35,105 @@ float get_sdf_from_type(float3 local, SdfType type, uint object_index) {
             return box;
         case SdfType.Rock:
             float s = sdBox(local, 0.8);
-        
+            float blending = noise(local * 10) * 0.05 + 0.1;
+
             [ForceUnroll]
             for (int i = 0; i < 4; i++) {
                 int seed = i + object_index * 52;
                 float3 normal = normalize(float3(sin(seed * 40.21), sin(seed * 10.21), sin(seed * -20.43)));
                 if (length(normal) > 0.01) {
                     float k = dot(normalize(normal), local) - 0.5;
-                    s = smax(s, k, 0.01);
+                    s = smax(s, k, blending);
                 }
             }
 
-            return s;
+            return s - 0.0;
     }
 
     return 0.0;
 }
 
-[Differentiable]
+struct BvhAabb {
+    float4 min;
+    float4 max;
+};
+
+struct Node3D {
+    BvhAabb aabb;
+    uint32_t prim_count;
+    uint32_t first_index;
+    uint32_t meta1;
+    uint32_t meta2;
+};
+
+
+float2 d2(float3 p) {
+	return float2(sampled_images_3d[VXGI_SAMPLED_IMAGE_IDX].SampleLevel(samplers[LINEAR_CLAMPED_SAMPLER_IDX], ((p.xyz * 4) / VXGI_TEXTURE_SIZE) + 0.5, 0).x, 0);
+}
+
 float2 d(float3 p) {
     float sdf = p.y;
     float material = 0.0;
 
-    uint3 offset = (uint3)floor(p + 64);
-
     sdf = min(sdf, sample_poopy2(p));
+        
+    uint len = 0;
+    const static uint capacity = 10;
+    uint[capacity] arrays = { 0 };
+
+    len += 1;
     
+    while (len > 0) {
+        len -= 1;
+        uint index = arrays[len];
+        Node3D node = storage_buffers_readonly[STORAGE_BUFFER_WOW1_BUFFER].Load<Node3D>(sizeof(Node3D) * index);
+
+        float3 min = node.aabb.min.xyz;
+        float3 max = node.aabb.max.xyz;
+        float3 center = (min+max)*0.5;
+        float3 half_extent = (max-min) * 0.5;
+        float bvh_node_sdf = sdBox(p-center, half_extent);
+
+        if (node.prim_count == 0) {
+            if (sdf > bvh_node_sdf) {
+                if (len < capacity) {
+                    arrays[len] = node.first_index+1;
+                    arrays[len+1] = node.first_index;
+                    len += 2;
+                }
+            }
+        } else {
+            for (int i = 0; i < node.prim_count; i++) {
+                uint node_index = storage_buffers_readonly[STORAGE_BUFFER_WOW2_BUFFER].Load<uint>((node.first_index+i)*4);
+                uint node_byte_offset = node_index * sizeof(Node); 
+                Node node = storage_buffers[STORAGE_BUFFER_PRIMITIVE_FLAT_LIST_BUFFER].Load<Node>(node_byte_offset);
+                let tmp = sdf;
+
+
+                // 3x4 = 3 rows, 4 columns
+                // matrix must be the INVERSE of the transform matrix
+                uint transform_byte_offset = node.transform_index * 4 * 4 * 3;
+                float3x4 transform = storage_buffers[STORAGE_BUFFER_TRANSFORMS_BUFFER].Load<float3x4>(transform_byte_offset);
+
+                // 3x4 * 4x1 = 3x1 vector
+                float3 local = mul(transform, float4(p, 1));
+
+                float obj_sdf = get_sdf_from_type(local.xyz, SdfType.Rock, node_index); 
+                // sdf = min(sdf, obj_sdf);
+                sdf = smin(sdf, obj_sdf, 0.1);
+                // sdf = max(sdf, -obj_sdf);
+
+                if (obj_sdf < tmp) {
+                    material = 1.0;
+                }
+            }
+        }
+    }
+
+    /*
     // contains up to 4 intersecting nodes, packed as a byte each.
     // packed as linked list, from least-significant byte
-    
+    uint3 offset = (uint3)floor(p + 64);
     uint packed4_node_indices = storage_images_3d_uint[LOOKUP_TEXTURE].Load(offset);
 
     if (packed4_node_indices != 0) {
@@ -88,7 +158,7 @@ float2 d(float3 p) {
                 // 3x4 * 4x1 = 3x1 vector
                 float3 local = mul(transform, float4(p, 1));
 
-                float obj_sdf = get_sdf_from_type(local.xyz, SdfType(node.type), node_index); 
+                float obj_sdf = get_sdf_from_type(local.xyz, SdfType.Rock, node_index); 
                 // sdf = min(sdf, obj_sdf);
                 sdf = smin(sdf, obj_sdf, 0.1);
                 // sdf = max(sdf, -obj_sdf);
@@ -101,6 +171,13 @@ float2 d(float3 p) {
             }
         }
     }
+    */
+
+    // sdf = sdFbm(p / 1000.0, p.y / 1000.0) * 1000.0;
+    // sdf = smin(sdf, sdOctahedron(p, 1), 0.1);
+    // sdf = smin(sdf, sdOctahedron(p-float3(0, 1, 0), 1), 0.1);
+    // sdf = smin(sdf, sdOctahedron(p-float3(0, 2, 0), 1), 0.1);
+    
     
     
     return float2(sdf, material);
@@ -310,7 +387,7 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
         
         if (!local_sdf) {
             DifferentialPair<float3> dp_a = diffPair(point);
-            bwd_diff(d)(dp_a, 1.0);
+            //bwd_diff(d)(dp_a, 1.0);
             // normal = normalize(dp_a.d); 
             normal = get_normal_test(point);
         } else {

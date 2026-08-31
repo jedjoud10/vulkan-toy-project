@@ -40,6 +40,7 @@ const static uint SDF_TEXTURE2_STORAGE_IMAGE_IDX = 6;
 const static uint VXGI_STORAGE_IMAGE_IDX = 7;
 const static uint LOOKUP_TEXTURE = 8;
 const static uint CHUNK_LOOKUP_TEXTURE = 9;
+const static uint PRE_PASS_TEXTURE = 10;
 
 const static uint UNIFORM_BUFFER_THINGY_IDX = 0;
 const static uint STORAGE_BUFFER_DEBUG_TEXT_LINES = 1;
@@ -56,6 +57,8 @@ const static uint STORAGE_BUFFER_PRIMITIVE_FLAT_LIST_BUFFER = 5;
 const static uint STORAGE_BUFFER_COUNTERS_OF_VARIOUS_TYPES = 6;
 const static uint STORAGE_BUFFER_TRANSFORMS_BUFFER = 7;
 const static uint STORAGE_BUFFER_CHUNKS_BUFFER = 8;
+const static uint STORAGE_BUFFER_WOW1_BUFFER = 9;
+const static uint STORAGE_BUFFER_WOW2_BUFFER = 10;
 
 
 const static uint SKYBOX_SAMPLER_IMAGE_IDX = 0;

@@ -122,6 +122,11 @@ pub struct Scene {
 
     pub identity_prefab: Prefab,
     pub tree_prefab: Prefab,
+
+    pub wow: buffer::Buffer,   
+    pub wow2: buffer::Buffer,    
+
+    pub bvh: obvhs::bvh2::Bvh2
 }
 
 impl Scene {
@@ -155,14 +160,19 @@ impl Scene {
         let chunk_lookup_texture_bruh = sdf_texture::create_voxel_image(ctx, vek::Extent3::broadcast(128), vk::Format::R32_UINT, None);
         let chunk_lookup_texture_r32_cpu = vec![0u32; 128*128*128];
 
+        let wow = buffer::create_buffer_default_flags(ctx, size_of::<obvhs::bvh2::node::Bvh2Node>() * 1000, "chunksdfgsdfg");     
+        let wow2 = buffer::create_buffer_default_flags(ctx, size_of::<u32>() * 1000, "chunksdfgsdfg");     
+
         let mut this = Self {
             tlas,
+            wow2,
             blases,
             blases_instances,
             gpu_packed_aabbs_buffer,
             gpu_packed_aabbs: aabbs,
             texture,
             texture2,
+            wow,
             chunk_buffer_lookup,
             vxgi_texture,
             chunks,
@@ -176,6 +186,7 @@ impl Scene {
             inverse_transforms_buffer,
             chunk_lookup_texture_bruh,
             chunk_lookup_texture_r32_cpu,
+            bvh: obvhs::bvh2::Bvh2::default()
         };
 
 
@@ -282,15 +293,27 @@ impl Scene {
     pub fn update(&mut self, elapsed: f32) {
         let mut rng = rand::rngs::SmallRng::seed_from_u64(elapsed.floor() as u64);
         for (index, transform) in self.transforms.iter_mut().enumerate().skip(1) {
-            /*
             if (self.blases_instances[index].instance_custom_index_and_mask.low_24() & INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK) == 0 {
                 // global sdf
                 transform.rotation = transform.rotation.rotated_x(rng.random_range(-1f32..1f32) * 0.01);
                 transform.rotation = transform.rotation.rotated_y(rng.random_range(-1f32..1f32) * 0.01);
                 transform.rotation = transform.rotation.rotated_z(rng.random_range(-1f32..1f32) * 0.01);
             }
-            */
         }
+
+        let mut core_build_time = std::time::Duration::default();
+        struct TestPrimitive<'a> {
+            transform: &'a Transform
+        }
+        impl<'a> obvhs::Boundable for TestPrimitive<'a> {
+            fn aabb(&self) -> obvhs::aabb::Aabb {
+                let mut aabb = obvhs::aabb::Aabb::from_point(glam::Vec3A::from_array((self.transform.position-1f32).into_array()));
+                aabb.extend(glam::Vec3A::from_array((self.transform.position + 1.0).into_array()));
+                aabb
+            }
+        } 
+        let primitives = self.primitive_flat_list.iter().map(|node| TestPrimitive { transform: &self.transforms[node.transform_index as usize] }).collect::<Vec<_>>();
+        self.bvh = obvhs::bvh2::builder::build_bvh2(&primitives, obvhs::BvhBuildParams::medium_build(), &mut core_build_time);
     }
 
     pub unsafe fn create_primitive_prefab(&mut self, mut ctx: &mut GraphicsContext, aabbs: &[Aabb]) -> Prefab {

@@ -5,9 +5,7 @@
 [shader("compute")]
 [numthreads(4,4,4)]
 void voxelize (uint3 id : SV_DispatchThreadID) {
-	#ifndef SINGLEBOUNCE_APPLY_VXGI
-	return;
-	#endif
+
 
     // [0..TEXTURE_SIZE]
     float3 p = (id.xyz + 1.0);
@@ -17,6 +15,12 @@ void voxelize (uint3 id : SV_DispatchThreadID) {
 
     // [-MAP_SIZE/2..MAP_SIZE/2]
     p *= VXGI_TEXTURE_SCALING;
+
+	storage_images_3d[VXGI_STORAGE_IMAGE_IDX].Store(id, float4(d(p).x, 0, 0, 1));
+
+	#ifndef SINGLEBOUNCE_APPLY_VXGI
+	return;
+	#endif
 
     uniforms = load_per_frame_uniforms();
 

@@ -40,6 +40,9 @@ Currently, we are using a simple 3D texture as lookup for intersecting primitive
 - SDF only stores distances to primitives in close vicinity to them (i.e primitives do not affect the SDF on a "global" scale)
 - Scales badly with primitives that have coarse bounds (as they take up more physical space but with empty space most of the time) and with lots of intersecting primitives (slower SDF evaluation) 
 
+# Experiments:
+- 2026-08-29: implemented outer DDA loop in the naive SDF raymarcher to see if that would speed up anything. definitely faster than naive, but not fast enough compared to HWRT
+
 <img width="2560" height="1440" alt="Screenshot_20260803_233254" src="https://github.com/user-attachments/assets/0bcc3fb8-74dc-4ac1-a3ac-33ed2c8a17d7" />
 <img width="2560" height="1440" alt="Screenshot_20260802_225957" src="https://github.com/user-attachments/assets/e2e1e26f-84ea-4c9f-8e2b-e30b4a9f7b74" />
 <img width="2560" height="1440" alt="Screenshot_20260803_105324" src="https://github.com/user-attachments/assets/d4c9ece5-3c82-44cb-a920-867895fb335c" />

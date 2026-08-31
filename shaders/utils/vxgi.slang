@@ -124,9 +124,7 @@ public float3 get_vxgi_sdf_normal(float3 p) {
 }
 #else
 public float3 get_vxgi_sdf_normal(float3 p) {
-    DifferentialPair<float3> dp_a = diffPair(p);
-    bwd_diff(d)(dp_a, 1.0);
-    return normalize(dp_a.d); 
+    return 0.0;
 }
 #endif
 
