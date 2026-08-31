@@ -875,6 +875,14 @@ impl InternalApp {
 
             dbgtext_writeln!(&mut self.debug_text, "million rays per second: {:.2}", (million_traced_rays / (self.stats.get_compute_region_duration_in_ms()) * MS_IN_SECOND));
 
+            let million_bvh_primitive_sdf_calls = readback_debug_buffer_data[2] as f64 / MILLION;
+            let million_bvh_inner_loop_calls = readback_debug_buffer_data[3] as f64 / MILLION;
+            
+            dbgtext_writeln!(&mut self.debug_text, "million BVH primitive SDF calls: {:.2}", million_bvh_primitive_sdf_calls);
+            dbgtext_writeln!(&mut self.debug_text, "million BVH inner-loop calls: {:.2}", million_bvh_inner_loop_calls);
+            
+            
+
             // clear data for next frame
             data.fill(0);
         }

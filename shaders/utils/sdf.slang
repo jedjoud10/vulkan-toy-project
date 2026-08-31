@@ -60,13 +60,43 @@ struct Node3D {
     uint16_t first_index;
 };
 
+// #define CACHE_MY_SHIT
 
-float4 d2(float3 p) {
-	return float4(d(p).x, 0, 0, 0);
-    //return sampled_images_3d[VXGI_SAMPLED_IMAGE_IDX].SampleLevel(samplers[LINEAR_CLAMPED_SAMPLER_IDX], ((p.xyz * 4) / VXGI_TEXTURE_SIZE) + 0.5, 0);
+float3 get_normal_raw(float3 p) {
+    float eps = 0.001;
+    float x = d(p - float3(eps, 0, 0)).x;
+    float y = d(p - float3(0, eps, 0)).x;
+    float z = d(p - float3(0, 0, eps)).x;
+    float b = d(p).x;
+    return normalize(float3(b-x, b-y, b-z));
+}
+
+
+
+// wtf the difference between using this vs the auto-diff normal is NUTS
+// at 720p, this changes the frame timing (w path-tracing) from 12ms to 5ms. wtf
+float3 get_normal_test(float3 p) {
+#ifdef CACHE_MY_SHIT
+    return sampled_images_3d[VXGI_SAMPLED_IMAGE_IDX].SampleLevel(samplers[LINEAR_CLAMPED_SAMPLER_IDX], ((p.xyz * 4) / VXGI_TEXTURE_SIZE) + 0.5, 0).yzw;
+#else
+    return get_normal_raw(p);
+#endif
+}
+
+
+
+float d2(float3 p) {
+#ifdef CACHE_MY_SHIT
+    return sampled_images_3d[VXGI_SAMPLED_IMAGE_IDX].SampleLevel(samplers[LINEAR_CLAMPED_SAMPLER_IDX], (((p.xyz ) * 4) / VXGI_TEXTURE_SIZE) + 0.5, 0).x;
+#else
+    return d(p).x;
+#endif
 }
 
 float2 d(float3 p) {
+    capture_performance_sdf_call();
+
+
     float sdf = p.y;
     float material = 0.0;
 
@@ -79,14 +109,15 @@ float2 d(float3 p) {
     len += 1;
     
     while (len > 0) {
+        capture_performance_bvh_distance_query_inner_loop();
         len -= 1;
         uint index = arrays[len];
         Node3D node = storage_buffers_readonly[STORAGE_BUFFER_WOW1_BUFFER].Load<Node3D>(sizeof(Node3D) * index);
 
-        float3 min = node.min.xyz;
-        float3 max = node.max.xyz;
-        float3 center = (min+max)*0.5;
-        float3 half_extent = (max-min) * 0.5;
+        float3 aabb_min = node.min.xyz;
+        float3 aabb_max = node.max.xyz;
+        float3 center = (aabb_min+aabb_max)*0.5;
+        float3 half_extent = (aabb_max-aabb_min) * 0.5;
         float bvh_node_sdf = sdBox(p-center, half_extent);
 
         if (node.prim_count == 0) {
@@ -94,6 +125,8 @@ float2 d(float3 p) {
                 if (len < capacity) {
                     Node3D first_child = storage_buffers_readonly[STORAGE_BUFFER_WOW1_BUFFER].Load<Node3D>(sizeof(Node3D) * node.first_index);
 
+                    // make sure that we visits the BVH node that the point is contained in first
+                    // it is more likely that the surface is there, probably
                     if (all(p > first_child.min.xyz & p < first_child.max.xyz)) {
                         arrays[len] = node.first_index;
                         arrays[len+1] = node.first_index+1;
@@ -111,27 +144,29 @@ float2 d(float3 p) {
             }
 
             for (int i = 0; i < node.prim_count; i++) {
+                capture_performance_sdf_primitive_call();
                 uint node_index = storage_buffers_readonly[STORAGE_BUFFER_WOW2_BUFFER].Load<uint>((node.first_index+i)*4);
                 uint node_byte_offset = node_index * sizeof(Node); 
-                Node node = storage_buffers[STORAGE_BUFFER_PRIMITIVE_FLAT_LIST_BUFFER].Load<Node>(node_byte_offset);
+                Node node = storage_buffers_readonly[STORAGE_BUFFER_PRIMITIVE_FLAT_LIST_BUFFER].Load<Node>(node_byte_offset);
                 let tmp = sdf;
 
 
                 // 3x4 = 3 rows, 4 columns
                 // matrix must be the INVERSE of the transform matrix
                 uint transform_byte_offset = node.transform_index * 4 * 4 * 3;
-                float3x4 transform = storage_buffers[STORAGE_BUFFER_TRANSFORMS_BUFFER].Load<float3x4>(transform_byte_offset);
+                float3x4 transform = storage_buffers_readonly[STORAGE_BUFFER_TRANSFORMS_BUFFER].Load<float3x4>(transform_byte_offset);
 
                 // 3x4 * 4x1 = 3x1 vector
                 float3 local = mul(transform, float4(p, 1));
 
-                float obj_sdf = get_sdf_from_type(local.xyz, SdfType(node.type), node_index); 
-                // sdf = min(sdf, obj_sdf);
+                float obj_sdf = get_sdf_from_type(local.xyz, SdfType.Box, node_index); 
                 sdf = smin(sdf, obj_sdf, 0.1);
                 // sdf = max(sdf, -obj_sdf);
 
+                // sdf = min(sdf, obj_sdf);
+
                 if (sdf < 0) {
-                    return sdf;
+                    // return sdf;
                 }
 
                 if (obj_sdf < tmp) {
@@ -194,18 +229,6 @@ float2 d(float3 p) {
     return float2(sdf, material);
 }
 
-// wtf the difference between using this vs the auto-diff normal is NUTS
-// at 720p, this changes the frame timing (w path-tracing) from 12ms to 5ms. wtf
-float3 get_normal_test(float3 p) {
-    float eps = 0.01;
-    float x = d(p - float3(eps, 0, 0)).x;
-    float y = d(p - float3(0, eps, 0)).x;
-    float z = d(p - float3(0, 0, eps)).x;
-    float b = d(p).x;
-    return normalize(float3(b-x, b-y, b-z));
-}
-
-
 struct TraceResHitObj {
     int instance_custom_index;
     float material;
@@ -225,6 +248,18 @@ struct ShadowTraceRes {
     float shadow;
 };
 
+void capture_performance_bvh_distance_query_inner_loop() {
+    if (is_bit_set(SPEC_CONSTANTS_BITFIELD, 0)) {
+        storage_buffers[STORAGE_BUFFER_READBACK_BUFFER].InterlockedAdd(READBACK_BUFFER_SDF_BVH_INNER_LOOP_CALL_QUERY_INDEX * 4, 1);
+    }
+}
+
+void capture_performance_sdf_primitive_call() {
+    if (is_bit_set(SPEC_CONSTANTS_BITFIELD, 0)) {
+        storage_buffers[STORAGE_BUFFER_READBACK_BUFFER].InterlockedAdd(READBACK_BUFFER_SDF_PRIMITIVE_CALLS_QUERY_INDEX * 4, 1);
+    }
+}
+
 void capture_performance_query_trace_ray() {
     if (is_bit_set(SPEC_CONSTANTS_BITFIELD, 0)) {
         storage_buffers[STORAGE_BUFFER_READBACK_BUFFER].InterlockedAdd(READBACK_BUFFER_RAYS_TRACED_QUERY_INDEX * 4, 1);
@@ -243,7 +278,8 @@ void capture_performance_sdf_call() {
 
 static const uint MAX_ITERS = 256;
 static const float MAX_DISTANCE = 10000;
-static const float THRESHOLD_DISTANCE = 0.01;
+static const float THRESHOLD_DISTANCE_PREPASS = 0.01;
+static const float THRESHOLD_DISTANCE = 0.001;
 static const float DISTANCE_SCALING_FACTOR = 0.9;
 
 

@@ -87,35 +87,15 @@ void prepass(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID) {
     capture_performance_query_trace_ray();
     int i = 0;
     for (i; i < MAX_ITERS; i++) {
-        capture_performance_sdf_call();
-
         let k = d2(point).x;
 
-        if (k < max(THRESHOLD_DISTANCE * (dist+1) * 1.5, THRESHOLD_DISTANCE) || dist > MAX_DISTANCE) {
+        if (k < max(THRESHOLD_DISTANCE_PREPASS * (dist+1) * 1.5, THRESHOLD_DISTANCE_PREPASS) || dist > MAX_DISTANCE) {
             break;
         }
         
         dist += k;
         point += ray_dir * k;
     }
-
-    /*
-    i = 0;
-    float dist2 = 0;
-    int i2 = 0;
-    for (i2; i2 < MAX_ITERS; i2++) {
-        capture_performance_sdf_call();
-
-        let k = d(point).x;
-
-        if (k < THRESHOLD_DISTANCE || dist > MAX_DISTANCE) {
-            break;
-        }
-        
-        dist2 += k;
-        point += ray_dir * k;
-    }
-    */
     
     storage_images[PRE_PASS_TEXTURE].Store(id.xy, float4(dist, (float)i / MAX_ITERS, 1, 1));
 }
@@ -134,25 +114,24 @@ void main(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID) {
     float3 ray_pos = uniforms.position.xyz;
     float4 prepass = storage_images[PRE_PASS_TEXTURE].Load(id.xy / 4);
 
+    bool hit = false;
+    float3 hit_position = 0.0;
+    float3 hit_normal = 0.0;
     float3 col = 0;
 
     uint64_t clock = clockARB();
-    float3 point = ray_pos + ray_dir * prepass.x;
-    float dist = prepass.x;
+    float starting_distance = prepass.x;
+    float3 point = ray_pos + ray_dir * starting_distance;
+    float dist = starting_distance;
     capture_performance_query_trace_ray();
     int i = 0;
     for (;i < MAX_ITERS; i++) {
-        capture_performance_sdf_call();
-
         let k = d2(point);
 
         if (k.x < THRESHOLD_DISTANCE) {
-            col = (float)i / MAX_ITERS;
-            //col = k.yzw;
-            //float3 normal = k.yzw;
-            //float3 normal = 0.0;
-            //col = clamp(dot(normal, uniforms.sun.xyz), 0, 1);
-            
+            hit = true;
+            hit_position = point;  
+            hit_normal = get_normal_test(point);          
             break;
         }
 
@@ -163,9 +142,13 @@ void main(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID) {
         point += ray_dir * k.x;
         dist += k.x;
     }
-    
+
+    if (hit) {
+        col = dot(hit_normal, uniforms.sun.xyz) * floor_material(hit_position, hit_normal).diffuse;
+    }
+
     uint64_t clock2 = clockARB();
-    //col = min((float64_t)(clock2-clock) / ((float64_t)100000.0), 1);
+    // col = min((float64_t)(clock2-clock) / ((float64_t)800000.0), 1);
     //col = prepass.y;
 
     // col += sampled_images[SDF_TEXTURE4_SAMPLED_IMAGE_IDX].Sample(samplers[LINEAR_CLAMPED_SAMPLER_IDX], screen_uvs).z;
@@ -176,40 +159,26 @@ void main(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID) {
     }
     */
 
-    /*
-    if (uniforms.debug_type == 0) {
-        if (is_bit_set(uniforms.toggles_bitmask, 0)) {
-            col = trace_scene_multibounce(id.xy, ray_pos, ray_dir);
-        } else {
-            col = trace_scene_singlebounce(id.xy, ray_pos, ray_dir);
-        }
-    } else {
-        uint64_t clock = clockARB();
-
-        TraceRes res = trace(ray_pos, ray_dir);
-    
-        switch (uniforms.debug_type) {
-            case 1: 
-                col = res.iters / 256.0;
-                break;
-            case 2: 
-                col = max(res.normal, 0);
-                break;
-            case 3: 
-                col = res.sdf_calls / 256.0;
-                break;
-            case 4: 
-                uint64_t clock2 = clockARB();
-                col = min((float64_t)(clock2-clock) / ((float64_t)100000.0), 1);
-                break;
-            case 5: 
-                col = trace_vxgi(ray_pos, ray_dir, 0.0);
-                break;
-            default:
-                col = 0.0; 
-        }
+    switch (uniforms.debug_type) {
+        case 1: 
+            col = (float)i / MAX_ITERS;
+            break;
+        case 2: 
+            col = prepass.x;
+            break;
+        case 3: 
+            col = prepass.y;
+            break;
+        case 4: 
+            col = min((float64_t)(clock2-clock) / ((float64_t)800000.0), 1);
+            break;
+        case 5: 
+            break;
+        default:
+            break; 
     }
 
+    /*
 
     float lerp_factor = 1.0;
     if ((uniforms.toggles_bitmask & 2) != 2) {

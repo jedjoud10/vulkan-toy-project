@@ -298,12 +298,14 @@ impl Scene {
         let mut rng = rand::rngs::SmallRng::seed_from_u64(elapsed.floor() as u64);
         for (index, transform) in self.transforms.iter_mut().enumerate().skip(1) {
             if (self.blases_instances[index].instance_custom_index_and_mask.low_24() & INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK) == 0 {
-                // global sdf
                 /*
+                // global sdf
                 transform.rotation = transform.rotation.rotated_x(rng.random_range(-1f32..1f32) * 0.01);
                 transform.rotation = transform.rotation.rotated_y(rng.random_range(-1f32..1f32) * 0.01);
                 transform.rotation = transform.rotation.rotated_z(rng.random_range(-1f32..1f32) * 0.01);
-                */
+
+                transform.position.y += rng.random_range(-1f32..1f32) * 0.01;
+                */ 
             }
         }
 
