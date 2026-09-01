@@ -90,7 +90,7 @@ float3 get_normal_raw(float3 p) {
 // at 720p, this changes the frame timing (w path-tracing) from 12ms to 5ms. wtf
 float3 get_normal_test(float3 p) {
     //  get_normal_raw(p);
-    
+    // return 0.0;
 #ifdef CACHE_MY_SHIT
     return sample_poop2_normals(p);
     //return sampled_images_3d[VXGI_SAMPLED_IMAGE_IDX].SampleLevel(samplers[LINEAR_CLAMPED_SAMPLER_IDX], ((p.xyz * 4) / VXGI_TEXTURE_SIZE) + 0.5, 0).yzw;
@@ -99,12 +99,33 @@ float3 get_normal_test(float3 p) {
 #endif
 }
 
-
+static int sampled_from_raw_sdf = 0;
+static int sampled_from_cached_sdf = 0;
 
 float d2(float3 p) {
     
 #ifdef CACHE_MY_SHIT
-    return sample_poopy2(p);
+    int3 chunk_pos = (int3)floor(p / CHUNK_PHYSICAL_SIZE);
+
+    if (any(chunk_pos < -30 | chunk_pos > 30)) {
+        return 10000;
+    }
+
+    uint chunk_start_index = storage_images_3d_uint[CHUNK_LOOKUP_TEXTURE].Load(chunk_pos + CHUNK_LOOKUP_MEGA_TEXTURE_HALF_SIZE);
+    
+
+    if (chunk_start_index == uint.maxValue) {
+        // return 0;
+        return 0;
+        sampled_from_raw_sdf++;
+        // return d(p).x;
+    } 
+
+    uint target_texture_index = storage_buffers_readonly[STORAGE_BUFFER_CHUNKS_BUFFER].Load<uint>(chunk_start_index * 4);
+    float3 local_position = p - floor(p / CHUNK_PHYSICAL_SIZE) * CHUNK_PHYSICAL_SIZE;
+    float4 poop =  sample_non_uniform_3d(target_texture_index, samplers[LINEAR_CLAMPED_SAMPLER_IDX], (local_position) / CHUNK_PHYSICAL_SIZE);
+    sampled_from_cached_sdf++;
+    return poop.x;
     //return sampled_images_3d[VXGI_SAMPLED_IMAGE_IDX].SampleLevel(samplers[LINEAR_CLAMPED_SAMPLER_IDX], (((p.xyz ) * 4) / VXGI_TEXTURE_SIZE) + 0.5, 0).x;
 #else
     // return sample_poopy2(p);
@@ -169,30 +190,31 @@ float2 d(float3 p) {
                 Node node = storage_buffers_readonly[STORAGE_BUFFER_PRIMITIVE_FLAT_LIST_BUFFER].Load<Node>(node_byte_offset);
                 let tmp = sdf;
 
+                if (node.type != uint.maxValue) {
+                    // 3x4 = 3 rows, 4 columns
+                    // matrix must be the INVERSE of the transform matrix
+                    uint transform_byte_offset = node.transform_index * 4 * 4 * 3;
+                    float3x4 transform = storage_buffers_readonly[STORAGE_BUFFER_TRANSFORMS_BUFFER].Load<float3x4>(transform_byte_offset);
 
-                // 3x4 = 3 rows, 4 columns
-                // matrix must be the INVERSE of the transform matrix
-                uint transform_byte_offset = node.transform_index * 4 * 4 * 3;
-                float3x4 transform = storage_buffers_readonly[STORAGE_BUFFER_TRANSFORMS_BUFFER].Load<float3x4>(transform_byte_offset);
+                    // 3x4 * 4x1 = 3x1 vector
+                    float3 local = mul(transform, float4(p, 1));
 
-                // 3x4 * 4x1 = 3x1 vector
-                float3 local = mul(transform, float4(p, 1));
+                    SdfType sdf_type = SdfType(node.type);
+                    // SdfType sdf_type = SdfType.Rock;
+                    
+                    float obj_sdf = get_sdf_from_type(local.xyz, sdf_type, node_index); 
+                    // sdf = smin(sdf, obj_sdf, 0.1);
+                    // sdf = max(sdf, -obj_sdf);
 
-                // SdfType sdf_type = SdfType(node.type);
-                SdfType sdf_type = SdfType.Rock;
-                
-                float obj_sdf = get_sdf_from_type(local.xyz, sdf_type, node_index); 
-                sdf = smin(sdf, obj_sdf, 0.1);
-                // sdf = max(sdf, -obj_sdf);
+                    sdf = min(sdf, obj_sdf);
 
-                // sdf = min(sdf, obj_sdf);
+                    if (sdf < 0) {
+                        // return sdf;
+                    }
 
-                if (sdf < 0) {
-                    // return sdf;
-                }
-
-                if (obj_sdf < tmp) {
-                    material = 1.0;
+                    if (obj_sdf < tmp) {
+                        material = 1.0;
+                    }
                 }
             }
         }

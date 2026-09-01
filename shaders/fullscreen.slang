@@ -3,6 +3,31 @@
 #include "utils/sky.slang"
 #include "utils/pbr.slang"
 
+bool dda(
+    float3 ray_dir,
+    float3 ray_pos,
+) {
+    float3 floored_pos = floor(ray_pos);
+    float3 inv_dir = 1 / ray_dir;
+    float3 dir_sign = sign(ray_dir);
+    float3 side_dist = (floored_pos - ray_pos + 0.5 + 0.5 * dir_sign);
+
+    bool hit = false;
+    for (int i = 0; i < 32; i++) {
+        if (d(floored_pos).x < 1) {
+            hit = true;
+            break;
+        }
+    
+        float3 reconst = side_dist * inv_dir;
+        int3 eqs = select(min3(reconst.x, reconst.y, reconst.z) == reconst, 1, 0);
+        floored_pos += dir_sign * eqs;
+        side_dist += dir_sign * eqs;
+    }
+
+    return hit;
+}
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void prepass(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID) {
@@ -33,6 +58,8 @@ void prepass(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID) {
     storage_images[PRE_PASS_TEXTURE].Store(id.xy, float4(dist, (float)i / MAX_ITERS, 1, 1));
 }
 
+#define OUTER_DDA_TRAVERSAL
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void main(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID) {
@@ -53,11 +80,61 @@ void main(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID) {
     float3 col = 0;
 
     uint64_t clock = clockARB();
-    float starting_distance = prepass.x;
+    float starting_distance = 0;
+    // float starting_distance = prepass.x;
     // float starting_distance = max(prepass.x, trace_get_closest_to_surface(ray_pos, ray_dir)-0.1);
     float3 point = ray_pos + ray_dir * starting_distance;
     float dist = starting_distance;
     capture_performance_query_trace_ray();
+    
+#ifdef OUTER_DDA_TRAVERSAL
+    float3 modified_ray_pos = ray_pos / 4.0;
+    int3 floored_pos = floor(modified_ray_pos);
+    float3 inv_dir = 1 / ray_dir;
+    float3 dir_sign = sign(ray_dir);
+    int3 eqs;
+    float3 side_dist = (floored_pos - modified_ray_pos + 0.5 + 0.5 * dir_sign);
+    int i = 0;
+    b: for (; i < 32; i++) {
+
+        uint chunk_start_index = storage_images_3d_uint[CHUNK_LOOKUP_TEXTURE].Load(floored_pos + (int)CHUNK_LOOKUP_MEGA_TEXTURE_HALF_SIZE);
+        
+
+        if (chunk_start_index != uint.maxValue) {
+            float3 test = (floored_pos - modified_ray_pos + 0.5 - 0.5 * dir_sign) * inv_dir;
+            float d = max3(test.x, test.y, test.z);
+            float3 point = (modified_ray_pos + ray_dir * max(d, 0)) * 4;
+            point += ray_dir*0.001;
+            // col = d / 10.0;
+            // col = hash33(chunk_start_index);
+            // break b;
+            
+            a: for (int o = 0;o < 64; o++) {
+                if (any((floor(point / 4.0) != (float3)floored_pos)) && o > 0) {
+                    break a;
+                }
+
+                let k = d2(point);
+                
+                if (k.x < THRESHOLD_DISTANCE) {
+                    hit = true;
+                    hit_position = point;  
+                    hit_normal = get_normal_test(point);          
+                    break b;
+                }
+
+                
+            
+                point += ray_dir * k.x;
+            }
+        } 
+    
+        float3 reconst = side_dist * inv_dir;
+        eqs = select(min3(reconst.x, reconst.y, reconst.z) == reconst, 1, 0);
+        floored_pos += dir_sign * eqs;
+        side_dist += dir_sign * eqs;
+    }
+#else
     int i = 0;
     for (;i < MAX_ITERS; i++) {
         let k = d2(point);
@@ -76,6 +153,8 @@ void main(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID) {
         point += ray_dir * k.x;
         dist += k.x;
     }
+#endif
+    
 
     if (hit) {
         col = dot(hit_normal, uniforms.sun.xyz) * floor_material(hit_position, hit_normal).diffuse;
@@ -107,6 +186,7 @@ void main(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID) {
             col = min((float64_t)(clock2-clock) / ((float64_t)800000.0), 1);
             break;
         case 5: 
+            col = (float)sampled_from_cached_sdf / (sampled_from_cached_sdf + sampled_from_raw_sdf);
             break;
         default:
             break; 

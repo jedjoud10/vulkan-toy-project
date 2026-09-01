@@ -25,9 +25,11 @@ use crate::samplers;
 use crate::query_pool_statistics::QueryPoolStatistics;
 use crate::shader_compiler;
 use crate::utils::index_to_offset;
+use crate::utils::offset_to_index;
 use winit::event::MouseButton;
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::ops::ControlFlow;
 use std::time::Duration;
 use std::time::Instant;
@@ -853,6 +855,8 @@ impl InternalApp {
         dbgtext_writeln!(&mut self.debug_text, "reserved bytes: {}", reserved_bytes);
         dbgtext_writeln!(&mut self.debug_text, "allocated bytes: {}", allocated_bytes);
 
+        dbgtext_writeln!(&mut self.debug_text, "chunks in use: {}", self.scene.chunks.iter().filter(|x| x.used).count());
+
         if self.args.readback_performance_queries {
             let readback_buffer_readback_barrier = vk::BufferMemoryBarrier2::default()
                 .buffer(readback_buffer.buffer)
@@ -952,6 +956,49 @@ impl InternalApp {
             .src_buffer(scratch_buffer.buffer)
             .regions(&regions);
         ctx.device.cmd_copy_buffer_to_image2(cmd, &copy_info);
+
+        let mut primitive_in_cells = HashSet::<vek::Vec3<i32>>::new();
+        let mut primitive_in_cells2 = Vec::<vek::Vec3<i32>>::new();
+        
+
+        for chunk in self.scene.chunks.iter_mut() {
+            chunk.used = false;
+        }
+
+        for prim in self.scene.primitive_flat_list.iter() {
+            let transform = &self.scene.transforms[prim.transform_index as usize];
+
+            let primitive_aabb = vek::Aabb {
+                min: transform.transform().mul_point(vek::Vec3::broadcast(-1f32))-1f32,
+                max: transform.transform().mul_point(vek::Vec3::broadcast(1f32))+1f32
+            };
+
+            let chunk_min = (primitive_aabb.min / 4f32).floor().as_::<i32>();
+            let chunk_max = (primitive_aabb.max / 4f32).ceil().as_::<i32>();
+
+            for x in chunk_min.x..chunk_max.x {
+                for y in chunk_min.y..chunk_max.y {
+                    for z in chunk_min.z..chunk_max.z {
+                        let chunk_position = vek::Vec3::new(x,y,z);
+                        if primitive_in_cells.insert(chunk_position) {
+                            // needed for deterministic iteration
+                            primitive_in_cells2.push(chunk_position);
+                        }
+                    }
+                }   
+            }
+        }
+
+        let mut chunk = 0u32;
+        for chunk_position in primitive_in_cells2 {
+            let texel_position = (chunk_position + 64).as_::<usize>();
+            let texel_index = offset_to_index(texel_position, 128);
+            self.scene.chunk_lookup_texture_r32_cpu[texel_index] = chunk;
+            self.scene.chunk_positions_to_indices.insert(chunk_position, chunk);
+            self.scene.chunks[chunk as usize].used = true;
+            self.scene.chunks[chunk as usize].position = chunk_position;
+            chunk += 1;
+        }
 
 
 
@@ -1192,7 +1239,9 @@ impl InternalApp {
         let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
-        self.device.cmd_dispatch(cmd, 64u32.div_ceil(4), 64u32.div_ceil(4), 64u32.div_ceil(4));
+        if (self.scene.chunks[chunk_index as usize].used) {
+            self.device.cmd_dispatch(cmd, 64u32.div_ceil(4), 64u32.div_ceil(4), 64u32.div_ceil(4));
+        }
 
         let sdf_subresource_range = vk::ImageSubresourceRange::default()
             .aspect_mask(vk::ImageAspectFlags::COLOR)

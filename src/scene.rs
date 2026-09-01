@@ -48,7 +48,7 @@ pub const INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK: u32 = 1 << 20;
 
 pub const VXGI_TEXTURE_SIZE: u32 = 128;
 
-pub const NUM_CHUNKS_XZ: i32 = 10;
+pub const NUM_CHUNKS_POOL: i32 = 500;
 pub const SPAWN_TREES: bool = false;
 pub const SPAWN_CHUNKS: bool = true;
 pub const SPAWN_PRIMITIVES: bool = true;
@@ -71,6 +71,11 @@ pub struct Transform {
     pub rotation: vek::Quaternion<f32>,
     pub scale: vek::Vec3<f32>,
 }
+impl Transform {
+    pub(crate) fn transform(&self) -> vek::Mat4<f32> {
+        crate::ray_tracing::calculate_matrix(self.rotation, self.position, self.scale)
+    }
+}
 
 #[derive(Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
@@ -81,7 +86,7 @@ pub struct PackedTransform {
 pub struct Chunk {
     pub position: vek::Vec3<i32>,
     pub texture: sdf_texture::SdfImage,
-    pub blas_instance_index: usize,
+    pub used: bool,
 }
 
 pub struct Scene {
@@ -254,38 +259,20 @@ impl Scene {
         }
         */
 
-        if SPAWN_CHUNKS {
-            let mut chunk = 0;
+        this.chunk_lookup_texture_r32_cpu.fill(u32::MAX);
+        for _ in 0..NUM_CHUNKS_POOL {
+            let img =  sdf_texture::create_voxel_image(ctx, vek::Extent3::broadcast(64), vk::Format::R16G16B16A16_SFLOAT, None);
 
-            this.chunk_lookup_texture_r32_cpu.fill(u32::MAX);
-            for x in -NUM_CHUNKS_XZ..NUM_CHUNKS_XZ {
-                for y in 0..1 {
-                    for z in -NUM_CHUNKS_XZ..NUM_CHUNKS_XZ {
-                        let chunk_position = vek::Vec3::new(x,y,z);
-                        let mut img =  sdf_texture::create_voxel_image(ctx, vek::Extent3::broadcast(64), vk::Format::R16G16B16A16_SFLOAT, None);
-
-                        this.chunks.push(Chunk {
-                            position: chunk_position,
-                            texture: img,
-                            blas_instance_index: 0,
-                        });
-
-                        let texel_position = (chunk_position + 64).as_::<usize>();
-                        let texel_index = offset_to_index(texel_position, 128);
-                        this.chunk_lookup_texture_r32_cpu[texel_index] = chunk;
-
-                        this.chunk_positions_to_indices.insert(chunk_position, chunk);
-
-                        chunk += 1;
-                    }
-                }
-            }
+            this.chunks.push(Chunk {
+                position: vek::Vec3::zero(),
+                texture: img,
+                used: false,
+            });
         }
-
         
 
         this.identity_prefab = this.create_primitive_prefab(ctx, &[IDENTBOX]);
-        this.create_primitive(-vek::Vec3::unit_y(), vek::Quaternion::identity(), vek::Vec3::new(1000f32, 1f32, 1000f32), false, None, 0, this.identity_prefab);
+        this.create_primitive(-vek::Vec3::unit_y(), vek::Quaternion::identity(), vek::Vec3::new(20f32, 1f32, 20f32), false, None, u32::MAX, this.identity_prefab);
 
         this.tree_prefab = this.create_primitive_prefab(ctx, &[Aabb {
             min: vek::Vec3::new(-3f32, -5f32, -3f32),
