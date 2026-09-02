@@ -41,7 +41,7 @@ float2 tree2(float3 lp, float instance_index) {
     float d = 10000;
     float thickness = 0.8;
     
-    float3x3 local_rot = AngleAxis3x3(0.2 + sin(instance_index) * 0.03, float3(1, 0, -1));
+    float3x3 local_rot = AngleAxis3x3(0.2 + sin(instance_index) * 0.1, float3(1, 0, -1));
 
     for (int i = 0; i < 4; i++) {
         // non smooth abs for branches

@@ -137,8 +137,8 @@ float3 get_sun_shadow(float3 world, float3 normal, float3 sun) {
 #else
 	let res = shadow_trace(world + normal * THRESHOLD_DISTANCE + randomized_sun_direction * THRESHOLD_DISTANCE, randomized_sun_direction);
 #endif	
-	
-	return min(res.shadow, clouds_shadow);
+
+	return min(res, clouds_shadow);
 }
 
 
@@ -305,12 +305,12 @@ public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) 
 		TraceRes res = trace(ray_pos, ray_dir);
 
     	if (res.hit) {  
-			float3 world = res.pos;
+			float3 world = res.position;
 			float3 geometry_normal = res.normal;
-			PbrMaterial pbr_material = get_main_material(world, geometry_normal, res.data.material);
+			PbrMaterial pbr_material = get_main_material(world, geometry_normal, 0.0);
 
 			
-			PbrSurfaceData surface = PbrSurfaceData(res.pos, pbr_material.diffuse, pbr_material.normal, pbr_material.arm);
+			PbrSurfaceData surface = PbrSurfaceData(world, pbr_material.diffuse, pbr_material.normal, pbr_material.arm);
 			CameraData camera = CameraData(camera_view);
 			
 			// opaque surface, non refractive
@@ -335,10 +335,10 @@ public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) 
 
 			// TODO: this is also wrong. instead of shooting *one* ray for the surface we need to shoot the ambient and reflection rays separately. we cannot just shoot one to approximate both effect
 			ray_dir = normalize(lerp(reflected_ray_dir, random_normal, surface.arm.roughness));
-			ray_pos = res.pos + ray_dir * 0.01;
+			ray_pos = world + ray_dir * 0.01;
 			camera_view = -ray_dir;
     	} else {
-    	    col += mask * sample_skybox_and_clouds(res.pos, res.dir);
+    	    col += mask * sample_skybox_and_clouds(res.position, ray_dir);
 			break;
     	}
 	}
@@ -358,11 +358,11 @@ public float3 trace_scene_singlebounce(uint2 id, float3 ray_pos, float3 ray_dir)
 	InitRandom(id.xy, (uint32_t)uniforms.frame_count);
 
 	if (res.hit) {  
-		float3 world = res.pos;
+		float3 world = res.position;
 		float3 geometry_normal = res.normal;
-		PbrMaterial pbr_material = get_main_material(world, geometry_normal, res.data.material);	
+		PbrMaterial pbr_material = get_main_material(world, geometry_normal, 0.0);	
 		
-		PbrSurfaceData surface = PbrSurfaceData(res.pos, pbr_material.diffuse, pbr_material.normal, pbr_material.arm);
+		PbrSurfaceData surface = PbrSurfaceData(world, pbr_material.diffuse, pbr_material.normal, pbr_material.arm);
 		CameraData camera = CameraData(camera_view);
 
 		// opaque surface, non refractive
@@ -415,7 +415,7 @@ public float3 trace_scene_singlebounce(uint2 id, float3 ray_pos, float3 ray_dir)
 		}
 		
 	} else {
-		col = sample_skybox_and_clouds(res.pos, res.dir);
+		col = sample_skybox_and_clouds(res.position, ray_dir);
 	}
 
 

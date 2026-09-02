@@ -137,8 +137,8 @@ pub struct Scene {
     pub identity_prefab: Prefab,
     pub tree_prefab: Prefab,
 
-    pub wow: buffer::Buffer,   
-    pub wow2: buffer::Buffer,    
+    pub bvh_nodes: buffer::Buffer,   
+    pub bvh_primitive_indices_lookup: buffer::Buffer,    
 
     pub bvh: obvhs::bvh2::Bvh2,
 
@@ -177,19 +177,19 @@ impl Scene {
         let chunk_lookup_texture_bruh = sdf_texture::create_voxel_image(ctx, vek::Extent3::broadcast(128), vk::Format::R32_UINT, None);
         let chunk_lookup_texture_r32_cpu = vec![0u32; 128*128*128];
 
-        let wow = buffer::create_buffer_default_flags(ctx, size_of::<obvhs::bvh2::node::Bvh2Node>() * 1000, "chunksdfgsdfg");     
-        let wow2 = buffer::create_buffer_default_flags(ctx, size_of::<u32>() * 1000, "chunksdfgsdfg");     
+        let bvh_nodes = buffer::create_buffer_default_flags(ctx, size_of::<obvhs::bvh2::node::Bvh2Node>() * 1000, "chunksdfgsdfg");     
+        let bvh_primitive_indices_lookup = buffer::create_buffer_default_flags(ctx, size_of::<u32>() * 1000, "chunksdfgsdfg");     
 
         let mut this = Self {
             tlas,
-            wow2,
+            bvh_primitive_indices_lookup,
             blases,
             blases_instances,
             gpu_packed_aabbs_buffer,
             gpu_packed_aabbs: aabbs,
             texture,
             texture2,
-            wow,
+            bvh_nodes,
             chunk_buffer_lookup,
             vxgi_texture,
             chunks,
@@ -308,6 +308,11 @@ impl Scene {
     }
 
     pub unsafe fn destroy(self, device: &ash::Device, acceleration_structure_device: &ash::khr::acceleration_structure::Device, mut allocator: &mut gpu_allocator::vulkan::Allocator) {
+        for chunk in self.chunks {
+            chunk.texture.destroy(device, allocator);
+        }
+        log::info!("destroyed chunks");
+
         // self.texture.destroy(&device, &mut allocator);
         // self.texture2.destroy(&device, &mut allocator);
         // self.texture3.destroy(&device, &mut allocator);
@@ -323,7 +328,17 @@ impl Scene {
         self.tlas.destroy(&acceleration_structure_device, &device, &mut allocator);
         log::info!("destroyed TLAS");
 
-        self.gpu_packed_aabbs_buffer.destroy(&device, &mut allocator);
+        self.gpu_packed_aabbs_buffer.destroy(device, allocator);
+        self.chunk_lookup_texture_bruh.destroy(device, allocator);
+        self.primitive_flat_buffer.destroy(device, allocator);
+        self.lookup_texture.destroy(device, allocator);
+        self.inverse_transforms_buffer.destroy(device, allocator);
+        self.chunk_buffer_lookup.destroy(device, allocator);
+        self.texture2.destroy(device, allocator);
+        self.texture.destroy(device, allocator);
+        self.vxgi_texture.destroy(device, allocator);
+        self.bvh_nodes.destroy(device, allocator);
+        self.bvh_primitive_indices_lookup.destroy(device, allocator);
         // self.primitives_buffer.destroy(device, &mut allocator);
         log::info!("destroyed gpu repr");
     }

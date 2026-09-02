@@ -214,6 +214,7 @@ impl RenderTargetsData {
         device.destroy_image_view(self.rendered_image_view, None);
         device.destroy_image_view(self.entire_bloom_image_view, None);
         device.destroy_image_view(self.rendered_depth_image_image_view, None);
+        device.destroy_image_view(self.rendered_pre_pass_image_view, None);
         log::info!("destroyed image views");
 
         for image_view in self.bloom_mip_image_views.iter() {
@@ -233,6 +234,10 @@ impl RenderTargetsData {
         device.destroy_image(self.rendered_depth_image, None);
         allocator.free(self.rendered_depth_image_allocation.take().unwrap()).unwrap();
         log::info!("destroyed depth image");
+
+        device.destroy_image(self.rendered_pre_pass, None);
+        allocator.free(self.rendered_pre_pass_allocation.take().unwrap()).unwrap();
+        log::info!("destroyed prepass image");
     }
 }
 

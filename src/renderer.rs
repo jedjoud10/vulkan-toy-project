@@ -707,11 +707,11 @@ impl InternalApp {
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
             vk::DescriptorBufferInfo::default()
-                .buffer(self.scene.wow.buffer)
+                .buffer(self.scene.bvh_nodes.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
             vk::DescriptorBufferInfo::default()
-                .buffer(self.scene.wow2.buffer)
+                .buffer(self.scene.bvh_primitive_indices_lookup.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
         ];
@@ -931,8 +931,8 @@ impl InternalApp {
             }
         }).collect::<Vec<_>>();
 
-        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&packed_nodes), self.scene.wow.buffer, 0);
-        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.bvh.primitive_indices), self.scene.wow2.buffer, 0);
+        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&packed_nodes), self.scene.bvh_nodes.buffer, 0);
+        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.bvh.primitive_indices), self.scene.bvh_primitive_indices_lookup.buffer, 0);
         
 
         // update ray-tracing BLAS instances transform matrices
@@ -943,19 +943,6 @@ impl InternalApp {
         // send INVERSE transform matrices to GPU
         let transforms = self.scene.transforms.iter().map(|src| ray_tracing::to_3x4_mat(ray_tracing::calculate_matrix(src.rotation, src.position, src.scale).inverted())).collect::<Vec<_>>();
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&transforms), self.scene.inverse_transforms_buffer.buffer, 0);
-
-        // write CPU texture to GPU texture using scratch buffer
-        // TODO: generalize into function?
-        let written_bytes = scratch_buffer.write_bytes(cast_slice(&self.scene.lookup_texture_r32_cpu));
-        let extent = vk::Extent3D::default().depth(128).height(128).width(128);
-        let subresource_layers = vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).layer_count(1).mip_level(0).base_array_layer(0);
-        let regions = [vk::BufferImageCopy2::default().buffer_image_height(0).buffer_row_length(0).buffer_offset(written_bytes.buffer_offset_start).image_extent(extent).image_subresource(subresource_layers)];
-        let copy_info = vk::CopyBufferToImageInfo2::default()
-            .dst_image(self.scene.lookup_texture.image)
-            .dst_image_layout(vk::ImageLayout::GENERAL)
-            .src_buffer(scratch_buffer.buffer)
-            .regions(&regions);
-        ctx.device.cmd_copy_buffer_to_image2(cmd, &copy_info);
 
         let mut primitive_in_cells = HashSet::<vek::Vec3<i32>>::new();
         let mut primitive_in_cells2 = Vec::<vek::Vec3<i32>>::new();
@@ -1000,6 +987,19 @@ impl InternalApp {
             self.scene.chunks[chunk as usize].position = chunk_position;
             chunk += 1;
         }
+
+        // write CPU texture to GPU texture using scratch buffer
+        // TODO: generalize into function?
+        let written_bytes = scratch_buffer.write_bytes(cast_slice(&self.scene.lookup_texture_r32_cpu));
+        let extent = vk::Extent3D::default().depth(128).height(128).width(128);
+        let subresource_layers = vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).layer_count(1).mip_level(0).base_array_layer(0);
+        let regions = [vk::BufferImageCopy2::default().buffer_image_height(0).buffer_row_length(0).buffer_offset(written_bytes.buffer_offset_start).image_extent(extent).image_subresource(subresource_layers)];
+        let copy_info = vk::CopyBufferToImageInfo2::default()
+            .dst_image(self.scene.lookup_texture.image)
+            .dst_image_layout(vk::ImageLayout::GENERAL)
+            .src_buffer(scratch_buffer.buffer)
+            .regions(&regions);
+        ctx.device.cmd_copy_buffer_to_image2(cmd, &copy_info);
 
 
 
@@ -1184,6 +1184,8 @@ impl InternalApp {
 
         self.device.cmd_dispatch(cmd, skybox::SKYBOX_RESOLUTION.div_ceil(8), skybox::SKYBOX_RESOLUTION.div_ceil(8), 6);
 
+        self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, query_pool_statistics::SKYBOX_PASS_TO_SDF_PASS_QUERY);
+
         let mut chunk_index = self.frame_count as u32 % self.scene.chunks.len() as u32;
         
         if let Some(x) = self.scene.dirty_chunks.pop() {
@@ -1191,19 +1193,20 @@ impl InternalApp {
         }
         
         let target_storage_texture = chunk_sdf_textures_start_index + chunk_index;
-        let chunk_pos = self.scene.chunks[chunk_index as usize].position;
+        let chunk = &mut self.scene.chunks[chunk_index as usize];
+        let chunk_position = chunk.position;
 
         #[derive(Clone, Copy, Pod, Zeroable)]
         #[repr(C)]
         struct T {
-            chunk_pos: vek::Vec3<i32>,
+            chunk_position: vek::Vec3<i32>,
             target_storage_texture: u32,
             chunk_index: u32,
         }
 
         let tmp_push_constants = T {
             target_storage_texture,
-            chunk_pos,
+            chunk_position,
             chunk_index
         };
 
@@ -1221,6 +1224,7 @@ impl InternalApp {
             bytes_of(&tmp_push_constants)
         );
 
+        
         let sdf_subresource_range = vk::ImageSubresourceRange::default()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
             .level_count(1)
@@ -1241,7 +1245,8 @@ impl InternalApp {
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
         if (self.scene.chunks[chunk_index as usize].used) {
-            self.device.cmd_dispatch(cmd, 64u32.div_ceil(4), 64u32.div_ceil(4), 64u32.div_ceil(4));
+            let group_count = crate::scene::CHUNK_LOGICAL_SIZE.div_ceil(4);
+            self.device.cmd_dispatch(cmd, group_count, group_count, group_count);
         }
 
         let sdf_subresource_range = vk::ImageSubresourceRange::default()
@@ -1399,9 +1404,6 @@ impl InternalApp {
 
         self.device.cmd_dispatch(cmd, skybox::AMBIENT_SKYBOX_RESOLUTION, skybox::AMBIENT_SKYBOX_RESOLUTION, 6);
 
-
-        self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, query_pool_statistics::SKYBOX_PASS_TO_SDF_PASS_QUERY);
-
         let left = self.input.get_button(Button::Mouse(MouseButton::Left)).pressed();
         let right = self.input.get_button(Button::Mouse(MouseButton::Right)).pressed();
         
@@ -1492,7 +1494,7 @@ impl InternalApp {
                 pos,
                 rot,
                 1f32,
-                2,
+                self.click_type,
             );      
 
             // TODO: actually check the chunks that overlap this primitive and update it instead
@@ -1506,30 +1508,21 @@ impl InternalApp {
             }      
         }
 
-        /*
-        if  right {
-            let pos = self.movement.position + self.movement.forward() * 5f32;
+        if right {
+            let pos = glam::Vec3A::from_array(self.movement.position.into_array());
+            let dir = glam::Vec3A::from_array(self.movement.forward().into_array());
             
-            self.scene.create_primitive(
-                pos,
-                vek::Quaternion::identity(),
-                vek::Vec3::one(), // cannot do non-uniform scale! cannot do scale in general unless we account for it in the shader side!
-                true,
-                None,
-                0,
-                self.scene.tree_prefab
-            );            
+            let ray = obvhs::ray::Ray::new_inf(pos, dir);            
 
-            for x in 0..8 {
-                let chunk_offset = index_to_offset(x, 2);
-                let chunk_position = (pos / 4f32).as_::<i32>() + chunk_offset.as_::<i32>();
-
-                if let Some(idx) = self.scene.chunk_positions_to_indices.get(&chunk_position) {
-                    self.scene.dirty_chunks.push(*idx);
-                }
+            // Traverse the BVH, finding the closest hit.
+            let mut ray_hit = obvhs::ray::RayHit::none();
+            if self.scene.bvh.ray_traverse(ray, &mut ray_hit, |ray, id| {
+                return 0f32
+            }) {
+                let primitive = self.scene.bvh.primitive_indices[ray_hit.primitive_id as usize] as usize;
+                self.scene.primitive_flat_list.remove(primitive);
             }
         }
-        */
 
         self.device.cmd_bind_pipeline(
             cmd,
