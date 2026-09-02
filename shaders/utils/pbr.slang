@@ -293,7 +293,6 @@ float3 get_diffuse_colour_only(float3 world, float3 normal, float material) {
 }
 
 
-
 public float3 trace_scene_multibounce(uint2 id, float3 ray_pos, float3 ray_dir) {
 	float3 col = 0.0;
 	float3 mask = 1.0;

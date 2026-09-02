@@ -23,12 +23,12 @@
     - VXGI steps just blurs the image to higher and higher mips, then these mips are marched against when shading. Mip selection is proportional to input cone angle and distance
 
 # Problems:
-- Local SDF do not contribute to global SDF, meaning VXGI pass / other things that depend on the global SDF fail to capture the local SDF primitives
-- Generating the BLAS bounds for the primitives is tedious. Ideally, this would be done automatically, and, *super ideally*, the bounds would be much tighter than what we have right now
-- Needing to expand the BLAS bounds whenever we use "smooth" operators (`smin, smax`). Since the raymarcher only executes whenever we have a possible BLAS intersection, the bounds of the BLAS need to be relaxed to capture smooth blending effects between multiple primitives
-- Bounds are not tight.
-- Some effects are not possible due to the ray-volume intersection method. Stuff like `soft-shadows, AO, glow` are not really possible unless we make BLAS bounds super relaxed, but that comes at the cost of iteration speed
-- Beam optimization (pre-pass low-res texture with cone) is not supported because of the same restriction as above
++ Local SDF do not contribute to global SDF, meaning VXGI pass / other things that depend on the global SDF fail to capture the local SDF primitives
++ Generating the BLAS bounds for the primitives is tedious. Ideally, this would be done automatically, and, *super ideally*, the bounds would be much tighter than what we have right now
++ Needing to expand the BLAS bounds whenever we use "smooth" operators (`smin, smax`). Since the raymarcher only executes whenever we have a possible BLAS intersection, the bounds of the BLAS need to be relaxed to capture smooth blending effects between multiple primitives
++ Bounds are not tight.
++ Some effects are not possible due to the ray-volume intersection method. Stuff like `soft-shadows, AO, glow` are not really possible unless we make BLAS bounds super relaxed, but that comes at the cost of iteration speed
++ Beam optimization (pre-pass low-res texture with cone) is not supported because of the same restriction as above
 
 This all seems to hint that we should move away from something like the Vulkan HWRT path, and instead build our own acceleration structure that:
 - is automatically updated on the GPU, each frame, depending on the global SDF `d(p)`
@@ -42,8 +42,26 @@ Currently, we are using a simple 3D texture as lookup for intersecting primitive
 
 # Experiments:
 - 2026-08-29: implemented outer DDA loop in the naive SDF raymarcher to see if that would speed up anything. definitely faster than naive, but not fast enough compared to HWRT
+- 2026-08-30 - 2026-09-1: everything written to global SDF using BVH, cached SDF textures, dynamic chunk allocation, and DDA for chunk traversal. everything is explained below
 
-<img width="2560" height="1440" alt="Screenshot_20260803_233254" src="https://github.com/user-attachments/assets/0bcc3fb8-74dc-4ac1-a3ac-33ed2c8a17d7" />
-<img width="2560" height="1440" alt="Screenshot_20260802_225957" src="https://github.com/user-attachments/assets/e2e1e26f-84ea-4c9f-8e2b-e30b4a9f7b74" />
-<img width="2560" height="1440" alt="Screenshot_20260803_105324" src="https://github.com/user-attachments/assets/d4c9ece5-3c82-44cb-a920-867895fb335c" />
-<img width="2560" height="1440" alt="Screenshot_20260805_000721" src="https://github.com/user-attachments/assets/fcc307b3-63c8-4dff-b6c2-82f601b21975" />
+# Global SDF, Cached SDF chunks + DDA
+This implementation tackles the problems of the previous implementations. More specifically, it fixes issues (or lessens the negative effect) with problem 2,3,4,5
+
+In this implementation...
+- ...having "less tight" bounds *does* incur a performance hit, but not as much as the previous HWRT implementation
+- ...the global SDF is more correct, and considers *all* primitives that have been added to the world, and can handle much higher intersecting primitives compared to the 4 intersecting primitives that the previous voxel look-up texture method used 
+- ...*can* support having local SDFs apply their SDF values to the global SDF, though this is not implemented yet
+- ...*does* allow for the pre-pass beam optimization (which I did implement successfully previously, but currently it is disabled since we are using DDA for voxel chunks. I'll look into figuring out a way to improving MSPF with it, though that might require defining a lower quality global SDF)
+
+
+Here are the implementation details:
+- We now use a BVH (generated on the CPU using `obvhs`) to store the primitives instead of storing the primtiives in a look-up texture
+    - With this, we can solve the global SDf and get *exact* distance to the closest surface, instead of just a shitty approximate that we did using the LUT. For this, we traverse the BVH (which is super mega slow) and solve for the primitive distances when we reach leaf nodes. We prune intermediate BVH nodes that we *know* won't reduce the SDF (since we only care about the minimum distance to the surface).
+    - Unfortunately, this is still pretty slow. It resuts in a much better SDF than the previous version (and, since now we have a *global* SDF, we can do cool cone-traced effects like AO and soft-shadow). 
+    - To improve on the performance, we cache the SDF into chunks that are near the primitives, since we need the higher precision there
+- Each chunk is of size 4^3m and contains a 64^3 RGBA_F16 texture (to be improved).
+    - The CPU collects primitives, bins them into chunks, and sends off compute shader requests to bake the SDF into the allocated chunks
+    - We also calculate the normal of the SDF and store it in the same texture, though ideally that would be placed in a separate texture
+    - Instead of doing ray-marching for everything, we use DDA to traverse each chunk, then raymarch inside of it to solve for the hit point and normal
+    - Even though the SDF is cached though chunks, since it is an approximation of the *true* global SDF, we can still do cone-traced effects (to some extent, as long as they fit within the bounds of the chunks), like glow.
+    - Currently, we bake the SDF of one chunk per frame, looping through all `n` chunks after `n` frames. Ideally we wouldn't rebake the SDF for chunks that have not been modified.

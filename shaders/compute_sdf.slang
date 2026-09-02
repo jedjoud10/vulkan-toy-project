@@ -124,7 +124,7 @@ void compute_chunk_sdf(uint3 id: SV_DispatchThreadID, uniform int3 chunk_pos, un
     float3 p = (float3)id * ((float)CHUNK_PHYSICAL_SIZE / CHUNK_LOGICAL_SIZE) + chunk_pos * (int)CHUNK_PHYSICAL_SIZE;
     // float d = sin(p.x * 0.1) * 2 + p.y - 5.0;
     float d1 = d(p).x;
-    float3 n = get_normal_raw(p);
+    float3 n = compute_normals(p);
     storage_images_3d[target_storage_texture].Store(id.xyz, float4(d1, n));
     storage_images_3d_uint[CHUNK_LOOKUP_TEXTURE].Store(chunk_pos + CHUNK_LOOKUP_MEGA_TEXTURE_HALF_SIZE, chunk_index);
 }

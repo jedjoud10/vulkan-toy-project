@@ -67,7 +67,7 @@ impl Material {
             others::load_material_texture(&format!("{name}_{thing_in_middle}_1k.png")).or_else(|| others::load_material_texture(&format!("{name}_{thing_in_middle}_1k.jpg")))
         };
 
-        let size = 256;
+        let size = 1024;
         let albedo_texture = load_image_and_create_texture(ctx, &load_file("color").unwrap(), size, texture::TextureType::Albedo);
         let normal_texture = load_image_and_create_texture(ctx, &load_file("normal_opengl").unwrap(), size, texture::TextureType::NormalMap);
 

@@ -969,12 +969,13 @@ impl InternalApp {
             let transform = &self.scene.transforms[prim.transform_index as usize];
 
             let primitive_aabb = vek::Aabb {
+                // add a little offset since we might do smooth blending and stuff
                 min: transform.transform().mul_point(vek::Vec3::broadcast(-1f32))-1f32,
                 max: transform.transform().mul_point(vek::Vec3::broadcast(1f32))+1f32
             };
 
-            let chunk_min = (primitive_aabb.min / 4f32).floor().as_::<i32>();
-            let chunk_max = (primitive_aabb.max / 4f32).ceil().as_::<i32>();
+            let chunk_min = (primitive_aabb.min / crate::scene::CHUNK_PHYSICAL_SIZE as f32).floor().as_::<i32>();
+            let chunk_max = (primitive_aabb.max / crate::scene::CHUNK_PHYSICAL_SIZE as f32).ceil().as_::<i32>();
 
             for x in chunk_min.x..chunk_max.x {
                 for y in chunk_min.y..chunk_max.y {
@@ -991,8 +992,8 @@ impl InternalApp {
 
         let mut chunk = 0u32;
         for chunk_position in primitive_in_cells2 {
-            let texel_position = (chunk_position + 64).as_::<usize>();
-            let texel_index = offset_to_index(texel_position, 128);
+            let texel_position = (chunk_position + crate::scene::CHUNK_LOOKUP_TEXTURE_HALF_SIZE as i32).as_::<usize>();
+            let texel_index = offset_to_index(texel_position, crate::scene::CHUNK_LOOKUP_TEXTURE_SIZE as usize);
             self.scene.chunk_lookup_texture_r32_cpu[texel_index] = chunk;
             self.scene.chunk_positions_to_indices.insert(chunk_position, chunk);
             self.scene.chunks[chunk as usize].used = true;
@@ -1005,7 +1006,7 @@ impl InternalApp {
         // write CPU texture to GPU texture using scratch buffer
         // TODO: generalize into function?
         let written_bytes = scratch_buffer.write_bytes(cast_slice(&self.scene.chunk_lookup_texture_r32_cpu));
-        let extent = vk::Extent3D::default().depth(128).height(128).width(128);
+        let extent = vk::Extent3D::default().depth(crate::scene::CHUNK_LOOKUP_TEXTURE_SIZE).height(crate::scene::CHUNK_LOOKUP_TEXTURE_SIZE).width(crate::scene::CHUNK_LOOKUP_TEXTURE_SIZE);
         let subresource_layers = vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).layer_count(1).mip_level(0).base_array_layer(0);
         let regions = [vk::BufferImageCopy2::default().buffer_image_height(0).buffer_row_length(0).buffer_offset(written_bytes.buffer_offset_start).image_extent(extent).image_subresource(subresource_layers)];
         let copy_info = vk::CopyBufferToImageInfo2::default()
@@ -1490,16 +1491,14 @@ impl InternalApp {
             self.scene.create_primitive(
                 pos,
                 rot,
-                vek::Vec3::one(), // cannot do non-uniform scale! cannot do scale in general unless we account for it in the shader side!
-                false,
-                None,
-                0,
-                self.scene.identity_prefab
+                1f32,
+                2,
             );      
 
+            // TODO: actually check the chunks that overlap this primitive and update it instead
             for x in 0..27 {
                 let chunk_offset = index_to_offset(x, 3);
-                let chunk_position = (pos / 4f32).as_::<i32>() + chunk_offset.as_::<i32>() - 1;
+                let chunk_position = (pos / crate::scene::CHUNK_PHYSICAL_SIZE as f32).as_::<i32>() + chunk_offset.as_::<i32>() - 1;
 
                 if let Some(idx) = self.scene.chunk_positions_to_indices.get(&chunk_position) {
                     self.scene.dirty_chunks.push(*idx);
@@ -1507,8 +1506,10 @@ impl InternalApp {
             }      
         }
 
+        /*
         if  right {
             let pos = self.movement.position + self.movement.forward() * 5f32;
+            
             self.scene.create_primitive(
                 pos,
                 vek::Quaternion::identity(),
@@ -1528,6 +1529,7 @@ impl InternalApp {
                 }
             }
         }
+        */
 
         self.device.cmd_bind_pipeline(
             cmd,
@@ -1585,7 +1587,7 @@ impl InternalApp {
         let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
-        
+        /*
         self.device.cmd_bind_pipeline(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
@@ -1653,6 +1655,7 @@ impl InternalApp {
 
             self.device.cmd_dispatch(cmd, group_count.w, group_count.h, group_count.d);
         }
+        */
 
         /*/
         self.device.cmd_bind_pipeline(
