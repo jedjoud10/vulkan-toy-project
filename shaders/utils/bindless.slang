@@ -38,9 +38,8 @@ const static uint CLOUDS_STORAGE_IMAGE_IDX = 4;
 const static uint SDF_TEXTURE_STORAGE_IMAGE_IDX = 5;
 const static uint SDF_TEXTURE2_STORAGE_IMAGE_IDX = 6;
 const static uint VXGI_STORAGE_IMAGE_IDX = 7;
-const static uint LOOKUP_TEXTURE = 8;
-const static uint CHUNK_LOOKUP_TEXTURE = 9;
-const static uint PRE_PASS_TEXTURE = 10;
+const static uint CHUNK_LOOKUP_TEXTURE = 8;
+const static uint PRE_PASS_TEXTURE = 9;
 
 const static uint UNIFORM_BUFFER_THINGY_IDX = 0;
 const static uint STORAGE_BUFFER_DEBUG_TEXT_LINES = 1;

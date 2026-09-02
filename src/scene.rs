@@ -6,7 +6,7 @@ use half::f16;
 use rand::{RngExt, SeedableRng};
 use vek::Clamp;
 
-use crate::{buffer, others, ray_tracing::{self, calculate_matrix}, renderer::GraphicsContext, sdf_texture::{self, SdfImage}, utils::{index_to_offset, offset_to_index}};
+use crate::{buffer, others, ray_tracing::{self, calculate_matrix}, renderer::GraphicsContext, sdf_texture::{self, Texture3D}, utils::{index_to_offset, offset_to_index}};
 
 #[derive(Default, Clone, Copy, Zeroable, Pod)]
 #[repr(C)]
@@ -82,6 +82,23 @@ impl Transform {
     pub(crate) fn transform(&self) -> vek::Mat4<f32> {
         crate::ray_tracing::calculate_matrix(self.rotation, self.position, self.scale)
     }
+    
+    pub(crate) fn aabb(&self) -> vek::Aabb<f32> {
+        let transform = self.transform();
+        let vertices = crate::utils::ZERO_TO_ONE_CUBE_VERTICES.map(|vertex| {
+            let negative_to_one = vertex * 2.0 - 1.0;
+            transform.mul_point(negative_to_one)
+        });
+
+        let min = vertices.iter().copied().reduce(|x, y| vek::Vec3::partial_min(x, y)).unwrap();
+        let max = vertices.iter().copied().reduce(|x, y| vek::Vec3::partial_max(x, y)).unwrap();
+
+        vek::Aabb {
+            // add a little offset since we might do smooth blending and stuff
+            min: min-1f32,
+            max: max+1f32
+        }
+    }
 }
 
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -92,7 +109,7 @@ pub struct PackedTransform {
 
 pub struct Chunk {
     pub position: vek::Vec3<i32>,
-    pub texture: sdf_texture::SdfImage,
+    pub texture: sdf_texture::Texture3D,
     pub used: bool,
 }
 
@@ -108,10 +125,6 @@ pub struct Scene {
     pub transforms: Vec<Transform>,
     pub inverse_transforms_buffer: buffer::Buffer,
 
-    // lookup texture to see what primitives intersect the same voxels
-    pub lookup_texture: SdfImage,
-    pub lookup_texture_r32_cpu: Vec<u32>,
-
     // primitive nodes (that apply to the global SDF)
     pub primitive_flat_list: Vec<Node>,
     pub primitive_flat_buffer: buffer::Buffer,    
@@ -121,24 +134,24 @@ pub struct Scene {
     pub gpu_packed_aabbs_buffer: buffer::Buffer,
     pub gpu_packed_aabbs: Vec<GpuAabb>,
 
-    pub texture: SdfImage,
-    pub texture2: SdfImage,
+    pub texture: Texture3D,
+    pub texture2: Texture3D,
 
-    pub vxgi_texture: SdfImage,
+    pub vxgi_texture: Texture3D,
     
 
     pub chunks: Vec<Chunk>,
     pub chunk_buffer_lookup: buffer::Buffer,
 
-    pub chunk_lookup_texture_bruh: SdfImage,
+    pub chunk_lookup_texture: Texture3D,
     pub chunk_lookup_texture_r32_cpu: Vec<u32>,
     
 
     pub identity_prefab: Prefab,
     pub tree_prefab: Prefab,
 
-    pub bvh_nodes: buffer::Buffer,   
-    pub bvh_primitive_indices_lookup: buffer::Buffer,    
+    pub bvh_nodes_buffer: buffer::Buffer,   
+    pub bvh_primitive_indices_lookup_buffer: buffer::Buffer,    
 
     pub bvh: obvhs::bvh2::Bvh2,
 
@@ -148,11 +161,11 @@ pub struct Scene {
 
 impl Scene {
     pub unsafe fn new(mut ctx: &mut GraphicsContext) -> Self {  
-        let texture = sdf_texture::create_voxel_image(ctx, vek::Extent3::broadcast(256), vk::Format::R16_SFLOAT, None);
-        let texture2 = sdf_texture::create_voxel_image(ctx, vek::Extent3::broadcast(64), vk::Format::R16G16_SFLOAT, None);
+        let texture = sdf_texture::create_texture_3d(ctx, vek::Extent3::broadcast(256), vk::Format::R16_SFLOAT, None, "");
+        let texture2 = sdf_texture::create_texture_3d(ctx, vek::Extent3::broadcast(64), vk::Format::R16G16_SFLOAT, None, "");
 
         // for some reason, using R8G8B8A8_UNORM actually harms the render time instead of improving it... wut? 
-        let vxgi_texture = sdf_texture::create_voxel_image(ctx, vek::Extent3::broadcast(VXGI_TEXTURE_SIZE), vk::Format::R16G16B16A16_SFLOAT, Some(6));
+        let vxgi_texture = sdf_texture::create_texture_3d(ctx, vek::Extent3::broadcast(VXGI_TEXTURE_SIZE), vk::Format::R16G16B16A16_SFLOAT, Some(6), "VXGI texture");
         
         let tlas = ray_tracing::pre_create_tlas(&mut ctx);
         
@@ -162,10 +175,8 @@ impl Scene {
         let blases = Vec::new();
         let blases_instances = Vec::new();
 
-        let lookup_texture = sdf_texture::create_voxel_image(ctx, vek::Extent3::broadcast(128), vk::Format::R32_UINT, None);
         let primitive_flat_list = Vec::<Node>::new();
         let primitive_flat_buffer = buffer::create_buffer_default_flags(ctx, size_of::<Node>() * 1000, "primitive flat buffer");     
-        let lookup_texture_r32_cpu = vec![0u32; 128*128*128];
 
         let transforms = Vec::<Transform>::new();
         let inverse_transforms_buffer = buffer::create_buffer_default_flags(ctx, size_of::<PackedTransform>() * 1000, "transforms buffer");     
@@ -174,34 +185,32 @@ impl Scene {
         let chunks = Vec::<Chunk>::new();
 
 
-        let chunk_lookup_texture_bruh = sdf_texture::create_voxel_image(ctx, vek::Extent3::broadcast(128), vk::Format::R32_UINT, None);
+        let chunk_lookup_texture_bruh = sdf_texture::create_texture_3d(ctx, vek::Extent3::broadcast(128), vk::Format::R32_UINT, None, "chunk lookup texture");
         let chunk_lookup_texture_r32_cpu = vec![0u32; 128*128*128];
 
-        let bvh_nodes = buffer::create_buffer_default_flags(ctx, size_of::<obvhs::bvh2::node::Bvh2Node>() * 1000, "chunksdfgsdfg");     
-        let bvh_primitive_indices_lookup = buffer::create_buffer_default_flags(ctx, size_of::<u32>() * 1000, "chunksdfgsdfg");     
+        let bvh_nodes = buffer::create_buffer_default_flags(ctx, size_of::<obvhs::bvh2::node::Bvh2Node>() * 1000, "packed BVH nodes buffer");     
+        let bvh_primitive_indices_lookup = buffer::create_buffer_default_flags(ctx, size_of::<u32>() * 1000, "BVH index lookup buffer");     
 
         let mut this = Self {
             tlas,
-            bvh_primitive_indices_lookup,
+            bvh_primitive_indices_lookup_buffer: bvh_primitive_indices_lookup,
             blases,
             blases_instances,
             gpu_packed_aabbs_buffer,
             gpu_packed_aabbs: aabbs,
             texture,
             texture2,
-            bvh_nodes,
+            bvh_nodes_buffer: bvh_nodes,
             chunk_buffer_lookup,
             vxgi_texture,
             chunks,
-            lookup_texture,
             primitive_flat_list,
             primitive_flat_buffer,
-            lookup_texture_r32_cpu,
             identity_prefab: Prefab::default(),
             tree_prefab: Prefab::default(),
             transforms,
             inverse_transforms_buffer,
-            chunk_lookup_texture_bruh,
+            chunk_lookup_texture: chunk_lookup_texture_bruh,
             chunk_lookup_texture_r32_cpu,
             dirty_chunks: Default::default(),
             bvh: obvhs::bvh2::Bvh2::default(),
@@ -213,7 +222,7 @@ impl Scene {
             // TODO: separate normals from SDF
             // normals don't need to be floating point values, they can be R8G8B8_SNORM instead
             // also, we might want to store some metadata alongside the normals (like material type or material properties)
-            let img =  sdf_texture::create_voxel_image(ctx, vek::Extent3::broadcast(CHUNK_LOGICAL_SIZE), CHUNK_SDF_TEXTURE_FORMAT, None);
+            let img =  sdf_texture::create_texture_3d(ctx, vek::Extent3::broadcast(CHUNK_LOGICAL_SIZE), CHUNK_SDF_TEXTURE_FORMAT, None, "chunk texture");
 
             this.chunks.push(Chunk {
                 position: vek::Vec3::zero(),
@@ -311,13 +320,7 @@ impl Scene {
         for chunk in self.chunks {
             chunk.texture.destroy(device, allocator);
         }
-        log::info!("destroyed chunks");
-
-        // self.texture.destroy(&device, &mut allocator);
-        // self.texture2.destroy(&device, &mut allocator);
-        // self.texture3.destroy(&device, &mut allocator);
-        
-        log::info!("destroyed sdf texture");
+        log::info!("destroyed chunks");        
 
         
         for x in self.blases {
@@ -329,17 +332,15 @@ impl Scene {
         log::info!("destroyed TLAS");
 
         self.gpu_packed_aabbs_buffer.destroy(device, allocator);
-        self.chunk_lookup_texture_bruh.destroy(device, allocator);
+        self.chunk_lookup_texture.destroy(device, allocator);
         self.primitive_flat_buffer.destroy(device, allocator);
-        self.lookup_texture.destroy(device, allocator);
         self.inverse_transforms_buffer.destroy(device, allocator);
         self.chunk_buffer_lookup.destroy(device, allocator);
         self.texture2.destroy(device, allocator);
         self.texture.destroy(device, allocator);
         self.vxgi_texture.destroy(device, allocator);
-        self.bvh_nodes.destroy(device, allocator);
-        self.bvh_primitive_indices_lookup.destroy(device, allocator);
-        // self.primitives_buffer.destroy(device, &mut allocator);
+        self.bvh_nodes_buffer.destroy(device, allocator);
+        self.bvh_primitive_indices_lookup_buffer.destroy(device, allocator);
         log::info!("destroyed gpu repr");
     }
 }

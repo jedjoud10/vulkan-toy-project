@@ -47,6 +47,18 @@ pub const OFFSETS: [vek::Vec3::<i32>; 6] = [
     vek::Vec3::new(0, 0, 1),
 ];
 
+pub const ZERO_TO_ONE_CUBE_VERTICES: [vek::Vec3::<f32>; 8] = [
+    vek::Vec3::new(0.0, 0.0, 0.0),
+    vek::Vec3::new(1.0, 0.0, 0.0),
+    vek::Vec3::new(0.0, 0.0, 1.0),
+    vek::Vec3::new(1.0, 0.0, 1.0),
+
+    vek::Vec3::new(0.0, 1.0, 0.0),
+    vek::Vec3::new(1.0, 1.0, 0.0),
+    vek::Vec3::new(0.0, 1.0, 1.0),
+    vek::Vec3::new(1.0, 1.0, 1.0),
+];
+
 // https://stackoverflow.com/questions/12435671/quaternion-lookat-function
 pub fn look_at(eye: vek::Vec3<f32>, target: vek::Vec3<f32>) -> vek::Quaternion<f32> {
     let forward = (target - eye).normalized();

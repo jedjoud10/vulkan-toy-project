@@ -10,12 +10,13 @@ use crate::{renderer::GraphicsContext, utils::{index_to_offset, offset_to_index}
 
 
 // from https://github.com/jedjoud10/vulkan-toy-project/blob/d3ae7315d94f54a213fa6a757dd69f45cb8eb8b2/src/voxel.rs
-pub unsafe fn create_voxel_image(
+pub unsafe fn create_texture_3d(
     ctx: &mut GraphicsContext,
     size: vek::Extent3<u32>,
     format: vk::Format,
     mips: Option<u32>,
-) -> SdfImage {
+    name: &'static str
+) -> Texture3D {
     let GraphicsContext {
         device,
         queue_family_index,
@@ -45,12 +46,12 @@ pub unsafe fn create_voxel_image(
         .array_layers(1);
 
     let image = device.create_image(&image_create_info, None).unwrap();
-    crate::debug::set_object_name(image, debug_marker, "SDF texture");
+    crate::debug::set_object_name(image, debug_marker, name);
 
     let requirements = device.get_image_memory_requirements(image);
     let allocation = allocator
         .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
-            name: "SDF texture",
+            name: name,
             requirements,
             linear: false,
             allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
@@ -127,7 +128,7 @@ pub unsafe fn create_voxel_image(
     host_image_copy_device.transition_image_layout(&[transition]).unwrap();
     */
 
-    SdfImage {
+    Texture3D {
         image,
         allocation,
         image_view,
@@ -371,7 +372,7 @@ pub unsafe fn write_cpu_sdf_to_image2(host_image_copy_device: &mut &ash::ext::ho
     host_image_copy_device.copy_memory_to_image(&copy_memory_to_image_info).unwrap();
 }
 
-pub struct SdfImage {
+pub struct Texture3D {
     pub image: vk::Image,
     pub allocation: Allocation,
     pub image_view: vk::ImageView,
@@ -380,7 +381,7 @@ pub struct SdfImage {
     pub specific_mip_image_views: Option<Vec<vk::ImageView>>,
 }
 
-impl SdfImage {
+impl Texture3D {
     pub unsafe fn destroy(self, device: &ash::Device, allocator: &mut Allocator) {
         if let Some(mips) =  self.specific_mip_image_views {
             for mip in mips {

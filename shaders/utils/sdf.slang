@@ -22,7 +22,7 @@ const static float DISTANCE_SCALING_FACTOR = 0.9;
 
 const static uint DDA_TRAVERSAL_CHUNKS_ITER = 32;
 const static uint DDA_TRAVERSAL_RAY_MARCH_ITER = 128;
-const static float CHUNK_BOUNDARY_OFFSET_EPS = 1e-6;
+const static float CHUNK_BOUNDARY_OFFSET_EPS = 1e-5;
 
 struct PackedBvhNode {
     float16_t3 min;
@@ -264,6 +264,10 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
             float3 test = (floored_pos - modified_ray_pos + 0.5 - 0.5 * dir_sign) * inv_dir;
             float d = max3(test.x, test.y, test.z);
             float3 point = (modified_ray_pos + ray_dir * max(d, 0)) * CHUNK_PHYSICAL_SIZE;
+            // point += ray_dir*CHUNK_BOUNDARY_OFFSET_EPS;
+            
+            // FIXME: there is still an issue here, when the chunk get further away from the origin (and thus getting more fp precision issues)
+            // temporarily fixed this by increasing CHUNK_BOUNDARY_OFFSET_EPS, but that isn't really a sollution
             point = clamp(point, floored_pos * CHUNK_PHYSICAL_SIZE + CHUNK_BOUNDARY_OFFSET_EPS, (floored_pos+1) * CHUNK_PHYSICAL_SIZE - CHUNK_BOUNDARY_OFFSET_EPS);
             
             inner: for (int o = 0; o < DDA_TRAVERSAL_RAY_MARCH_ITER; o++) {
