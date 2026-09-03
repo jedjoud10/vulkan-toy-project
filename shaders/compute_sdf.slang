@@ -105,16 +105,6 @@ void main2(uint3 id: SV_DispatchThreadID) {
     storage_images_3d[SDF_TEXTURE2_STORAGE_IMAGE_IDX].Store(id.xyz, float4(scaled, 0));
 }
 
-struct aabb {
-    float3 min;
-    float3 max;
-}
-
-[shader("compute")]
-[numthreads(4, 4, 4)]
-void compute_aabbs(uint3 id: SV_DispatchThreadID, uint3 gid: SV_GroupID, uint3 gtid: SV_GroupThreadID) {
-}
-
 [shader("compute")]
 [numthreads(4, 4, 4)]
 void compute_chunk_sdf(uint3 id: SV_DispatchThreadID, uniform int3 chunk_pos, uniform uint target_storage_texture) {

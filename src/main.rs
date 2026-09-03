@@ -23,7 +23,7 @@ mod texture;
 mod physical_device_vulkan_14_features;
 mod debug_text;
 mod ray_tracing;
-mod sdf_texture;
+mod texture_3d;
 mod shader_compiler;
 mod scene;
 

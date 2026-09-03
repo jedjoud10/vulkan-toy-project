@@ -1,12 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
 use ash::vk;
-use bytemuck::{Pod, Zeroable, cast_slice};
+use bytemuck::{Pod, Zeroable, bytes_of, cast_slice};
 use half::f16;
 use rand::{RngExt, SeedableRng};
 use vek::Clamp;
 
-use crate::{buffer, others, ray_tracing::{self, calculate_matrix}, renderer::GraphicsContext, sdf_texture::{self, Texture3D}, utils::{index_to_offset, offset_to_index}};
+use crate::{buffer, others, ray_tracing::{self, calculate_matrix}, renderer::GraphicsContext, texture_3d::{self, Texture3D}, utils::{index_to_offset, offset_to_index}};
 
 #[derive(Default, Clone, Copy, Zeroable, Pod)]
 #[repr(C)]
@@ -112,8 +112,9 @@ pub struct PackedTransform {
 
 pub struct Chunk {
     pub position: vek::Vec3<i32>,
-    pub texture: sdf_texture::Texture3D,
+    pub texture: texture_3d::Texture3D,
     pub used: bool,
+    pub last_frame_refreshed: u64,
 }
 
 pub struct Scene {
@@ -145,6 +146,7 @@ pub struct Scene {
 
     pub chunks: Vec<Chunk>,
     pub chunk_buffer_lookup: buffer::Buffer,
+    pub chunk_positions_to_indices: HashMap<vek::Vec3<i32>, u32>,
 
     pub chunk_lookup_texture: Texture3D,
     pub chunk_lookup_texture_r32_cpu: Vec<u32>,
@@ -158,17 +160,15 @@ pub struct Scene {
 
     pub bvh: obvhs::bvh2::Bvh2,
 
-    pub dirty_chunks: Vec<u32>,
-    pub chunk_positions_to_indices: HashMap<vek::Vec3<i32>, u32>,
 }
 
 impl Scene {
     pub unsafe fn new(mut ctx: &mut GraphicsContext) -> Self {  
-        let texture = sdf_texture::create_texture_3d(ctx, vek::Extent3::broadcast(256), vk::Format::R16_SFLOAT, None, "");
-        let texture2 = sdf_texture::create_texture_3d(ctx, vek::Extent3::broadcast(64), vk::Format::R16G16_SFLOAT, None, "");
+        let texture = texture_3d::create_texture_3d(ctx, vek::Extent3::broadcast(256), vk::Format::R16_SFLOAT, None, "");
+        let texture2 = texture_3d::create_texture_3d(ctx, vek::Extent3::broadcast(64), vk::Format::R16G16_SFLOAT, None, "");
 
         // for some reason, using R8G8B8A8_UNORM actually harms the render time instead of improving it... wut? 
-        let vxgi_texture = sdf_texture::create_texture_3d(ctx, vek::Extent3::broadcast(VXGI_TEXTURE_SIZE), vk::Format::R16G16B16A16_SFLOAT, Some(6), "VXGI texture");
+        let vxgi_texture = texture_3d::create_texture_3d(ctx, vek::Extent3::broadcast(VXGI_TEXTURE_SIZE), vk::Format::R16G16B16A16_SFLOAT, Some(6), "VXGI texture");
         
         let tlas = ray_tracing::pre_create_tlas(&mut ctx);
         
@@ -191,7 +191,7 @@ impl Scene {
         let chunk_buffer_lookup = buffer::create_buffer_default_flags(ctx, size_of::<u32>() * MAX_CHUNKS, "chunk buffer");     
 
         // mega lookup texture
-        let chunk_lookup_texture_bruh = sdf_texture::create_texture_3d(ctx, vek::Extent3::broadcast(CHUNK_LOOKUP_TEXTURE_SIZE), vk::Format::R32_UINT, None, "chunk lookup texture");
+        let chunk_lookup_texture_bruh = texture_3d::create_texture_3d(ctx, vek::Extent3::broadcast(CHUNK_LOOKUP_TEXTURE_SIZE), vk::Format::R32_UINT, None, "chunk lookup texture");
         let chunk_lookup_texture_r32_cpu = vec![0u32; CHUNK_LOOKUP_TEXTURE_VOLUME as usize];
         
         // bvh buffer (I <3 obvh crate)
@@ -221,7 +221,6 @@ impl Scene {
             inverse_transforms_buffer,
             chunk_lookup_texture: chunk_lookup_texture_bruh,
             chunk_lookup_texture_r32_cpu,
-            dirty_chunks: Default::default(),
             bvh: obvhs::bvh2::Bvh2::default(),
             chunk_positions_to_indices: Default::default()
         };
@@ -233,11 +232,12 @@ impl Scene {
             // TODO: separate normals from SDF
             // normals don't need to be floating point values, they can be R8G8B8_SNORM instead
             // also, we might want to store some metadata alongside the normals (like material type or material properties)
-            let img =  sdf_texture::create_texture_3d(ctx, vek::Extent3::broadcast(CHUNK_LOGICAL_SIZE), CHUNK_SDF_TEXTURE_FORMAT, None, "chunk texture");
+            let img =  texture_3d::create_texture_3d(ctx, vek::Extent3::broadcast(CHUNK_LOGICAL_SIZE), CHUNK_SDF_TEXTURE_FORMAT, None, "chunk texture");
 
             this.chunks.push(Chunk {
                 position: vek::Vec3::zero(),
                 texture: img,
+                last_frame_refreshed: 0,
                 used: false,
             });
         }
@@ -263,19 +263,18 @@ impl Scene {
         this
     }
 
-    pub fn update(&mut self, elapsed: f32) {
-        let mut rng = rand::rngs::SmallRng::seed_from_u64(elapsed.floor() as u64);
+    pub fn update(&mut self, mut elapsed: f32) {
         /*
+        elapsed *= 0.01f32;
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(elapsed.floor() as u64);
         for (index, transform) in self.transforms.iter_mut().enumerate().skip(1) {
-            if (self.blases_instances[index].instance_custom_index_and_mask.low_24() & INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK) == 0 {
-                /*
+            if index != 0 {
                 // global sdf
                 transform.rotation = transform.rotation.rotated_x(rng.random_range(-1f32..1f32) * 0.01);
                 transform.rotation = transform.rotation.rotated_y(rng.random_range(-1f32..1f32) * 0.01);
                 transform.rotation = transform.rotation.rotated_z(rng.random_range(-1f32..1f32) * 0.01);
 
-                transform.position.y += rng.random_range(-1f32..1f32) * 0.01;
-                */ 
+                // transform.position.y += rng.random_range(-1f32..1f32) * 0.01;
             }
         }
         */
@@ -313,7 +312,7 @@ impl Scene {
         });
 
 
-        self.blases_instances.len() - 1
+        self.primitive_flat_list.len() - 1
     }
 
     pub unsafe fn create_primitive(&mut self, position: vek::Vec3<f32>, rotation: vek::Quaternion<f32>, scale: f32, sdf_type: u32) -> usize {
@@ -329,7 +328,7 @@ impl Scene {
         });
 
 
-        self.blases_instances.len() - 1
+        self.primitive_flat_list.len() - 1
     }
 
     pub unsafe fn destroy(self, device: &ash::Device, acceleration_structure_device: &ash::khr::acceleration_structure::Device, mut allocator: &mut gpu_allocator::vulkan::Allocator) {
@@ -360,3 +359,190 @@ impl Scene {
         log::info!("destroyed gpu repr");
     }
 }
+
+pub unsafe fn rebuild_gpu_scene(scene: &mut Scene, cmd: vk::CommandBuffer, scratch_buffer: &mut buffer::ScratchBuffer, chunk_sampled_images: Vec<u32>, mut ctx: &mut GraphicsContext<'_>) {
+    buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&scene.primitive_flat_list), scene.primitive_flat_buffer.buffer, 0);
+    buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&chunk_sampled_images), scene.chunk_buffer_lookup.buffer, 0);
+
+
+    #[derive(Clone, Copy, Pod, Zeroable)]
+    #[repr(C)]
+    struct PackedNode {
+        min: vek::Vec3<half::f16>,
+        prim_count: u16,
+        max: vek::Vec3<half::f16>,
+        index_start: u16,
+    }
+
+    scene.rebuild_bvh();
+
+    let packed_nodes = scene.bvh.nodes.iter().map(|n| {
+        PackedNode {
+            min: vek::Vec3::from(n.aabb.min.to_array()).map(|x| half::f16::from_f32(x)),
+            prim_count: n.prim_count as u16,
+            max: vek::Vec3::from(n.aabb.max.to_array()).map(|x| half::f16::from_f32(x)),
+            index_start: n.first_index as u16,
+        }
+    }).collect::<Vec<_>>();
+
+    
+    buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&packed_nodes), scene.bvh_nodes_buffer.buffer, 0);
+    buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&scene.bvh.primitive_indices), scene.bvh_primitive_indices_lookup_buffer.buffer, 0);
+    
+    /*
+    // update ray-tracing BLAS instances transform matrices
+    for (dst, src) in scene.blases_instances.iter_mut().map(|instance| &mut instance.transform).zip(scene.transforms.iter()) {
+        *dst = vk::TransformMatrixKHR { matrix: ray_tracing::to_3x4_mat(ray_tracing::calculate_matrix(src.rotation, src.position, src.scale)) };
+    }
+    */
+
+    // send INVERSE transform matrices to GPU
+    let transforms = scene.transforms.iter().map(|src| ray_tracing::to_3x4_mat(ray_tracing::calculate_matrix(src.rotation, src.position, src.scale).inverted())).collect::<Vec<_>>();
+    buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&transforms), scene.inverse_transforms_buffer.buffer, 0);
+
+    let mut primitive_in_cells_hash_set = HashSet::<vek::Vec3<i32>>::new();
+    let mut primitive_in_cells_vector = Vec::<vek::Vec3<i32>>::new();
+    
+
+    for chunk in scene.chunks.iter_mut() {
+        chunk.used = false;
+    }
+
+    for prim in scene.primitive_flat_list.iter() {
+        let transform = &scene.transforms[prim.transform_index as usize];
+
+        for chunk_position in compute_chunks_overlap_with_transform(transform) {
+            if primitive_in_cells_hash_set.insert(chunk_position) {
+                // needed for deterministic iteration
+                primitive_in_cells_vector.push(chunk_position);
+            }
+        }
+    }
+
+    scene.chunk_positions_to_indices.clear();
+    scene.chunk_lookup_texture_r32_cpu.fill(u32::MAX);
+
+    let mut chunk = 0u32;
+    for chunk_position in primitive_in_cells_vector {
+        let texel_position = (chunk_position + crate::scene::CHUNK_LOOKUP_TEXTURE_HALF_SIZE as i32).as_::<usize>();
+        let texel_index = offset_to_index(texel_position, crate::scene::CHUNK_LOOKUP_TEXTURE_SIZE as usize);
+        scene.chunk_lookup_texture_r32_cpu[texel_index] = chunk;
+        scene.chunk_positions_to_indices.insert(chunk_position, chunk);
+        scene.chunks[chunk as usize].used = true;
+        scene.chunks[chunk as usize].position = chunk_position;
+        chunk += 1;
+    }
+
+
+
+    texture_3d::write_image_data_scratch_buffer(ctx, cmd, scratch_buffer, cast_slice(&scene.chunk_lookup_texture_r32_cpu), scene.chunk_lookup_texture.image, CHUNK_LOOKUP_TEXTURE_SIZE);
+
+            
+        // rebuild TLAS
+        /*
+        ray_tracing::rebuild_tlas(
+            self.scene.blases_instances.iter().copied(),
+            &self.scene.tlas,
+            &mut ctx,
+            cmd,
+            scratch_buffer,
+        );
+        */
+
+}
+
+pub fn compute_chunks_overlap_with_transform(transform: &Transform) -> Vec<vek::Vec3<i32>> {
+    let primitive_aabb = transform.aabb();
+    let chunk_min = (primitive_aabb.min / crate::scene::CHUNK_PHYSICAL_SIZE as f32).floor().as_::<i32>();
+    let chunk_max = (primitive_aabb.max / crate::scene::CHUNK_PHYSICAL_SIZE as f32).ceil().as_::<i32>();
+
+    // TODO: optimize, this is slow for primitives with large bounds.
+    let mut chunks = Vec::<vek::Vec3::<i32>>::new();
+    for x in chunk_min.x..chunk_max.x {
+        for y in chunk_min.y..chunk_max.y {
+            for z in chunk_min.z..chunk_max.z {
+                let chunk_position = vek::Vec3::new(x,y,z);
+                chunks.push(chunk_position);
+            }
+        }   
+    }
+
+    chunks
+}
+
+pub unsafe fn dispatch_compute_chunk_sdf(
+    frame_count: u64,
+    chunks: &mut [Chunk],
+    cmd: vk::CommandBuffer,
+    chunk_sdf_textures_start_index: u32,
+    compute_chunk_sdf_pipeline: vk::Pipeline,
+    ctx: &GraphicsContext<'_>
+) {
+    // pick out the chunk that has been the "stalest"
+    let (chunk_index, chunk) = chunks
+        .iter_mut()
+        .enumerate()
+        .filter(|(_, chunk)| chunk.used)
+        .min_by_key(|(_, chunk)| chunk.last_frame_refreshed).unwrap();
+
+    // the chunk will be updated, so update the stale count
+    chunk.last_frame_refreshed = frame_count;
+
+    let target_storage_texture = chunk_sdf_textures_start_index + chunk_index as u32;
+    let chunk_position = chunk.position;
+    
+    #[derive(Clone, Copy, Pod, Zeroable)]
+    #[repr(C)]
+    struct ComputeChunkSdfPushConstants {
+        chunk_position: vek::Vec3<i32>,
+        target_storage_texture: u32,
+    }
+    
+    let tmp_push_constants = ComputeChunkSdfPushConstants {
+        target_storage_texture,
+        chunk_position,
+    };
+    
+    ctx.device.cmd_bind_pipeline(
+        cmd,
+        vk::PipelineBindPoint::COMPUTE,
+        compute_chunk_sdf_pipeline
+    );
+    
+    ctx.device.cmd_push_constants(
+        cmd,
+        ctx.main_pipeline_layout,
+        vk::ShaderStageFlags::ALL,
+        0,
+        bytes_of(&tmp_push_constants)
+    );
+    
+    
+    let chunk_image_subresource_range = vk::ImageSubresourceRange::default()
+        .aspect_mask(vk::ImageAspectFlags::COLOR)
+        .level_count(1)
+        .layer_count(1);
+    let chunk_image_barrier = vk::ImageMemoryBarrier2::default()
+        .old_layout(vk::ImageLayout::GENERAL)
+        .new_layout(vk::ImageLayout::GENERAL)
+        .src_access_mask(vk::AccessFlags2::SHADER_WRITE | vk::AccessFlags2::SHADER_READ)
+        .dst_access_mask(vk::AccessFlags2::SHADER_WRITE | vk::AccessFlags2::SHADER_READ)
+        .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+        .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+        .src_queue_family_index(ctx.queue_family_index)
+        .dst_queue_family_index(ctx.queue_family_index)
+        .image(chunk.texture.image)
+        .subresource_range(chunk_image_subresource_range);
+    let image_memory_barriers = [chunk_image_barrier];
+    let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
+    ctx.device.cmd_pipeline_barrier2(cmd, &dep);
+    
+    if chunks[chunk_index as usize].used {
+        let group_count = crate::scene::CHUNK_LOGICAL_SIZE.div_ceil(4);
+        ctx.device.cmd_dispatch(cmd, group_count, group_count, group_count);
+    }
+    
+    let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
+    ctx.device.cmd_pipeline_barrier2(cmd, &dep);
+}
+    

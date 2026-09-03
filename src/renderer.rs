@@ -12,7 +12,7 @@ use smallvec::SmallVec;
 use crate::material::GpuMaterialInfo;
 use crate::ray_tracing;
 use crate::scene;
-use crate::sdf_texture;
+use crate::texture_3d;
 use crate::query_pool_statistics;
 use crate::debug_text;
 use crate::input::Button;
@@ -901,152 +901,8 @@ impl InternalApp {
         let gpu_material_data = self.materials.iter().map(|x| GpuMaterialInfo { base_index: x.base_index }).collect::<Vec<_>>();
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&gpu_material_data), self.materials_buffer.buffer, 0);
 
-
         self.scene.update(elapsed);
-
-        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.primitive_flat_list), self.scene.primitive_flat_buffer.buffer, 0);
-        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&chunk_sampled_images), self.scene.chunk_buffer_lookup.buffer, 0);
-
-
-        #[derive(Clone, Copy, Pod, Zeroable)]
-        #[repr(C)]
-        struct PackedNode {
-            min: vek::Vec3<half::f16>,
-            prim_count: u16,
-            max: vek::Vec3<half::f16>,
-            index_start: u16,
-        }
-
-        self.scene.rebuild_bvh();
-
-        let packed_nodes = self.scene.bvh.nodes.iter().map(|n| {
-            PackedNode {
-                min: vek::Vec3::from(n.aabb.min.to_array()).map(|x| half::f16::from_f32(x)),
-                prim_count: n.prim_count as u16,
-                max: vek::Vec3::from(n.aabb.max.to_array()).map(|x| half::f16::from_f32(x)),
-                index_start: n.first_index as u16,
-            }
-        }).collect::<Vec<_>>();
-
-        
-        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&packed_nodes), self.scene.bvh_nodes_buffer.buffer, 0);
-        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.bvh.primitive_indices), self.scene.bvh_primitive_indices_lookup_buffer.buffer, 0);
-        
-        /*
-        // update ray-tracing BLAS instances transform matrices
-        for (dst, src) in self.scene.blases_instances.iter_mut().map(|instance| &mut instance.transform).zip(self.scene.transforms.iter()) {
-            *dst = vk::TransformMatrixKHR { matrix: ray_tracing::to_3x4_mat(ray_tracing::calculate_matrix(src.rotation, src.position, src.scale)) };
-        }
-        */
-
-        // send INVERSE transform matrices to GPU
-        let transforms = self.scene.transforms.iter().map(|src| ray_tracing::to_3x4_mat(ray_tracing::calculate_matrix(src.rotation, src.position, src.scale).inverted())).collect::<Vec<_>>();
-        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&transforms), self.scene.inverse_transforms_buffer.buffer, 0);
-
-        let mut primitive_in_cells_hash_set = HashSet::<vek::Vec3<i32>>::new();
-        let mut primitive_in_cells_vector = Vec::<vek::Vec3<i32>>::new();
-        
-
-        for chunk in self.scene.chunks.iter_mut() {
-            chunk.used = false;
-        }
-
-        for prim in self.scene.primitive_flat_list.iter() {
-            let transform = &self.scene.transforms[prim.transform_index as usize];
-
-            let primitive_aabb = transform.aabb();
-            let chunk_min = (primitive_aabb.min / crate::scene::CHUNK_PHYSICAL_SIZE as f32).floor().as_::<i32>();
-            let chunk_max = (primitive_aabb.max / crate::scene::CHUNK_PHYSICAL_SIZE as f32).ceil().as_::<i32>();
-
-            // TODO: optimize, this is slow for primitives with large bounds.
-            for x in chunk_min.x..chunk_max.x {
-                for y in chunk_min.y..chunk_max.y {
-                    for z in chunk_min.z..chunk_max.z {
-                        let chunk_position = vek::Vec3::new(x,y,z);
-                        if primitive_in_cells_hash_set.insert(chunk_position) {
-                            // needed for deterministic iteration
-                            primitive_in_cells_vector.push(chunk_position);
-                        }
-                    }
-                }   
-            }
-        }
-
-        let mut chunk = 0u32;
-        for chunk_position in primitive_in_cells_vector {
-            let texel_position = (chunk_position + crate::scene::CHUNK_LOOKUP_TEXTURE_HALF_SIZE as i32).as_::<usize>();
-            let texel_index = offset_to_index(texel_position, crate::scene::CHUNK_LOOKUP_TEXTURE_SIZE as usize);
-            self.scene.chunk_lookup_texture_r32_cpu[texel_index] = chunk;
-            self.scene.chunk_positions_to_indices.insert(chunk_position, chunk);
-            self.scene.chunks[chunk as usize].used = true;
-            self.scene.chunks[chunk as usize].position = chunk_position;
-            chunk += 1;
-        }
-
-
-        let full_subresource_range = vk::ImageSubresourceRange::default()
-            .aspect_mask(vk::ImageAspectFlags::COLOR)
-            .level_count(1)
-            .layer_count(1);
-
-        let chunk_lookup_image_barrier = vk::ImageMemoryBarrier2::default()
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .src_access_mask(vk::AccessFlags2::SHADER_READ)
-            .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(self.queue_family_index)
-            .image(self.scene.chunk_lookup_texture.image)
-            .subresource_range(full_subresource_range);
-        let image_memory_barriers = [chunk_lookup_image_barrier];
-
-
-        let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
-        self.device.cmd_pipeline_barrier2(cmd, &dep);
-
-        // write CPU texture to GPU texture using scratch buffer
-        // TODO: generalize into function?
-        let written_bytes = scratch_buffer.write_bytes(cast_slice(&self.scene.chunk_lookup_texture_r32_cpu));
-        let extent = vk::Extent3D::default().depth(crate::scene::CHUNK_LOOKUP_TEXTURE_SIZE).height(crate::scene::CHUNK_LOOKUP_TEXTURE_SIZE).width(crate::scene::CHUNK_LOOKUP_TEXTURE_SIZE);
-        let subresource_layers = vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).layer_count(1).mip_level(0).base_array_layer(0);
-        let regions = [vk::BufferImageCopy2::default().buffer_image_height(0).buffer_row_length(0).buffer_offset(written_bytes.buffer_offset_start).image_extent(extent).image_subresource(subresource_layers)];
-        let copy_info = vk::CopyBufferToImageInfo2::default()
-            .dst_image(self.scene.chunk_lookup_texture.image)
-            .dst_image_layout(vk::ImageLayout::GENERAL)
-            .src_buffer(scratch_buffer.buffer)
-            .regions(&regions);
-        ctx.device.cmd_copy_buffer_to_image2(cmd, &copy_info);
-        
-        let chunk_lookup_image_barrier = vk::ImageMemoryBarrier2::default()
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-            .dst_access_mask(vk::AccessFlags2::SHADER_READ)
-            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(self.queue_family_index)
-            .image(self.scene.chunk_lookup_texture.image)
-            .subresource_range(full_subresource_range);
-        let image_memory_barriers = [chunk_lookup_image_barrier];
-
-
-        let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
-        self.device.cmd_pipeline_barrier2(cmd, &dep);
-        
-        // rebuild TLAS
-        /*
-        ray_tracing::rebuild_tlas(
-            self.scene.blases_instances.iter().copied(),
-            &self.scene.tlas,
-            &mut ctx,
-            cmd,
-            scratch_buffer,
-        );
-        */
-
+        scene::rebuild_gpu_scene(&mut self.scene, cmd, scratch_buffer, chunk_sampled_images, &mut ctx);
 
         // bind the descriptor set for subsequent pipelines
         self.device.cmd_bind_descriptor_sets(
@@ -1257,70 +1113,15 @@ impl InternalApp {
 
         self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, query_pool_statistics::SKYBOX_PASS_TO_SDF_PASS_QUERY);
 
-        let mut chunk_index = self.frame_count as u32 % self.scene.chunks.len() as u32;
-        
-        if let Some(x) = self.scene.dirty_chunks.pop() {
-            chunk_index = x;
-        }
-        
-        let target_storage_texture = chunk_sdf_textures_start_index + chunk_index;
-        let chunk = &mut self.scene.chunks[chunk_index as usize];
-        let chunk_position = chunk.position;
-
-        #[derive(Clone, Copy, Pod, Zeroable)]
-        #[repr(C)]
-        struct ComputeChunkSdfPushConstants {
-            chunk_position: vek::Vec3<i32>,
-            target_storage_texture: u32,
-        }
-
-        let tmp_push_constants = ComputeChunkSdfPushConstants {
-            target_storage_texture,
-            chunk_position,
-        };
-
-        self.device.cmd_bind_pipeline(
+        scene::dispatch_compute_chunk_sdf(
+            self.frame_count,
+            &mut self.scene.chunks,
             cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.compute_pipelines[COMPUTE_SDF]["compute_chunk_sdf"]
+            chunk_sdf_textures_start_index,
+            self.compute_pipelines[COMPUTE_SDF]["compute_chunk_sdf"],
+            &ctx
         );
-
-        self.device.cmd_push_constants(
-            cmd,
-            self.main_pipeline_layout,
-            vk::ShaderStageFlags::ALL,
-            0,
-            bytes_of(&tmp_push_constants)
-        );
-
         
-        let chunk_image_subresource_range = vk::ImageSubresourceRange::default()
-            .aspect_mask(vk::ImageAspectFlags::COLOR)
-            .level_count(1)
-            .layer_count(1);
-        let chunk_image_barrier = vk::ImageMemoryBarrier2::default()
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .src_access_mask(vk::AccessFlags2::SHADER_WRITE | vk::AccessFlags2::SHADER_READ)
-            .dst_access_mask(vk::AccessFlags2::SHADER_WRITE | vk::AccessFlags2::SHADER_READ)
-            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-            .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(self.queue_family_index)
-            .image(chunk.texture.image)
-            .subresource_range(chunk_image_subresource_range);
-        let image_memory_barriers = [chunk_image_barrier];
-        let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
-        self.device.cmd_pipeline_barrier2(cmd, &dep);
-
-        if self.scene.chunks[chunk_index as usize].used {
-            let group_count = crate::scene::CHUNK_LOGICAL_SIZE.div_ceil(4);
-            self.device.cmd_dispatch(cmd, group_count, group_count, group_count);
-        }
-
-        let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
-        self.device.cmd_pipeline_barrier2(cmd, &dep);
-
         let skybox_subresource_range = vk::ImageSubresourceRange::default()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
             .level_count(1)
@@ -1372,24 +1173,23 @@ impl InternalApp {
 
             // let rot = crate::utils::look_at(self.movement.position, self.movement.position + self.movement.forward().with_y(0f32));
             let rot = vek::Quaternion::<f32>::identity();
-            self.scene.create_primitive(
+            let prim = self.scene.create_primitive(
                 pos,
                 rot,
                 1f32,
                 self.click_type,
-            );      
+            );     
+            let transform = &self.scene.transforms[self.scene.primitive_flat_list[prim as usize].transform_index as usize];
 
-            // TODO: actually check the chunks that overlap this primitive and update it instead
-            for x in 0..27 {
-                let chunk_offset = index_to_offset(x, 3);
-                let chunk_position = (pos / crate::scene::CHUNK_PHYSICAL_SIZE as f32).as_::<i32>() + chunk_offset.as_::<i32>() - 1;
-
+            for chunk_position in scene::compute_chunks_overlap_with_transform(&transform) {
                 if let Some(idx) = self.scene.chunk_positions_to_indices.get(&chunk_position) {
-                    self.scene.dirty_chunks.push(*idx);
+                    // make it super extra stale to force a refresh
+                    self.scene.chunks[*idx as usize].last_frame_refreshed = 0;
                 }
-            }      
+            }
         }
 
+        /*
         if right {
             let pos = glam::Vec3A::from_array(self.movement.position.into_array());
             let dir = glam::Vec3A::from_array(self.movement.forward().into_array());
@@ -1399,12 +1199,24 @@ impl InternalApp {
             // Traverse the BVH, finding the closest hit.
             let mut ray_hit = obvhs::ray::RayHit::none();
             if self.scene.bvh.ray_traverse(ray, &mut ray_hit, |ray, id| {
+                // FIXME: since we do not have a CPU representation of the SDFs, this might be tricky. hm.
+                // we could also just, do all physics and collision related things on the GPU
                 return 0f32
             }) {
                 let primitive = self.scene.bvh.primitive_indices[ray_hit.primitive_id as usize] as usize;
-                self.scene.primitive_flat_list.remove(primitive);
+                let removed_primitive = self.scene.primitive_flat_list.remove(primitive);
+
+                let transform = &self.scene.transforms[removed_primitive.transform_index as usize];
+
+                for chunk_position in scene::compute_chunks_overlap_with_transform(&transform) {
+                    if let Some(idx) = self.scene.chunk_positions_to_indices.get(&chunk_position) {
+                        // make it super extra stale to force a refresh
+                        self.scene.chunks[*idx as usize].last_frame_refreshed = 0;
+                    }
+                }
             }
         }
+        */
 
         self.device.cmd_bind_pipeline(
             cmd,
@@ -2033,7 +1845,7 @@ unsafe fn compile_all_shaders(
         file_name_without_extension: COMPUTE_FULLSCREEN,
     }, pipeline::PipelineCreateSettings {
         pipeline_debug_name: "compute SDF shader",
-        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["main", "main2", "compute_aabbs", "compute_chunk_sdf"] },
+        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["main", "main2", "compute_chunk_sdf"] },
         spec_constants: Some(&spec_constants),
         file_name_without_extension: COMPUTE_SDF,
     }, pipeline::PipelineCreateSettings {

@@ -349,7 +349,7 @@ pub fn generate_terrain_chunk_data2(offset: vek::Vec3<i32>, size: u32) -> Vec<f1
     texels
 }
 
-pub unsafe fn write_cpu_sdf_to_image2(host_image_copy_device: &mut &ash::ext::host_image_copy::Device, bytes: &[u8], image: vk::Image, size: u32) {
+pub unsafe fn write_image_data_host_image_copy(host_image_copy_device: &mut &ash::ext::host_image_copy::Device, bytes: &[u8], image: vk::Image, size: u32) {
     let image_subresource_layers = vk::ImageSubresourceLayers::default()
         .aspect_mask(vk::ImageAspectFlags::COLOR)
         .mip_level(0)
@@ -371,6 +371,57 @@ pub unsafe fn write_cpu_sdf_to_image2(host_image_copy_device: &mut &ash::ext::ho
     
     host_image_copy_device.copy_memory_to_image(&copy_memory_to_image_info).unwrap();
 }
+
+
+pub unsafe fn write_image_data_scratch_buffer(ctx: &mut GraphicsContext, cmd: vk::CommandBuffer, scratch_buffer: &mut crate::buffer::ScratchBuffer, bytes: &[u8], image: vk::Image, size: u32) {
+    let image_subresource_layers = vk::ImageSubresourceLayers::default()
+        .aspect_mask(vk::ImageAspectFlags::COLOR)
+        .mip_level(0)
+        .layer_count(1)
+        .base_array_layer(0);
+
+    let full_subresource_range = vk::ImageSubresourceRange::default()
+        .aspect_mask(vk::ImageAspectFlags::COLOR)
+        .level_count(1)
+        .layer_count(1);
+
+
+    // TODO: batch pipeline barriers
+    let chunk_lookup_image_barrier = vk::ImageMemoryBarrier2::default()
+        .old_layout(vk::ImageLayout::GENERAL)
+        .new_layout(vk::ImageLayout::GENERAL)
+        .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+        .dst_access_mask(vk::AccessFlags2::SHADER_READ)
+        .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+        .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+        .src_queue_family_index(ctx.queue_family_index)
+        .dst_queue_family_index(ctx.queue_family_index)
+        .image(image)
+        .subresource_range(full_subresource_range);
+    let image_memory_barriers = [chunk_lookup_image_barrier];
+    let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
+    ctx.device.cmd_pipeline_barrier2(cmd, &dep);
+
+
+
+    let written_bytes = scratch_buffer.write_bytes(bytes);
+    let extent = vk::Extent3D::default().depth(size).height(size).width(size);
+        
+    let regions = [vk::BufferImageCopy2::default().buffer_image_height(0).buffer_row_length(0).buffer_offset(written_bytes.buffer_offset_start).image_extent(extent).image_subresource(image_subresource_layers)];
+    let copy_info = vk::CopyBufferToImageInfo2::default()
+        .dst_image(image)
+        .dst_image_layout(vk::ImageLayout::GENERAL)
+        .src_buffer(scratch_buffer.buffer)
+        .regions(&regions);
+    ctx.device.cmd_copy_buffer_to_image2(cmd, &copy_info);
+
+
+
+    // TODO: batch pipeline barriers
+    let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
+    ctx.device.cmd_pipeline_barrier2(cmd, &dep);
+}
+
 
 pub struct Texture3D {
     pub image: vk::Image,

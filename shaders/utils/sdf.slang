@@ -123,6 +123,10 @@ float4 sample_chunk(float3 p, uint chunk_start_index) {
 
     // FIXME: there is a problem here with bilinear filtering. issue happens on the positive axis, near the positive edge of the chunk. seems like we need a 1 pixel margin?
     float4 sampled = sample_non_uniform_3d(target_texture_index, samplers[LINEAR_CLAMPED_SAMPLER_IDX], (local_position) / CHUNK_PHYSICAL_SIZE);
+
+    // TODO: if we wanted to, we could apply some extra fine details here on top of the sampled distance and sampled normals
+    // we will be doing that for dynamic SDFs but it can also be used to augment the quality of baked SDFs
+
     return sampled;
 }
 
