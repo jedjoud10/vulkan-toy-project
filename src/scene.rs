@@ -42,8 +42,9 @@ pub struct Primitive {
 
 pub const VXGI_TEXTURE_SIZE: u32 = 128;
 
-// size of chunk's SDF texture
-pub const CHUNK_SDF_TEXTURE_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;        
+pub const CHUNK_SDF_TEXTURE_FORMAT: vk::Format = vk::Format::R16_SFLOAT;        
+pub const CHUNK_NORMAL_TEXTURE_FORMAT: vk::Format = vk::Format::R8G8B8A8_SNORM;        
+
 pub const CHUNK_LOGICAL_SIZE: u32 = 64;
 pub const CHUNK_PHYSICAL_SIZE: u32 = 4;
 
@@ -112,7 +113,21 @@ pub struct PackedTransform {
 
 pub struct Chunk {
     pub position: vek::Vec3<i32>,
-    pub texture: texture_3d::Texture3D,
+    
+    pub sdf_texture: texture_3d::Texture3D,
+
+    // TODO(idea): what if we used sparse textures for these "auxiliary maps"?
+    // we could have super mega large textures of size like 512^3, but only create the underlying memory allocations for the regions that are close to the SDF (that will actually get sampled by the marcher) 
+    // it's not like we need the full volume. we can even augment the original SDF texture with a higher resolution version like that
+    // only problem is going to be coordinating the CPU and GPU, as it's the GPU that actually has an idea of where the surface is, and the CPU is the one that can allocate GPU memory
+    // good thing about sparse textures is that filtering works out of the box (I think)
+    // now that I think about it, we could replace these "chunks" with one super texture and make it sparse instead lol  
+    pub normal_texture: texture_3d::Texture3D,
+
+    pub start_texture_storage_binding: u32,
+    pub start_texture_sampled_binding: u32,
+    
+
     pub used: bool,
     pub last_frame_refreshed: u64,
 }
@@ -232,13 +247,18 @@ impl Scene {
             // TODO: separate normals from SDF
             // normals don't need to be floating point values, they can be R8G8B8_SNORM instead
             // also, we might want to store some metadata alongside the normals (like material type or material properties)
-            let img =  texture_3d::create_texture_3d(ctx, vek::Extent3::broadcast(CHUNK_LOGICAL_SIZE), CHUNK_SDF_TEXTURE_FORMAT, None, "chunk texture");
+            let sdf_texture =  texture_3d::create_texture_3d(ctx, vek::Extent3::broadcast(CHUNK_LOGICAL_SIZE), CHUNK_SDF_TEXTURE_FORMAT, None, "chunk texture");
+            let normal_texture =  texture_3d::create_texture_3d(ctx, vek::Extent3::broadcast(CHUNK_LOGICAL_SIZE), CHUNK_NORMAL_TEXTURE_FORMAT, None, "chunk normal texture");
+            
 
             this.chunks.push(Chunk {
                 position: vek::Vec3::zero(),
-                texture: img,
                 last_frame_refreshed: 0,
                 used: false,
+                sdf_texture,
+                normal_texture,
+                start_texture_storage_binding: 0,
+                start_texture_sampled_binding: 0,
             });
         }
         
@@ -333,7 +353,8 @@ impl Scene {
 
     pub unsafe fn destroy(self, device: &ash::Device, acceleration_structure_device: &ash::khr::acceleration_structure::Device, mut allocator: &mut gpu_allocator::vulkan::Allocator) {
         for chunk in self.chunks {
-            chunk.texture.destroy(device, allocator);
+            chunk.sdf_texture.destroy(device, allocator);
+            chunk.normal_texture.destroy(device, allocator);
         }
         log::info!("destroyed chunks");        
 
@@ -360,7 +381,9 @@ impl Scene {
     }
 }
 
-pub unsafe fn rebuild_gpu_scene(scene: &mut Scene, cmd: vk::CommandBuffer, scratch_buffer: &mut buffer::ScratchBuffer, chunk_sampled_images: Vec<u32>, mut ctx: &mut GraphicsContext<'_>) {
+pub unsafe fn rebuild_gpu_scene(scene: &mut Scene, cmd: vk::CommandBuffer, scratch_buffer: &mut buffer::ScratchBuffer, mut ctx: &mut GraphicsContext<'_>) {
+    let chunk_sampled_images = scene.chunks.iter().map(|chunk| chunk.start_texture_sampled_binding).collect::<Vec<_>>();
+
     buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&scene.primitive_flat_list), scene.primitive_flat_buffer.buffer, 0);
     buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&chunk_sampled_images), scene.chunk_buffer_lookup.buffer, 0);
 
@@ -474,7 +497,6 @@ pub unsafe fn dispatch_compute_chunk_sdf(
     frame_count: u64,
     chunks: &mut [Chunk],
     cmd: vk::CommandBuffer,
-    chunk_sdf_textures_start_index: u32,
     compute_chunk_sdf_pipeline: vk::Pipeline,
     ctx: &GraphicsContext<'_>
 ) {
@@ -488,18 +510,18 @@ pub unsafe fn dispatch_compute_chunk_sdf(
     // the chunk will be updated, so update the stale count
     chunk.last_frame_refreshed = frame_count;
 
-    let target_storage_texture = chunk_sdf_textures_start_index + chunk_index as u32;
+    let chunk_storage_images_start_offset = chunk.start_texture_storage_binding;
     let chunk_position = chunk.position;
     
     #[derive(Clone, Copy, Pod, Zeroable)]
     #[repr(C)]
     struct ComputeChunkSdfPushConstants {
         chunk_position: vek::Vec3<i32>,
-        target_storage_texture: u32,
+        chunk_storage_images_start_offset: u32,
     }
     
     let tmp_push_constants = ComputeChunkSdfPushConstants {
-        target_storage_texture,
+        chunk_storage_images_start_offset,
         chunk_position,
     };
     
@@ -531,9 +553,20 @@ pub unsafe fn dispatch_compute_chunk_sdf(
         .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
         .src_queue_family_index(ctx.queue_family_index)
         .dst_queue_family_index(ctx.queue_family_index)
-        .image(chunk.texture.image)
+        .image(chunk.sdf_texture.image)
         .subresource_range(chunk_image_subresource_range);
-    let image_memory_barriers = [chunk_image_barrier];
+    let chunk_image_barrier2 = vk::ImageMemoryBarrier2::default()
+        .old_layout(vk::ImageLayout::GENERAL)
+        .new_layout(vk::ImageLayout::GENERAL)
+        .src_access_mask(vk::AccessFlags2::SHADER_WRITE | vk::AccessFlags2::SHADER_READ)
+        .dst_access_mask(vk::AccessFlags2::SHADER_WRITE | vk::AccessFlags2::SHADER_READ)
+        .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+        .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+        .src_queue_family_index(ctx.queue_family_index)
+        .dst_queue_family_index(ctx.queue_family_index)
+        .image(chunk.normal_texture.image)
+        .subresource_range(chunk_image_subresource_range);
+    let image_memory_barriers = [chunk_image_barrier, chunk_image_barrier2];
     let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
     ctx.device.cmd_pipeline_barrier2(cmd, &dep);
     

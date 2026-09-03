@@ -644,9 +644,11 @@ impl InternalApp {
         storage_images_allocator.push(self.scene.chunk_lookup_texture.image_view);  
         storage_images_allocator.push(render_targets.rendered_pre_pass_image_view);  
 
-        let chunk_sdf_textures_start_index = storage_images_allocator.current();
-        for chunk in self.scene.chunks.iter() {            
-            storage_images_allocator.push(chunk.texture.image_view);  
+        // add the storage chunk images
+        for chunk in self.scene.chunks.iter_mut() {            
+            let base = storage_images_allocator.push(chunk.sdf_texture.image_view);  
+            storage_images_allocator.push(chunk.normal_texture.image_view);  
+            chunk.start_texture_storage_binding = base;
         }
         
         
@@ -733,10 +735,10 @@ impl InternalApp {
         }
 
         // add the sampled chunk images         
-        let mut chunk_sampled_images = vec![];
-        for chunk in self.scene.chunks.iter() {            
-            let index = sampled_images_allocator.push(chunk.texture.image_view);  
-            chunk_sampled_images.push(index);
+        for chunk in self.scene.chunks.iter_mut() {            
+            let base = sampled_images_allocator.push(chunk.sdf_texture.image_view);  
+            sampled_images_allocator.push(chunk.normal_texture.image_view);  
+            chunk.start_texture_sampled_binding = base;
         }
         
         //sampled_images_allocator.push(self.scene.texture4.image_view);
@@ -902,7 +904,7 @@ impl InternalApp {
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&gpu_material_data), self.materials_buffer.buffer, 0);
 
         self.scene.update(elapsed);
-        scene::rebuild_gpu_scene(&mut self.scene, cmd, scratch_buffer, chunk_sampled_images, &mut ctx);
+        scene::rebuild_gpu_scene(&mut self.scene, cmd, scratch_buffer, &mut ctx);
 
         // bind the descriptor set for subsequent pipelines
         self.device.cmd_bind_descriptor_sets(
@@ -1117,7 +1119,6 @@ impl InternalApp {
             self.frame_count,
             &mut self.scene.chunks,
             cmd,
-            chunk_sdf_textures_start_index,
             self.compute_pipelines[COMPUTE_SDF]["compute_chunk_sdf"],
             &ctx
         );

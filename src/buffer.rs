@@ -298,6 +298,7 @@ pub unsafe fn end_buffer_writer(ctx: &mut GraphicsContext<'_>, writer: ScratchBu
     writer.destroy(ctx.device, ctx.allocator);
 }
 
+// TODO: scratch buffer writes don't necessarily need to take in &[u8], they could take in iterators as well
 pub struct ScratchBuffer {
     pub buffer: vk::Buffer,
     pub allocation: Allocation,

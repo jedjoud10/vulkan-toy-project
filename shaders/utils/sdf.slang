@@ -117,12 +117,15 @@ float3 compute_normals(float3 p) {
     */
 }
 
-float4 sample_chunk(float3 p, uint chunk_start_index) {
-    uint target_texture_index = storage_buffers_readonly[STORAGE_BUFFER_CHUNKS_BUFFER].Load<uint>(chunk_start_index * 4);
+const static int CHUNK_SDF_TEXTURE_BASE_OFFSET = 0;
+const static int CHUNK_NORMALS_TEXTURE_BASE_OFFSET = 1;
+
+float4 sample_chunk_texture_by_offset(float3 p, uint chunk_start_index, uint offset_from_base_index) {
+    uint chunk_sampled_images_start_offset = storage_buffers_readonly[STORAGE_BUFFER_CHUNKS_BUFFER].Load<uint>(chunk_start_index * 4);
     float3 local_position = p - floor(p / CHUNK_PHYSICAL_SIZE) * CHUNK_PHYSICAL_SIZE;
 
     // FIXME: there is a problem here with bilinear filtering. issue happens on the positive axis, near the positive edge of the chunk. seems like we need a 1 pixel margin?
-    float4 sampled = sample_non_uniform_3d(target_texture_index, samplers[LINEAR_CLAMPED_SAMPLER_IDX], (local_position) / CHUNK_PHYSICAL_SIZE);
+    float4 sampled = sample_non_uniform_3d(chunk_sampled_images_start_offset + offset_from_base_index, samplers[LINEAR_CLAMPED_SAMPLER_IDX], (local_position) / CHUNK_PHYSICAL_SIZE);
 
     // TODO: if we wanted to, we could apply some extra fine details here on top of the sampled distance and sampled normals
     // we will be doing that for dynamic SDFs but it can also be used to augment the quality of baked SDFs
@@ -293,15 +296,16 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
                 }
 
                 // SDF stored in x, normal stored in yzw
-                float4 sampled = sample_chunk(point, chunk_start_index);
-                closest_distance = min(closest_distance, sampled.x);
+                float dist = sample_chunk_texture_by_offset(point, chunk_start_index, CHUNK_SDF_TEXTURE_BASE_OFFSET).x;
+                closest_distance = min(closest_distance, dist);
 
                 // check if we got close enough to the surface of the SDF
-                if (sampled.x < THRESHOLD_DISTANCE) {
-                    return TraceRes(true, point, sampled.yzw, closest_distance, TraceDebugInfo(total_iters, floored_pos));
+                if (dist < THRESHOLD_DISTANCE) {
+                    float3 normal = sample_chunk_texture_by_offset(point, chunk_start_index, CHUNK_NORMALS_TEXTURE_BASE_OFFSET).xyz;
+                    return TraceRes(true, point, normal, closest_distance, TraceDebugInfo(total_iters, floored_pos));
                 }
             
-                point += ray_dir * sampled.x;
+                point += ray_dir * dist;
                 total_iters++;
 
             }

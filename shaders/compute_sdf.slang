@@ -107,7 +107,7 @@ void main2(uint3 id: SV_DispatchThreadID) {
 
 [shader("compute")]
 [numthreads(4, 4, 4)]
-void compute_chunk_sdf(uint3 id: SV_DispatchThreadID, uniform int3 chunk_pos, uniform uint target_storage_texture) {
+void compute_chunk_sdf(uint3 id: SV_DispatchThreadID, uniform int3 chunk_pos, uniform uint chunk_storage_images_start_offset) {
     uniforms = load_per_frame_uniforms();   
     
     float3 p = (float3)id * ((float)CHUNK_PHYSICAL_SIZE / CHUNK_LOGICAL_SIZE) + chunk_pos * (int)CHUNK_PHYSICAL_SIZE;
@@ -115,5 +115,6 @@ void compute_chunk_sdf(uint3 id: SV_DispatchThreadID, uniform int3 chunk_pos, un
     float sdf = d(p);
     float3 normal = compute_normals(p);
     
-    storage_images_3d[target_storage_texture].Store(id.xyz, float4(sdf, normal));
+    storage_images_3d_float[chunk_storage_images_start_offset].Store(id.xyz, sdf);
+    storage_images_3d[chunk_storage_images_start_offset+1].Store(id.xyz, float4(normal, 0));
 }
