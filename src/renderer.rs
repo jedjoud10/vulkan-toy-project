@@ -850,7 +850,7 @@ impl InternalApp {
         dbgtext_writeln!(&mut self.debug_text, "chunks in use: {}", self.scene.chunks.iter().filter(|x| x.used).count());
         dbgtext_writeln!(&mut self.debug_text, "total primitives: {}", self.scene.primitive_flat_list.len());
         dbgtext_writeln!(&mut self.debug_text, "total BVH nodes: {}", self.scene.bvh.nodes.len());
-        dbgtext_writeln!(&mut self.debug_text, "max BVH depth: {}", self.scene.bvh.max_depth);
+        dbgtext_writeln!(&mut self.debug_text, "max BVH depth: {}", if self.scene.bvh.nodes.is_empty() { 0 } else { self.scene.bvh.depth(0) });
         
 
         if self.args.readback_performance_queries {
@@ -904,7 +904,6 @@ impl InternalApp {
 
         self.scene.update(elapsed);
 
-        buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.gpu_packed_aabbs), self.scene.gpu_packed_aabbs_buffer.buffer, 0);
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.primitive_flat_list), self.scene.primitive_flat_buffer.buffer, 0);
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&chunk_sampled_images), self.scene.chunk_buffer_lookup.buffer, 0);
 
@@ -918,6 +917,8 @@ impl InternalApp {
             index_start: u16,
         }
 
+        self.scene.rebuild_bvh();
+
         let packed_nodes = self.scene.bvh.nodes.iter().map(|n| {
             PackedNode {
                 min: vek::Vec3::from(n.aabb.min.to_array()).map(|x| half::f16::from_f32(x)),
@@ -927,14 +928,16 @@ impl InternalApp {
             }
         }).collect::<Vec<_>>();
 
+        
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&packed_nodes), self.scene.bvh_nodes_buffer.buffer, 0);
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&self.scene.bvh.primitive_indices), self.scene.bvh_primitive_indices_lookup_buffer.buffer, 0);
         
-
+        /*
         // update ray-tracing BLAS instances transform matrices
         for (dst, src) in self.scene.blases_instances.iter_mut().map(|instance| &mut instance.transform).zip(self.scene.transforms.iter()) {
             *dst = vk::TransformMatrixKHR { matrix: ray_tracing::to_3x4_mat(ray_tracing::calculate_matrix(src.rotation, src.position, src.scale)) };
         }
+        */
 
         // send INVERSE transform matrices to GPU
         let transforms = self.scene.transforms.iter().map(|src| ray_tracing::to_3x4_mat(ray_tracing::calculate_matrix(src.rotation, src.position, src.scale).inverted())).collect::<Vec<_>>();
@@ -1034,6 +1037,7 @@ impl InternalApp {
         self.device.cmd_pipeline_barrier2(cmd, &dep);
         
         // rebuild TLAS
+        /*
         ray_tracing::rebuild_tlas(
             self.scene.blases_instances.iter().copied(),
             &self.scene.tlas,
@@ -1041,6 +1045,7 @@ impl InternalApp {
             cmd,
             scratch_buffer,
         );
+        */
 
 
         // bind the descriptor set for subsequent pipelines
@@ -1264,16 +1269,14 @@ impl InternalApp {
 
         #[derive(Clone, Copy, Pod, Zeroable)]
         #[repr(C)]
-        struct T {
+        struct ComputeChunkSdfPushConstants {
             chunk_position: vek::Vec3<i32>,
             target_storage_texture: u32,
-            chunk_index: u32,
         }
 
-        let tmp_push_constants = T {
+        let tmp_push_constants = ComputeChunkSdfPushConstants {
             target_storage_texture,
             chunk_position,
-            chunk_index
         };
 
         self.device.cmd_bind_pipeline(

@@ -33,18 +33,12 @@ pub struct GpuAabb {
 
 pub const IDENTBOX: Aabb = Aabb { min: vek::Vec3::broadcast(-1f32), max: vek::Vec3::broadcast(1f32) };
 
-// some primitives use a local SDF
-// others use (and thus contribute) to the global SDF
-// primitives of different types
-// primitives can have different geometries
-
 #[derive(Clone, Copy, Zeroable, Pod)]
 #[repr(C)]
 pub struct Primitive {
     pub aabb_blas_primitives_offset: u32,
 }
 
-pub const INSTANCE_CUSTOM_INDEX_LOCAL_SDF_FLAG_MASK: u32 = 1 << 20;
 
 pub const VXGI_TEXTURE_SIZE: u32 = 128;
 
@@ -52,9 +46,17 @@ pub const VXGI_TEXTURE_SIZE: u32 = 128;
 pub const CHUNK_SDF_TEXTURE_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;        
 pub const CHUNK_LOGICAL_SIZE: u32 = 64;
 pub const CHUNK_PHYSICAL_SIZE: u32 = 4;
-pub const NUM_CHUNKS_POOL: i32 = 500;
+
 pub const CHUNK_LOOKUP_TEXTURE_SIZE: u32 = 128;
+pub const CHUNK_LOOKUP_TEXTURE_VOLUME: u32 = CHUNK_LOOKUP_TEXTURE_SIZE * CHUNK_LOOKUP_TEXTURE_SIZE * CHUNK_LOOKUP_TEXTURE_SIZE;
 pub const CHUNK_LOOKUP_TEXTURE_HALF_SIZE: u32 = CHUNK_LOOKUP_TEXTURE_SIZE / 2;
+
+
+
+pub const MAX_CHUNKS: usize = 500;
+pub const MAX_BVH_NODES: usize = 500;
+pub const MAX_PRIMITIVES: usize = 1000;
+
 
 
 pub const SPAWN_TREES: bool = false;
@@ -92,11 +94,12 @@ impl Transform {
 
         let min = vertices.iter().copied().reduce(|x, y| vek::Vec3::partial_min(x, y)).unwrap();
         let max = vertices.iter().copied().reduce(|x, y| vek::Vec3::partial_max(x, y)).unwrap();
+        let offset = 0.2f32;
 
         vek::Aabb {
             // add a little offset since we might do smooth blending and stuff
-            min: min-1f32,
-            max: max+1f32
+            min: min-offset,
+            max: max+offset
         }
     }
 }
@@ -175,22 +178,28 @@ impl Scene {
         let blases = Vec::new();
         let blases_instances = Vec::new();
 
+        // create the buffer that contains the primitives
+        // primitives are just an enum (representing their SDF type) and an index which points to the transforms buffer
         let primitive_flat_list = Vec::<Node>::new();
-        let primitive_flat_buffer = buffer::create_buffer_default_flags(ctx, size_of::<Node>() * 1000, "primitive flat buffer");     
+        let primitive_flat_buffer = buffer::create_buffer_default_flags(ctx, size_of::<Node>() * MAX_BVH_NODES, "primitive flat buffer");     
 
+        // transforms buffer of pre-computed inverted f32 mat3x4 matrices
         let transforms = Vec::<Transform>::new();
-        let inverse_transforms_buffer = buffer::create_buffer_default_flags(ctx, size_of::<PackedTransform>() * 1000, "transforms buffer");     
+        let inverse_transforms_buffer = buffer::create_buffer_default_flags(ctx, size_of::<PackedTransform>() * MAX_PRIMITIVES, "transforms buffer");     
 
-        let chunk_buffer_lookup = buffer::create_buffer_default_flags(ctx, size_of::<u64>() * 1000, "chunk buffer");     
+        // chunk buffer simply stores u32s as an indirection step to the target sampler image texture index
+        let chunk_buffer_lookup = buffer::create_buffer_default_flags(ctx, size_of::<u32>() * MAX_CHUNKS, "chunk buffer");     
+
+        // mega lookup texture
+        let chunk_lookup_texture_bruh = sdf_texture::create_texture_3d(ctx, vek::Extent3::broadcast(CHUNK_LOOKUP_TEXTURE_SIZE), vk::Format::R32_UINT, None, "chunk lookup texture");
+        let chunk_lookup_texture_r32_cpu = vec![0u32; CHUNK_LOOKUP_TEXTURE_VOLUME as usize];
+        
+        // bvh buffer (I <3 obvh crate)
+        let bvh_nodes = buffer::create_buffer_default_flags(ctx, size_of::<obvhs::bvh2::node::Bvh2Node>() * MAX_BVH_NODES, "packed BVH nodes buffer");     
+        let bvh_primitive_indices_lookup = buffer::create_buffer_default_flags(ctx, size_of::<u32>() * MAX_PRIMITIVES, "BVH index lookup buffer");     
+        
         let chunks = Vec::<Chunk>::new();
-
-
-        let chunk_lookup_texture_bruh = sdf_texture::create_texture_3d(ctx, vek::Extent3::broadcast(128), vk::Format::R32_UINT, None, "chunk lookup texture");
-        let chunk_lookup_texture_r32_cpu = vec![0u32; 128*128*128];
-
-        let bvh_nodes = buffer::create_buffer_default_flags(ctx, size_of::<obvhs::bvh2::node::Bvh2Node>() * 1000, "packed BVH nodes buffer");     
-        let bvh_primitive_indices_lookup = buffer::create_buffer_default_flags(ctx, size_of::<u32>() * 1000, "BVH index lookup buffer");     
-
+        
         let mut this = Self {
             tlas,
             bvh_primitive_indices_lookup_buffer: bvh_primitive_indices_lookup,
@@ -218,7 +227,9 @@ impl Scene {
         };
 
         this.chunk_lookup_texture_r32_cpu.fill(u32::MAX);
-        for _ in 0..NUM_CHUNKS_POOL {
+
+        // TODO: we don't need to allocate all the chunks up-front, we can dynamically create and destroy them as needed
+        for _ in 0..MAX_CHUNKS {
             // TODO: separate normals from SDF
             // normals don't need to be floating point values, they can be R8G8B8_SNORM instead
             // also, we might want to store some metadata alongside the normals (like material type or material properties)
@@ -232,7 +243,7 @@ impl Scene {
         }
         
 
-        this.create_ghost_primitive(-vek::Vec3::unit_y(), vek::Quaternion::identity(), vek::Vec3::new(20f32, 1f32, 20f32));
+        this.create_ghost_primitive(-vek::Vec3::unit_y(), vek::Quaternion::identity(), vek::Vec3::new(20f32, 1f32,20f32));
 
         let mut rng = rand::rngs::SmallRng::seed_from_u64(432);
         if SPAWN_PRIMITIVES {
@@ -268,16 +279,21 @@ impl Scene {
             }
         }
         */
+    }
 
+    pub fn rebuild_bvh(&mut self) {
         let mut core_build_time = std::time::Duration::default();
         struct TestPrimitive<'a> {
             transform: &'a Transform
         }
         impl<'a> obvhs::Boundable for TestPrimitive<'a> {
             fn aabb(&self) -> obvhs::aabb::Aabb {
-                let mut aabb = obvhs::aabb::Aabb::from_point(glam::Vec3A::from_array((self.transform.position-1f32).into_array()));
-                aabb.extend(glam::Vec3A::from_array((self.transform.position + 1.0).into_array()));
-                aabb
+                let aabb = self.transform.aabb();
+
+                obvhs::aabb::Aabb {
+                    min: glam::Vec3A::from_array(aabb.min.into_array()),
+                    max: glam::Vec3A::from_array(aabb.max.into_array()),
+                }
             }
         } 
         let primitives = self.primitive_flat_list.iter().map(|node| TestPrimitive { transform: &self.transforms[node.transform_index as usize] }).collect::<Vec<_>>();

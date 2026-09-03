@@ -24,6 +24,8 @@ const static uint DDA_TRAVERSAL_CHUNKS_ITER = 32;
 const static uint DDA_TRAVERSAL_RAY_MARCH_ITER = 128;
 const static float CHUNK_BOUNDARY_OFFSET_EPS = 1e-5;
 
+// #define SHADOWS 
+
 struct PackedBvhNode {
     float16_t3 min;
     uint16_t prim_count;
@@ -124,6 +126,28 @@ float4 sample_chunk(float3 p, uint chunk_start_index) {
     return sampled;
 }
 
+void apply_primitive_sdf(float3 p, PrimitiveNode node, int node_index, inout float sdf) {
+    // 3x4 = 3 rows, 4 columns
+    // matrix must be the INVERSE of the transform matrix
+    uint transform_byte_offset = node.transform_index * 4 * 4 * 3;
+    float3x4 transform = storage_buffers_readonly[STORAGE_BUFFER_TRANSFORMS_BUFFER].Load<float3x4>(transform_byte_offset);
+
+    // 3x4 * 4x1 = 3x1 vector
+    float3 local = mul(transform, float4(p, 1));
+
+    SdfType sdf_type = SdfType(node.type);
+    // sdf_type = SdfType.Tree;
+    
+    float obj_sdf = get_sdf_from_type(local.xyz, sdf_type, node_index); 
+
+    // apply the object SDF to the global sdf
+    // TODO: separate the BVH primitives into "layers" that each have their own separate merging rules (between their objects *and* between layers)
+    // would allow us to compose cool terrain stuff like dat
+    sdf = smin(sdf, obj_sdf, 0.1);
+    // sdf = min(sdf, obj_sdf);
+    // sdf = max(sdf, -obj_sdf);
+}
+
 // TODO: optimize BVH traversal
 float d(float3 p) {
     capture_performance_sdf_call();
@@ -150,6 +174,7 @@ float d(float3 p) {
         float bvh_node_sdf = sdBox(p-center, half_extent);
 
         if (node.prim_count == 0) {
+            // NOTE: this is the check causes subtractive SDFs not to work properly
             if (sdf > bvh_node_sdf) {
                 if (len < capacity) {
                     PackedBvhNode first_child = storage_buffers_readonly[STORAGE_BUFFER_BVH_NODES_BUFFER].Load<PackedBvhNode>(sizeof(PackedBvhNode) * node.first_index);
@@ -168,6 +193,8 @@ float d(float3 p) {
                 }
             }
         } else {
+            // NOTE: this is another check causes that also subtractive SDFs not to work properly
+            // we prune too aggressively it seems
             if (sdf < bvh_node_sdf) {
                 continue;
             }
@@ -177,30 +204,9 @@ float d(float3 p) {
                 uint node_index = storage_buffers_readonly[STORAGE_BUFFER_BVH_PRIMITIVE_INDICES_LOOKUP_BUFFER].Load<uint>((node.first_index+i)*4);
                 PrimitiveNode node = storage_buffers_readonly[STORAGE_BUFFER_PRIMITIVE_FLAT_LIST_BUFFER].Load<PrimitiveNode>(node_index * sizeof(PrimitiveNode));
 
+                // max value is special case of a "ghost" primitive (that has a BVH node but does not actually do anything)
                 if (node.type != uint.maxValue) {
-                    // 3x4 = 3 rows, 4 columns
-                    // matrix must be the INVERSE of the transform matrix
-                    uint transform_byte_offset = node.transform_index * 4 * 4 * 3;
-                    float3x4 transform = storage_buffers_readonly[STORAGE_BUFFER_TRANSFORMS_BUFFER].Load<float3x4>(transform_byte_offset);
-
-                    // 3x4 * 4x1 = 3x1 vector
-                    float3 local = mul(transform, float4(p, 1));
-
-                    SdfType sdf_type = SdfType(node.type);
-                    // sdf_type = SdfType.Tree;
-                    
-                    float obj_sdf = get_sdf_from_type(local.xyz, sdf_type, node_index); 
-
-                    // apply the object SDF to the global sdf
-                    sdf = smin(sdf, obj_sdf, 0.1);
-                    // sdf = max(sdf, -obj_sdf);
-                    // sdf = min(sdf, obj_sdf);
-
-
-                    // HACK: technically we can do this, since we are only concerned with shit *inside* the SDF, though this screws up normals (when calculated with finite diffs) as they *need* this information
-                    if (sdf < 0) {
-                        // return sdf;
-                    }
+                    apply_primitive_sdf(p, node, node_index, sdf);
                 }
             }
         }
@@ -233,12 +239,17 @@ void capture_performance_sdf_call() {
     }
 }
 
-struct TraceRes {
+struct TraceDebugInfo {
     int iters;
+    int3 chunk;
+}
+
+struct TraceRes {
     bool hit;
     float3 position;
     float3 normal;
     float closest_distance;
+    TraceDebugInfo debug;
 };
 
 TraceRes trace(float3 ray_pos, float3 ray_dir) {
@@ -283,7 +294,7 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
 
                 // check if we got close enough to the surface of the SDF
                 if (sampled.x < THRESHOLD_DISTANCE) {
-                    return TraceRes(total_iters, true, point, sampled.yzw, closest_distance);
+                    return TraceRes(true, point, sampled.yzw, closest_distance, TraceDebugInfo(total_iters, floored_pos));
                 }
             
                 point += ray_dir * sampled.x;
@@ -298,13 +309,16 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
         side_dist += dir_sign * eqs;
     }
 
-    return TraceRes(total_iters, false, 0, 0, closest_distance);
+    return TraceRes(false, 0, 0, closest_distance, TraceDebugInfo(total_iters, 0));
 }
 
 
 float shadow_trace(float3 ray_pos, float3 ray_dir) {
+#ifdef SHADOWS
+    return 1-trace(ray_pos, ray_dir).hit;
+#else
     return 1.0;
-    //return 1-trace(ray_pos, ray_dir).hit;
+#endif
 }
 
 #endif

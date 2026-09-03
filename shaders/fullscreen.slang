@@ -81,31 +81,38 @@ void main(uint3 id: SV_DispatchThreadID, uint3 lid: SV_GroupThreadID) {
     float3 ray_pos = uniforms.position.xyz;
     float4 prepass = storage_images[PRE_PASS_TEXTURE].Load(id.xy / 4);
 
-    
-    uint64_t clock = clockARB();
-    TraceRes res = trace(ray_pos, ray_dir);
-    uint64_t clock2 = clockARB();
     float3 col = 0;
     
-    
-    switch (uniforms.debug_type) {
-        case 0: 
-            col = (float)res.iters / MAX_ITERS;
-            break;
-        case 1: 
-            col = min((float64_t)(clock2-clock) / ((float64_t)800000.0), 1);
-            break;
-        case 2: 
-            col = res.normal;
-            break;
-        case 3: 
-            col = res.position - floor(res.position);    
-            break;
-        case 4: 
-            col = (1-res.closest_distance);    
-            break;
-        default:
-            break; 
+    if (is_bit_set(uniforms.toggles_bitmask, 0)) {
+        uint64_t clock = clockARB();
+        TraceRes res = trace(ray_pos, ray_dir);
+        uint64_t clock2 = clockARB();
+        
+        
+        switch (uniforms.debug_type) {
+            case 0: 
+                col = (float)res.debug.iters / MAX_ITERS;
+                break;
+            case 1: 
+                col = min((float64_t)(clock2-clock) / ((float64_t)800000.0), 1);
+                break;
+            case 2: 
+                col = res.normal;
+                break;
+            case 3: 
+                col = res.position - floor(res.position);    
+                break;
+            case 4: 
+                col = (1-res.closest_distance);    
+                break;
+            case 5: 
+                col = hash33(res.debug.chunk);    
+                break;
+            default:
+                break; 
+        }
+    } else {
+        col = trace_scene_singlebounce(id.xy, ray_pos, ray_dir);
     }
 
     storage_images[RENDERED_STORAGE_IMAGE_IDX].Store(id.xy, float4(col, 1));
