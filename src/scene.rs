@@ -51,10 +51,10 @@ pub const CHUNK_PHYSICAL_SIZE: u32 = 4;
 pub const CHUNK_LOOKUP_TEXTURE_SIZE: u32 = 128;
 pub const CHUNK_LOOKUP_TEXTURE_VOLUME: u32 = CHUNK_LOOKUP_TEXTURE_SIZE * CHUNK_LOOKUP_TEXTURE_SIZE * CHUNK_LOOKUP_TEXTURE_SIZE;
 pub const CHUNK_LOOKUP_TEXTURE_HALF_SIZE: u32 = CHUNK_LOOKUP_TEXTURE_SIZE / 2;
+pub const MAP_HALF_SIZE_FROM_ORIGIN: f32 = CHUNK_LOOKUP_TEXTURE_HALF_SIZE as f32 * CHUNK_PHYSICAL_SIZE as f32;
 
 
-
-pub const MAX_CHUNKS: usize = 500;
+pub const MAX_CHUNKS: usize = 3500;
 pub const MAX_BVH_NODES: usize = 500;
 pub const MAX_PRIMITIVES: usize = 1000;
 
@@ -267,12 +267,13 @@ impl Scene {
 
         let mut rng = rand::rngs::SmallRng::seed_from_u64(432);
         if SPAWN_PRIMITIVES {
-            for x in -4..4 {
-                for z in -4..4 {
+            for x in -8..8 {
+                for z in -8..8 {
                     this.create_primitive(
-                        vek::Vec3::new(rng.random_range(-20f32..20f32), rng.random_range(-0f32..3f32), rng.random_range(-20f32..20f32)),
+                        vek::Vec3::new(x as f32, 0f32, z as f32) * 8f32,
+                        //vek::Vec3::new(rng.random_range(-MAP_HALF_SIZE_FROM_ORIGIN..MAP_HALF_SIZE_FROM_ORIGIN), rng.random_range(-0f32..3f32), rng.random_range(-MAP_HALF_SIZE_FROM_ORIGIN..MAP_HALF_SIZE_FROM_ORIGIN)),
                         vek::Quaternion::default(),
-                        1f32,
+                        rng.random_range(1f32..=2f32),
                         rng.random_range(0u32..=2u32),
                     );
                 }
@@ -384,6 +385,8 @@ impl Scene {
 pub unsafe fn rebuild_gpu_scene(scene: &mut Scene, cmd: vk::CommandBuffer, scratch_buffer: &mut buffer::ScratchBuffer, mut ctx: &mut GraphicsContext<'_>) {
     let chunk_sampled_images = scene.chunks.iter().map(|chunk| chunk.start_texture_sampled_binding).collect::<Vec<_>>();
 
+    assert!(scene.primitive_flat_list.len() < MAX_PRIMITIVES);
+
     buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&scene.primitive_flat_list), scene.primitive_flat_buffer.buffer, 0);
     buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&chunk_sampled_images), scene.chunk_buffer_lookup.buffer, 0);
 
@@ -408,6 +411,7 @@ pub unsafe fn rebuild_gpu_scene(scene: &mut Scene, cmd: vk::CommandBuffer, scrat
         }
     }).collect::<Vec<_>>();
 
+    assert!(packed_nodes.len() < MAX_BVH_NODES);
     
     buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&packed_nodes), scene.bvh_nodes_buffer.buffer, 0);
     buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&scene.bvh.primitive_indices), scene.bvh_primitive_indices_lookup_buffer.buffer, 0);
@@ -442,11 +446,24 @@ pub unsafe fn rebuild_gpu_scene(scene: &mut Scene, cmd: vk::CommandBuffer, scrat
         }
     }
 
+    // filter out chunks that are outside the bounds
+    primitive_in_cells_vector.retain(|chunk_position| {
+        let min_bounds = -vek::Vec3::broadcast(CHUNK_LOOKUP_TEXTURE_HALF_SIZE as i32);
+        let max_bounds = vek::Vec3::broadcast(CHUNK_LOOKUP_TEXTURE_HALF_SIZE as i32);
+        
+        chunk_position.cmpgt(&min_bounds).reduce_and() && chunk_position.cmplt(&max_bounds).reduce_and()
+    });
+
     scene.chunk_positions_to_indices.clear();
     scene.chunk_lookup_texture_r32_cpu.fill(u32::MAX);
 
     let mut chunk = 0u32;
     for chunk_position in primitive_in_cells_vector {
+        if chunk >= MAX_CHUNKS as u32 {
+            log::warn!("ran out of chunk pages");
+            break;
+        }
+
         let texel_position = (chunk_position + crate::scene::CHUNK_LOOKUP_TEXTURE_HALF_SIZE as i32).as_::<usize>();
         let texel_index = offset_to_index(texel_position, crate::scene::CHUNK_LOOKUP_TEXTURE_SIZE as usize);
         scene.chunk_lookup_texture_r32_cpu[texel_index] = chunk;
