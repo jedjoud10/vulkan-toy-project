@@ -221,6 +221,10 @@ TraceRes trace(float3 ray_pos, float3 ray_dir) {
     float closest_distance = 1.0;
 
     outer: for (int i = 0; i < DDA_TRAVERSAL_CHUNKS_ITER; i++) {
+        // don't sample chunks outside the bounds of the map
+        if (any(floored_pos < -((int)CHUNK_LOOKUP_MEGA_TEXTURE_HALF_SIZE) | floored_pos >= (int)CHUNK_LOOKUP_MEGA_TEXTURE_HALF_SIZE)) {
+            break;
+        }
 
         uint chunk_start_index = storage_images_3d_uint[CHUNK_LOOKUP_TEXTURE].Load(floored_pos + (int)CHUNK_LOOKUP_MEGA_TEXTURE_HALF_SIZE);
         

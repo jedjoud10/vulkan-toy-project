@@ -58,7 +58,7 @@ float get_sdf_from_type(float3 local, float3 global, SdfType type, uint object_i
             return s;
 
         case SdfType.Tree:
-            return tree2(local*8, object_index).x/8;
+            return tree2(local*8, 0).x/8;
     }
 
     return 0.0;

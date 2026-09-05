@@ -904,7 +904,7 @@ impl InternalApp {
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&gpu_material_data), self.materials_buffer.buffer, 0);
 
         self.scene.update(elapsed);
-        scene::rebuild_gpu_scene(&mut self.scene, cmd, scratch_buffer, &mut ctx);
+        scene::rebuild_gpu_scene(&mut self.scene, cmd, scratch_buffer, &mut ctx, self.movement.position);
 
         // bind the descriptor set for subsequent pipelines
         self.device.cmd_bind_descriptor_sets(
