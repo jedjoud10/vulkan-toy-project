@@ -4,6 +4,7 @@
 typedef float2 vec2;
 typedef float3 vec3;
 typedef float4 vec4;
+typedef int3 ivec3;
 
 #include "noises/commons.slang"
 #include "noises/noise3D.slang"

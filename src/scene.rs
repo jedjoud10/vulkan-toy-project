@@ -55,8 +55,8 @@ pub const MAP_HALF_SIZE_FROM_ORIGIN: f32 = CHUNK_LOOKUP_TEXTURE_HALF_SIZE as f32
 
 
 pub const MAX_CHUNKS: usize = 4500;
-pub const MAX_BVH_NODES: usize = 1000;
-pub const MAX_PRIMITIVES: usize = 1000;
+pub const MAX_BVH_NODES: usize = 10000;
+pub const MAX_PRIMITIVES: usize = 10000;
 
 
 
@@ -115,6 +115,12 @@ pub struct PackedTransform {
 pub struct Chunk {
     pub position: vek::Vec3<i32>,
     
+    // another idea:
+    // instead of creating and allocating multiple different texture3ds
+    // allocate ONE giant sparse mega-texture for the entire world and only allocate pages of it when chunks get generated
+    // this also solves the problem of sampling issues, because the mega-texture will be sampled only once ofc
+    // also *might* improve performance, since we only do one tex sample when we fetch f(p) :: Vector3 -> Float instead of multiple
+    // (since we currently need to look at the look-up texture)
     pub sdf_texture: texture_3d::Texture3D,
 
     // TODO(idea): what if we used sparse textures for these "auxiliary maps"?
@@ -296,7 +302,7 @@ impl Scene {
 
 
         if SPAWN_ROCKS {
-            for _ in 0..512 {
+            for _ in 0..256 {
                 this.create_primitive(
                     vek::Vec3::new(rng.random_range(-MAP_HALF_SIZE_FROM_ORIGIN..MAP_HALF_SIZE_FROM_ORIGIN), 0f32, rng.random_range(-MAP_HALF_SIZE_FROM_ORIGIN..MAP_HALF_SIZE_FROM_ORIGIN)),
                     vek::Quaternion::default(),

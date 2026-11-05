@@ -5,43 +5,50 @@ use std::{
 use rayon::iter::{IntoParallelIterator, Once, ParallelIterator};
 use shader_slang::{CompileTarget, CompilerOptions, ComponentType, DebugInfoLevel, GlobalSession, Module, OptimizationLevel, Session, SessionDesc, TargetDesc};
 
-type SlangResult<T> = shader_slang::Result<T>;
-type CompiledEntry = SlangResult<Option<(String, Vec<u8>)>>;
+type CompilationError = (String, shader_slang::Error);
+type CompiledEntry = Result<Option<(String, Vec<u8>)>, CompilationError>;
 
 thread_local! {
     static THREAD_LOCAL_GLOBAL_SESSION: OnceCell<GlobalSession> = OnceCell::new();
 }
 
 fn load_module(session: &Session, file_name: &str) -> CompiledEntry {
-    let file_name_with_extension = &format!("{file_name}.slang");
+    fn inner(session: &Session, file_name: &str) -> shader_slang::Result<Option<(String, Vec<u8>)>> {
+        let file_name_with_extension = &format!("{file_name}.slang");
+        
+        // ok this caching idea failed pretty quickly because if we want to get the dependencies of each file we have to load the module already, which is the expensive part
+        // we might need to implement our own dependency parser so that we can avoid feeding it to sland immediately.
+        log::debug!("loading module for file '{}'", file_name_with_extension);
+        let module: Module = session.load_module(file_name_with_extension)?;
+        
+        // ERROR: for some reason `target_code` does not return Err, even when there is no valid target code
+        // it just gives an undefined blob. program crashes when you try to `as_slice` it.
+        // this is why we have this earlier check
+        // TODO: report as issue?
+        if module.entry_point_count() == 0 {
+            log::trace!("{file_name}: module does not have entry points, exiting early");
+            return Ok(None);
+        }
 
-    // ok this caching idea failed pretty quickly because if we want to get the dependencies of each file we have to load the module already, which is the expensive part
-    // we might need to implement our own dependency parser so that we can avoid feeding it to sland immediately.
-    log::debug!("loading module for file '{}'", file_name_with_extension);
-    let module: Module = session.load_module(file_name_with_extension)?;
+
+        let mut component_types = Vec::<ComponentType>::new();
+        component_types.push(ComponentType::from(module.clone()));
+        for entry_point in module.entry_points() {
+            log::trace!("{file_name}: adding entry point {:?}", entry_point.function_reflection().name());
+            component_types.push(ComponentType::from(entry_point));
+        }
+
+        log::debug!("linking modules for file '{}'", file_name_with_extension);
+        let program = session.create_composite_component_type(&component_types)?;
+        let linked_program = program.link()?;
+        let shader_bytecode = linked_program.target_code(0)?;
+        let raw = shader_bytecode.as_slice();
+
+        return Ok(Some((file_name.to_string(), raw.to_vec())));
+    }
     
-    // ERROR: for some reason `target_code` does not return Err, even when there is no valid target code
-    // it just gives an undefined blob. program crashes when you try to `as_slice` it.
-    // this is why we have this earlier check
-    // TODO: report as issue?
-    if module.entry_point_count() == 0 {
-        return Ok(None);
-    }
+    inner(session, file_name).map_err(|slang_error| (file_name.to_string(), slang_error))
 
-
-    let mut component_types = Vec::<ComponentType>::new();
-    component_types.push(ComponentType::from(module.clone()));
-    for entry_point in module.entry_points() {
-        component_types.push(ComponentType::from(entry_point));
-    }
-
-    log::debug!("linking modules for file '{}'", file_name_with_extension);
-    let program = session.create_composite_component_type(&component_types)?;
-    let linked_program = program.link()?;
-    let shader_bytecode = linked_program.target_code(0)?;
-    let raw = shader_bytecode.as_slice();
-
-    return Ok(Some((file_name.to_string(), raw.to_vec())));
     /*
     // write the file to the compiled shaders folder
     let mut path = PathBuf::from(compiled_shader_folder_path);
@@ -66,7 +73,7 @@ fn visit_dirs(dir: &Path, list: &mut Vec<DirEntry>) {
 }
 
 // TODO: implement some sort of caching system that avoid recompiling shaders that have already been compiled
-pub fn compile_all_shaders() -> Result<HashMap<String, Vec<u8>>, ()> {
+pub fn compile_all_shaders(panic_on_error: bool) -> Result<HashMap<String, Vec<u8>>, ()> {
     log::info!("compiling slang shaders");
     let start = std::time::Instant::now();
 
@@ -89,7 +96,7 @@ pub fn compile_all_shaders() -> Result<HashMap<String, Vec<u8>>, ()> {
 
     // running this on multiple threads does help, but we incur the cost of creating a GlobalSession for EACH thread
     // plus, shared files that are imported will be re-compiled. uggggghhh this sucks
-    let compiled_entries = entries.into_par_iter().map(|entry| {
+    let compiled_entries: Vec<CompiledEntry> = entries.into_par_iter().map(|entry| {
         THREAD_LOCAL_GLOBAL_SESSION.with(|value| {
             let global_session = value.get_or_init(|| GlobalSession::new().unwrap());
 
@@ -132,9 +139,14 @@ pub fn compile_all_shaders() -> Result<HashMap<String, Vec<u8>>, ()> {
             Ok(Some((file_name, bytecode))) => {
                 compiled.insert(file_name, bytecode);
             },
-            Err(err) => {
-                log::error!("shader compilation error");
+            Err((file_name, err)) => {
+                log::error!("shader compilation error for module '{file_name}'");
                 log::error!("{}", err);
+
+                if panic_on_error {
+                    panic!()
+                }
+
                 return Err(());
             },
             _ => {}

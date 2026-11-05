@@ -316,7 +316,7 @@ impl InternalApp {
         let mut graphics_pipelines = HashMap::<&'static str, pipeline::GenericGraphicsPipeline>::new();
         let mut compute_pipelines = HashMap::<&'static str, pipeline::GenericComputePipeline>::new();
 
-        compile_all_shaders(&args, &device, &debug_marker, main_pipeline_layout, &mut graphics_pipelines, &mut compute_pipelines);
+        compile_all_shaders(&args, &device, &debug_marker, main_pipeline_layout, &mut graphics_pipelines, &mut compute_pipelines, true);
 
         let samplers = samplers::Samplers::create_samplers(&device);
         log::info!("created samplers");        
@@ -558,7 +558,7 @@ impl InternalApp {
         }
 
         if self.input.get_button(Button::Keyboard(KeyCode::KeyR)).pressed() {
-            compile_all_shaders(&self.args, &self.device, &self.debug_marker, self.main_pipeline_layout, &mut self.graphics_pipelines, &mut self.compute_pipelines);
+            compile_all_shaders(&self.args, &self.device, &self.debug_marker, self.main_pipeline_layout, &mut self.graphics_pipelines, &mut self.compute_pipelines, false);
         }
 
 
@@ -1818,7 +1818,8 @@ unsafe fn compile_all_shaders(
     debug_marker: &Option<ash::ext::debug_utils::Device>,
     main_pipeline_layout: vk::PipelineLayout,
     graphics_pipelines: &mut HashMap<&str, pipeline::GenericGraphicsPipeline>,
-    compute_pipelines: &mut HashMap<&str, pipeline::GenericComputePipeline>
+    compute_pipelines: &mut HashMap<&str, pipeline::GenericComputePipeline>,
+    first_time: bool,
 ) {
     let spec_constants_bitflags = if args.readback_performance_queries { 1u32 } else { 0 };
 
@@ -1856,7 +1857,7 @@ unsafe fn compile_all_shaders(
         file_name_without_extension: COMPUTE_VXGI,
     }];
 
-    let compiled = shader_compiler::compile_all_shaders();
+    let compiled = shader_compiler::compile_all_shaders(first_time);
 
     let compiled = match compiled {
         Ok(data) => data,

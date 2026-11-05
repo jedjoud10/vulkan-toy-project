@@ -102,7 +102,7 @@ void main2(uint3 id: SV_DispatchThreadID) {
 
     float2 scaled = distance_and_material / float2(dmult, 1.0);
 
-    storage_images_3d[SDF_TEXTURE2_STORAGE_IMAGE_IDX].Store(id.xyz, float4(scaled, 0));
+    storage_images_3d[SDF_TEXTURE2_STORAGE_IMAGE_IDX].Store(id.xyz, float4(scaled, 0, 0));
 }
 
 [shader("compute")]
