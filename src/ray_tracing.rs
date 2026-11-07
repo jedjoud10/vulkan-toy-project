@@ -1,13 +1,23 @@
 use std::ptr::slice_from_raw_parts;
 
 use ash::vk;
+use bytemuck::{Pod, Zeroable, cast_slice};
 use gpu_allocator::vulkan::Allocator;
 use crate::{buffer, renderer::GraphicsContext};
+
+
+#[derive(Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+pub struct AccelerationStructureAabb {
+    pub min: vek::Vec3<f32>,
+    pub max: vek::Vec3<f32>,
+}
 
 pub struct AccelerationStructureData {
     pub backing_buffer: buffer::Buffer,
     pub scratch_buffer: buffer::Buffer,
     pub acceleration_structure: vk::AccelerationStructureKHR,
+    pub acceleration_structure_address: u64,
 }
 
 impl AccelerationStructureData {
@@ -18,40 +28,65 @@ impl AccelerationStructureData {
     } 
 }
 
+pub enum BlasGeometry {
+    Triangles {
+        vertex_count: usize,
+        vertex_offset: usize,
+        vertex_stride: usize,
+        index_count: usize,
+        index_offset: usize,
+        index_stride: usize,
+        vertex_buffer_address: u64,
+        index_buffer_address: u64,
+    },
+    AABBs {
+        aabb_buffer_address: u64,
+        max_count: u32,
+    }
+}
 
 
-pub unsafe fn create_blas(
+pub unsafe fn rebuild_blas(
     ctx: &mut GraphicsContext,
     cmd: vk::CommandBuffer,
-    vertex_count: usize,
-    vertex_offset: usize,
-    vertex_stride: usize,
-    index_count: usize,
-    index_offset: usize,
-    index_stride: usize,
-    vertex_buffer: &buffer::Buffer,
-    index_buffer: &buffer::Buffer,
-    instance_index_low_24: u32,
-) -> (AccelerationStructureData, vk::AccelerationStructureInstanceKHR) {
-    log::debug!("creating & building BLAS");
-    let vertex_data_device_address = vertex_buffer.address;
-    let index_data_device_address = index_buffer.address;
-    
-    let triangles = vk::AccelerationStructureGeometryTrianglesDataKHR::default()
-        .index_type(vk::IndexType::UINT32)
-        .max_vertex(vertex_count as u32)
-        .vertex_stride(vertex_stride as u64)
-        .vertex_format(vk::Format::R32G32B32_SFLOAT)
-        .vertex_data(vk::DeviceOrHostAddressConstKHR { device_address: vertex_data_device_address + (vertex_stride * vertex_offset) as u64 })
-        .index_data(vk::DeviceOrHostAddressConstKHR { device_address: index_data_device_address + (index_stride * index_offset) as u64 });
-    let geometry_tmp = vk::AccelerationStructureGeometryDataKHR { triangles: triangles };
+    geometry: BlasGeometry,
+    blas: &AccelerationStructureData,
+) {
+    let (geometries, max_primitive_counts) = match geometry {
+        BlasGeometry::Triangles { vertex_count, vertex_offset, vertex_stride, index_count, index_offset, index_stride, vertex_buffer_address, index_buffer_address } => {
+            let vertex_data_device_address = vertex_buffer_address;
+            let index_data_device_address = index_buffer_address;
 
-    let geometry = vk::AccelerationStructureGeometryKHR::default()
-        .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
-        .geometry(geometry_tmp)
-        .flags(vk::GeometryFlagsKHR::OPAQUE);
+            let triangles = vk::AccelerationStructureGeometryTrianglesDataKHR::default()
+                .index_type(vk::IndexType::UINT32)
+                .max_vertex(vertex_count as u32)
+                .vertex_stride(vertex_stride as u64)
+                .vertex_format(vk::Format::R32G32B32_SFLOAT)
+                .vertex_data(vk::DeviceOrHostAddressConstKHR { device_address: vertex_data_device_address + (vertex_stride * vertex_offset) as u64 })
+                .index_data(vk::DeviceOrHostAddressConstKHR { device_address: index_data_device_address + (index_stride * index_offset) as u64 });
+            let geometry_tmp = vk::AccelerationStructureGeometryDataKHR { triangles: triangles };
 
-    let geometries = [geometry];
+            let geometry = vk::AccelerationStructureGeometryKHR::default()
+                .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
+                .geometry(geometry_tmp)
+                .flags(vk::GeometryFlagsKHR::OPAQUE);
+            
+            ([geometry], [index_count as u32 / 3])    
+        },
+        BlasGeometry::AABBs { aabb_buffer_address, max_count } => {
+            let aabbs = vk::AccelerationStructureGeometryAabbsDataKHR::default()
+                .stride(size_of::<AccelerationStructureAabb>() as u64)
+                .data(vk::DeviceOrHostAddressConstKHR { device_address: aabb_buffer_address });
+            let geometry_tmp = vk::AccelerationStructureGeometryDataKHR { aabbs: aabbs };
+
+            let geometry = vk::AccelerationStructureGeometryKHR::default()
+                .geometry_type(vk::GeometryTypeKHR::AABBS)
+                .geometry(geometry_tmp)
+                .flags(vk::GeometryFlagsKHR::OPAQUE);
+            
+            ([geometry], [max_count])   
+        },
+    };
 
     let mut acceleration_structure_build_geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
         .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
@@ -59,7 +94,121 @@ pub unsafe fn create_blas(
         .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
         .geometries(&geometries);
 
-    let max_primitive_counts = [index_count as u32 / 3];
+    let tmp = vk::AccelerationStructureBuildRangeInfoKHR::default()
+        .first_vertex(0)
+        .primitive_count(max_primitive_counts[0])
+        .primitive_offset(0)
+        .transform_offset(0);
+    let tmp2 = &[tmp];
+    let build_range_infos: &[&[vk::AccelerationStructureBuildRangeInfoKHR]] = &[tmp2];
+
+    acceleration_structure_build_geometry_info.scratch_data = vk::DeviceOrHostAddressKHR { device_address: blas.scratch_buffer.address };
+    acceleration_structure_build_geometry_info.dst_acceleration_structure = blas.acceleration_structure;
+
+    let queue_family_index = ctx.queue_family_index;
+
+    let backing_buffer_barrier = vk::BufferMemoryBarrier2::default()
+        .buffer(blas.backing_buffer.buffer)
+        .src_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR | vk::PipelineStageFlags2::FRAGMENT_SHADER | vk::PipelineStageFlags2::ALL_TRANSFER)
+        .dst_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR)
+        .src_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR | vk::AccessFlags2::TRANSFER_WRITE | vk::AccessFlags2::SHADER_READ)
+        .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR | vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR )
+        .size(vk::WHOLE_SIZE)
+        .offset(0)
+        .src_queue_family_index(queue_family_index)
+        .dst_queue_family_index(queue_family_index);
+    let scratch_buffer_barrier = vk::BufferMemoryBarrier2::default()
+        .buffer(blas.scratch_buffer.buffer)
+        .src_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR | vk::PipelineStageFlags2::FRAGMENT_SHADER | vk::PipelineStageFlags2::ALL_TRANSFER)
+        .dst_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR)
+        .src_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR | vk::AccessFlags2::TRANSFER_WRITE | vk::AccessFlags2::SHADER_READ)
+        .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR | vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR)
+        .size(vk::WHOLE_SIZE)
+        .offset(0)
+        .src_queue_family_index(queue_family_index)
+        .dst_queue_family_index(queue_family_index);
+    let buffer_memory_barriers = [backing_buffer_barrier, scratch_buffer_barrier];
+    let dep = vk::DependencyInfo::default()
+        .buffer_memory_barriers(&buffer_memory_barriers);
+    ctx.device.cmd_pipeline_barrier2(cmd, &dep);
+
+    ctx.acceleration_structure_device.cmd_build_acceleration_structures(cmd, &[acceleration_structure_build_geometry_info], build_range_infos);
+
+    let backing_buffer_barrier = vk::BufferMemoryBarrier2::default()
+        .buffer(blas.backing_buffer.buffer)
+        .src_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR)
+        .dst_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR | vk::PipelineStageFlags2::FRAGMENT_SHADER | vk::PipelineStageFlags2::COMPUTE_SHADER)
+        .src_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR)
+        .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR | vk::AccessFlags2::SHADER_READ)
+        .size(vk::WHOLE_SIZE)
+        .offset(0)
+        .src_queue_family_index(queue_family_index)
+        .dst_queue_family_index(queue_family_index);
+    let scratch_buffer_barrier = vk::BufferMemoryBarrier2::default()
+        .buffer(blas.scratch_buffer.buffer)
+        .src_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR)
+        .dst_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR | vk::PipelineStageFlags2::FRAGMENT_SHADER | vk::PipelineStageFlags2::COMPUTE_SHADER)
+        .src_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR)
+        .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR | vk::AccessFlags2::SHADER_READ)
+        .size(vk::WHOLE_SIZE)
+        .offset(0)
+        .src_queue_family_index(queue_family_index)
+        .dst_queue_family_index(queue_family_index);
+    let buffer_memory_barriers = [backing_buffer_barrier, scratch_buffer_barrier];
+    let dep = vk::DependencyInfo::default()
+        .buffer_memory_barriers(&buffer_memory_barriers);
+    ctx.device.cmd_pipeline_barrier2(cmd, &dep);
+
+}
+
+pub unsafe fn create_blas(
+    ctx: &mut GraphicsContext,
+    cmd: vk::CommandBuffer,
+    geometry: BlasGeometry,
+) -> AccelerationStructureData {
+    log::debug!("creating & building BLAS");
+
+    let (geometries, max_primitive_counts) = match geometry {
+        BlasGeometry::Triangles { vertex_count, vertex_offset, vertex_stride, index_count, index_offset, index_stride, vertex_buffer_address, index_buffer_address } => {
+            let vertex_data_device_address = vertex_buffer_address;
+            let index_data_device_address = index_buffer_address;
+
+            let triangles = vk::AccelerationStructureGeometryTrianglesDataKHR::default()
+                .index_type(vk::IndexType::UINT32)
+                .max_vertex(vertex_count as u32)
+                .vertex_stride(vertex_stride as u64)
+                .vertex_format(vk::Format::R32G32B32_SFLOAT)
+                .vertex_data(vk::DeviceOrHostAddressConstKHR { device_address: vertex_data_device_address + (vertex_stride * vertex_offset) as u64 })
+                .index_data(vk::DeviceOrHostAddressConstKHR { device_address: index_data_device_address + (index_stride * index_offset) as u64 });
+            let geometry_tmp = vk::AccelerationStructureGeometryDataKHR { triangles: triangles };
+
+            let geometry = vk::AccelerationStructureGeometryKHR::default()
+                .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
+                .geometry(geometry_tmp)
+                .flags(vk::GeometryFlagsKHR::OPAQUE);
+            
+            ([geometry], [index_count as u32 / 3])    
+        },
+        BlasGeometry::AABBs { aabb_buffer_address, max_count } => {
+            let aabbs = vk::AccelerationStructureGeometryAabbsDataKHR::default()
+                .stride(size_of::<AccelerationStructureAabb>() as u64)
+                .data(vk::DeviceOrHostAddressConstKHR { device_address: aabb_buffer_address });
+            let geometry_tmp = vk::AccelerationStructureGeometryDataKHR { aabbs: aabbs };
+
+            let geometry = vk::AccelerationStructureGeometryKHR::default()
+                .geometry_type(vk::GeometryTypeKHR::AABBS)
+                .geometry(geometry_tmp)
+                .flags(vk::GeometryFlagsKHR::OPAQUE);
+            
+            ([geometry], [max_count])   
+        },
+    };
+
+    let mut acceleration_structure_build_geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
+        .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
+        .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE | vk::BuildAccelerationStructureFlagsKHR::ALLOW_DATA_ACCESS)
+        .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
+        .geometries(&geometries);
 
     let mut sizes = vk::AccelerationStructureBuildSizesInfoKHR::default();
 
@@ -78,7 +227,7 @@ pub unsafe fn create_blas(
 
     let tmp = vk::AccelerationStructureBuildRangeInfoKHR::default()
         .first_vertex(0)
-        .primitive_count(index_count as u32 / 3)
+        .primitive_count(max_primitive_counts[0])
         .primitive_offset(0)
         .transform_offset(0);
     let tmp2 = &[tmp];
@@ -90,23 +239,34 @@ pub unsafe fn create_blas(
     ctx.acceleration_structure_device.cmd_build_acceleration_structures(cmd, &[acceleration_structure_build_geometry_info], build_range_infos);
     
     let acceleration_structure_address = ctx.acceleration_structure_device.get_acceleration_structure_device_address(&vk::AccelerationStructureDeviceAddressInfoKHR::default().acceleration_structure(acceleration_structure));
-    
-    let identity_matrix = [
-        1f32, 0f32, 0f32, 0f32,
-        0f32, 1f32, 0f32, 0f32,
-        0f32, 0f32, 1f32, 0f32,
-    ];
 
-    (AccelerationStructureData {
+    AccelerationStructureData {
         backing_buffer,
         scratch_buffer,
         acceleration_structure,
-    }, vk::AccelerationStructureInstanceKHR {
-        transform: vk::TransformMatrixKHR { matrix: identity_matrix },
-        instance_custom_index_and_mask: vk::Packed24_8::new(instance_index_low_24, 0xFF),
+        acceleration_structure_address,
+    }
+}
+
+pub fn instantiate_blas(rotation: vek::Quaternion<f32>, position: vek::Vec3<f32>, scale: vek::Vec3<f32>, data: &AccelerationStructureData, instance_index_low_24: u32, mask: u8) -> vk::AccelerationStructureInstanceKHR {
+    let transform = vk::TransformMatrixKHR { matrix: to_3x4_mat(calculate_matrix(rotation, position, scale)) };
+
+    vk::AccelerationStructureInstanceKHR {
+        transform,
+        instance_custom_index_and_mask: vk::Packed24_8::new(instance_index_low_24, mask),
         instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(0, vk::GeometryInstanceFlagsKHR::FORCE_OPAQUE.as_raw() as u8),
-        acceleration_structure_reference: vk::AccelerationStructureReferenceKHR { device_handle: acceleration_structure_address, },
-    })
+        acceleration_structure_reference: vk::AccelerationStructureReferenceKHR { device_handle: data.acceleration_structure_address, },
+    }
+}
+
+pub fn calculate_matrix(rotation: vek::Quaternion<f32>, position: vek::Vec3<f32>, scale: vek::Vec3<f32>) -> vek::Mat4::<f32> {
+    vek::Mat4::<f32>::translation_3d(position) * vek::Mat4::from(rotation) * vek::Mat4::<f32>::scaling_3d(scale)
+}
+
+pub fn to_3x4_mat(matrix: vek::Mat4::<f32>) -> [f32; 12] {
+    let row_arrays = &matrix.into_row_arrays()[0..3];
+    let matrix: [f32; 12] = cast_slice::<[f32;4],f32>(row_arrays).try_into().unwrap();
+    matrix
 }
 
 pub struct TopLevelAccelerationStructure {
@@ -120,7 +280,7 @@ impl TopLevelAccelerationStructure {
     }
 }
 
-pub const TLAS_MAX_INSTANCES: u32 = 100000;
+pub const TLAS_MAX_INSTANCES: u32 = 50_000;
 
 pub unsafe fn pre_create_tlas(
     ctx: &mut GraphicsContext,
@@ -157,38 +317,50 @@ pub unsafe fn pre_create_tlas(
     let acceleration_structure = ctx.acceleration_structure_device.create_acceleration_structure(&create_info, None).unwrap();
 
     TopLevelAccelerationStructure {
-        data: AccelerationStructureData { backing_buffer, scratch_buffer, acceleration_structure },
+        data: AccelerationStructureData { backing_buffer, scratch_buffer, acceleration_structure, acceleration_structure_address: 0 }, // address is only needed for blas instances
     }
 }
 
 pub unsafe fn rebuild_tlas(
-    static_instances: &[vk::AccelerationStructureInstanceKHR],
-    dynamic_instances: &[vk::AccelerationStructureInstanceKHR],
+    instances: impl Iterator<Item = vk::AccelerationStructureInstanceKHR>,
     tlas: &TopLevelAccelerationStructure,
+    ctx: &mut GraphicsContext,
     cmd: vk::CommandBuffer,
-    acceleration_structure_device: &ash::khr::acceleration_structure::Device,
-    device: &ash::Device,
-    queue_family_index: u32,
-    per_frame_scratch_buffer: &mut buffer::ScratchBuffer,
+    per_frame_scratch_buffer: &mut crate::buffer::ScratchBuffer,
 ) {
-    let instances = static_instances.iter().chain(dynamic_instances.iter()).copied().collect::<Vec<_>>();
-    let blases = instances.as_slice();
-    
+    let instances = instances.collect::<Vec<_>>();
+    let blases: &[vk::AccelerationStructureInstanceKHR] = instances.as_slice();
+
+    if blases.is_empty() {
+        return;
+    }
+
     // the ONLY reason we are doing an unsafe `slice_from_raw_parts` is because vk::AccelerationStructureInstanceKHR does not implement bytemuck Pod/Zeroable
     let bytes = blases.len() * size_of::<vk::AccelerationStructureInstanceKHR>();
     let ptr = blases.as_ptr() as *const u8;
     let data = &*slice_from_raw_parts(ptr, bytes);
 
-    if data.is_empty() {
-        return;
-    }
 
+    let written_address = per_frame_scratch_buffer.write_bytes_aligned(data).buffer_device_address_start;
 
-    let written_address = per_frame_scratch_buffer.write_bytes_aligned(data);
+    /* 
+    
+    Some(ScratchBufferBarrierInfo {
+        src_stage_mask: vk::PipelineStageFlags2::ALL_COMMANDS,
+        dst_stage_mask: vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR,
+        src_access_mask: vk::AccessFlags2::TRANSFER_WRITE,
+        dst_access_mask: vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR | vk::AccessFlags2::SHADER_READ,
+    })
+    
+     */
+
+    let queue_family_index = ctx.queue_family_index;
+    let acceleration_structure_device = ctx.acceleration_structure_device;
+    let device = ctx.device;
     
     let instances = vk::AccelerationStructureGeometryInstancesDataKHR::default()
         .array_of_pointers(false)
-        .data(vk::DeviceOrHostAddressConstKHR { device_address: written_address.buffer_device_address_start });
+        .data(vk::DeviceOrHostAddressConstKHR { device_address: written_address });
     let geometry_tmp = vk::AccelerationStructureGeometryDataKHR { instances: instances };
 
     let geometry = vk::AccelerationStructureGeometryKHR::default()

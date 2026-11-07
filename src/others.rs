@@ -4,10 +4,10 @@ use smallvec::SmallVec;
 
 use crate::{debug::DebugMarker, renderer::GraphicsContext};
 
-pub const STORAGE_IMAGE_COUNT: u32 = 160;
+pub const STORAGE_IMAGE_COUNT: u32 = 26000;
 pub const STORAGE_BUFFER_COUNT: u32 = 160;
 pub const UNIFORM_BUFFER_COUNT: u32 = 60;
-pub const SAMPLED_IMAGE_COUNT: u32 = 40;
+pub const SAMPLED_IMAGE_COUNT: u32 = 26000;
 pub const SAMPLER_COUNT: u32 = 5;
 pub const ACCELERATION_STRUCTURES_COUNT: u32 = 1;
 pub const MAX_DESCRIPTOR_SETS: u32 = crate::per_frame_data::FRAMES_IN_FLIGHT as u32;
@@ -90,17 +90,6 @@ pub unsafe fn create_descriptor_pool_and_bindless_descriptor_set(device: &ash::D
     (descriptor_pool, descriptor_set_layout)
 }
 
-
-pub unsafe fn create_query_pool(
-    device: &ash::Device
-) -> vk::QueryPool {
-    let create_info = vk::QueryPoolCreateInfo::default()
-        .query_type(vk::QueryType::TIMESTAMP)
-        .query_count(2);
-    let query = device.create_query_pool(&create_info, None).unwrap();
-    device.reset_query_pool(query, 0, 2);
-    query
-}
 
 pub unsafe fn create_pipeline_stats_pool(
     device: &ash::Device

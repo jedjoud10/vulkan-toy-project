@@ -1,6 +1,6 @@
 use ash::vk;
 use gpu_allocator::vulkan::{Allocation, Allocator};
-use crate::{buffer, others, pipeline::{self, PerFrameUniformData}, ray_tracing, renderer::GraphicsContext};
+use crate::{buffer, others, pipeline::{self, PerFrameUniformData}, query_pool_statistics, renderer::GraphicsContext};
 
 pub const FRAMES_IN_FLIGHT: usize = 3;
 
@@ -12,6 +12,7 @@ pub struct PerFrameData {
     pub query_pool: vk::QueryPool,
     pub pipeline_statistics_query_pool: vk::QueryPool,
     pub scratch_buffer: buffer::ScratchBuffer,
+    pub readback_buffer: buffer::Buffer,
 }
 
 impl PerFrameData {
@@ -42,8 +43,11 @@ impl PerFrameData {
             .unwrap()[0];
 
         
-        let query_pool = others::create_query_pool(&ctx.device);
+        let query_pool = query_pool_statistics::create_query_pool(&ctx.device);
         let pipeline_statistics_query_pool = others::create_pipeline_stats_pool(&ctx.device);
+
+        let readback_buffer = buffer::create_buffer_with_location(ctx, size_of::<u32>() * 10, "debug readback buffer", vk::BufferUsageFlags::STORAGE_BUFFER, gpu_allocator::MemoryLocation::GpuToCpu);
+
         
         Self {
             present_complete_semaphore,
@@ -53,6 +57,7 @@ impl PerFrameData {
             query_pool,
             pipeline_statistics_query_pool,
             scratch_buffer: buffer::ScratchBuffer::new(ctx),
+            readback_buffer,
         }
     }
     
@@ -69,6 +74,39 @@ impl PerFrameData {
         log::info!("destroyed query pools frame data");
 
         self.scratch_buffer.destroy(device, allocator);
+        self.readback_buffer.destroy(device, allocator);
+    }
+}
+
+// TODO: add a way to detect if we have allocated MORE than the total allowed number of descriptors for each type
+pub struct PerFrameAllocator {
+    pub data: Vec<vk::DescriptorImageInfo>,
+}
+
+impl PerFrameAllocator {
+    pub fn new() -> Self {
+        Self {
+            data: Vec::default()
+        }
+    }
+    
+    pub(crate) fn push(&mut self, image_view: vk::ImageView) -> u32 {
+        let idx = self.data.len();
+        self.data.push(vk::DescriptorImageInfo::default().image_layout(vk::ImageLayout::GENERAL).image_view(image_view));
+        idx as u32
+    }
+    
+    pub(crate) fn current(&self) -> u32 {
+        self.data.len() as u32
+    }
+
+    pub fn to_descriptor_bindings<'a>(&'a self, desc_set: vk::DescriptorSet, _type: vk::DescriptorType, dst_binding: u32) -> vk::WriteDescriptorSet<'a> {
+        vk::WriteDescriptorSet::default()
+            .descriptor_count(self.data.len() as u32)
+            .descriptor_type(_type)
+            .dst_binding(dst_binding)
+            .dst_set(desc_set)
+            .image_info(&self.data)
     }
 }
 

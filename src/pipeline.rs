@@ -4,7 +4,7 @@ use ash::vk;
 use bytemuck::{Pod, Zeroable};
 use smallvec::SmallVec;
 
-
+// TODO: redesign this so that it is better aligned to memory
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 pub struct PerFrameUniformData {
@@ -22,6 +22,14 @@ pub struct PerFrameUniformData {
     pub debug_type: u32,
     pub toggles_bitmask: u32,
     pub time: f32,
+    pub _padding2: u32,
+    pub frame_count: u64,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+pub struct PostProcessPushConstants {
+    pub bloom_sampled_images_entire_bloom_image_view_start: u32,
 }
 
 #[repr(C)]
@@ -89,7 +97,7 @@ impl GenericGraphicsPipeline {
 
 pub struct PipelineCreateSettings<'a> {
     pub pipeline_debug_name: &'static str,
-    pub spv_file_name: &'static str,
+    pub file_name_without_extension: &'static str,
     pub wtf_kind_of_pipeline_is_this: PipelineCreateType<'a>,
     pub spec_constants: Option<&'a [u32]>
 } 

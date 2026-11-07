@@ -21,6 +21,23 @@ pub fn set_bit(mask: &mut u64, index: u32, set: bool) {
     }
 }
 
+
+pub fn offset_to_index(offset: vek::Vec3<usize>, size: usize) -> usize {
+    assert!(offset.cmpge(&vek::Vec3::broadcast(0)).reduce_and());
+    assert!(offset.cmplt(&vek::Vec3::broadcast(size)).reduce_and());
+    
+    offset.x + offset.y * size + offset.z * size * size
+}
+
+pub fn index_to_offset(index: usize, size: usize) -> vek::Vec3<usize> {
+    assert!(index < (size*size*size));
+    
+    let x: usize = index % size;
+    let y = (index / size) % size;
+    let z = index / (size*size);
+    vek::Vec3::new(x,y,z)
+}
+
 pub const OFFSETS: [vek::Vec3::<i32>; 6] = [
     vek::Vec3::new(-1, 0, 0),
     vek::Vec3::new(1, 0, 0),
@@ -29,3 +46,22 @@ pub const OFFSETS: [vek::Vec3::<i32>; 6] = [
     vek::Vec3::new(0, 0, -1),
     vek::Vec3::new(0, 0, 1),
 ];
+
+pub const ZERO_TO_ONE_CUBE_VERTICES: [vek::Vec3::<f32>; 8] = [
+    vek::Vec3::new(0.0, 0.0, 0.0),
+    vek::Vec3::new(1.0, 0.0, 0.0),
+    vek::Vec3::new(0.0, 0.0, 1.0),
+    vek::Vec3::new(1.0, 0.0, 1.0),
+
+    vek::Vec3::new(0.0, 1.0, 0.0),
+    vek::Vec3::new(1.0, 1.0, 0.0),
+    vek::Vec3::new(0.0, 1.0, 1.0),
+    vek::Vec3::new(1.0, 1.0, 1.0),
+];
+
+// https://stackoverflow.com/questions/12435671/quaternion-lookat-function
+pub fn look_at(eye: vek::Vec3<f32>, target: vek::Vec3<f32>) -> vek::Quaternion<f32> {
+    let forward = (target - eye).normalized();
+    let front = vek::Vec3::unit_z();
+    return vek::Quaternion::rotation_from_to_3d(front, forward);
+}

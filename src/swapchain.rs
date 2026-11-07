@@ -29,9 +29,33 @@ pub unsafe fn create_swapchain(
     let surface_formats: Vec<vk::SurfaceFormatKHR> = surface_loader
         .get_physical_device_surface_formats(physical_device, surface_khr)
         .unwrap();
-    // log::debug!("surface formats {:?}", surface_formats);
+
+    let usage = vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::STORAGE;
+
+    let mut supported_format: Option<vk::SurfaceFormatKHR> = None;
     
-    let swapchain_format = surface_formats[0].format;
+    for surface_format in surface_formats.iter() {
+        let swapchain_format = surface_format.format;
+        log::debug!("checking surface format {swapchain_format:?}");
+    
+        let image_format_properties = instance.get_physical_device_image_format_properties(physical_device, swapchain_format, vk::ImageType::TYPE_2D, vk::ImageTiling::OPTIMAL, usage, vk::ImageCreateFlags::empty());
+        
+        if let Ok(properties) = image_format_properties {
+            log::debug!("check ok");
+            log::debug!("{:?}", properties);
+
+            if properties.max_array_layers > 0 {
+                supported_format = Some(*surface_format);
+                break;
+            }
+
+            // TODO: add more tests to make sure we pick the best surface out of all of em
+        } else {
+            log::warn!("format not supported!")
+        }
+    }
+
+    let swapchain_format = supported_format.expect("no supported format bruh");
     
     let test = surface_loader
         .get_physical_device_surface_capabilities(physical_device, surface_khr)
@@ -43,17 +67,13 @@ pub unsafe fn create_swapchain(
     let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
         .surface(surface_khr)
         .min_image_count(SWAPCHAIN_IMAGES as u32)
-        .image_format(swapchain_format)
-        .image_color_space(vk::ColorSpaceKHR::SRGB_NONLINEAR)
+        .image_format(swapchain_format.format)
+        .image_color_space(swapchain_format.color_space)
         .image_extent(extent)
         .image_array_layers(1)
         .pre_transform(vk::SurfaceTransformFlagsKHR::IDENTITY)
         .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-        .image_usage(
-            vk::ImageUsageFlags::COLOR_ATTACHMENT
-                | vk::ImageUsageFlags::TRANSFER_DST
-                | vk::ImageUsageFlags::STORAGE,
-        )
+        .image_usage(usage)
         .clipped(true)
         .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
         .old_swapchain(last_swapchain.unwrap_or(vk::SwapchainKHR::null()))
@@ -73,7 +93,7 @@ pub unsafe fn create_swapchain(
         let image_view_create_info = vk::ImageViewCreateInfo::default()
             .components(vk::ComponentMapping::default())
             .flags(vk::ImageViewCreateFlags::empty())
-            .format(swapchain_format)
+            .format(swapchain_format.format)
             .image(*swapchain_image)
             .subresource_range(subresource_range)
             .view_type(vk::ImageViewType::TYPE_2D);
@@ -89,5 +109,5 @@ pub unsafe fn create_swapchain(
         crate::debug::set_object_name(*image_view, binder, format!("swapchain image view {i}"));
     }
     
-    (swapchain_loader, swapchain, images, image_views, swapchain_format)
+    (swapchain_loader, swapchain, images, image_views, swapchain_format.format)
 }

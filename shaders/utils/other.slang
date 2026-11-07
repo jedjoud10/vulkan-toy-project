@@ -131,4 +131,36 @@ bool is_bit_set(uint32_t bitmask, int index) {
     return ((bitmask >> index) & 1) == 1;
 }
 
+
+// do NOT put [Differentiable] on this. no workey
+float3x3 AngleAxis3x3(float angle, float3 axis)
+{
+    float c, s;
+    sincos(angle, s, c);
+
+    float t = 1 - c;
+    float x = axis.x;
+    float y = axis.y;
+    float z = axis.z;
+
+    return float3x3(
+        t * x * x + c,      t * x * y - s * z,  t * x * z + s * y,
+        t * x * y + s * z,  t * y * y + c,      t * y * z - s * x,
+        t * x * z - s * y,  t * y * z + s * x,  t * z * z + c
+    );
+}
+
+float3x3 randomRotationMatrix(float seed) {
+    float k = sin(seed * 543.342) * 10.0;
+    float a = sin(seed * -5443.42);
+    float b = sin(seed * -1233.56);
+    float c = sin(seed * -9533.23);
+    return AngleAxis3x3(k, normalize(float3(a,b,c)));
+}
+
+float3 hex2col(uint hex) {
+	uint3 rgb = uint3((hex >> 16) & 0xFF, (hex >> 8) & 0xFF, hex & 0xFF);
+	return pow(((float3)rgb) / 255.0, 2.2);
+}
+
 #endif

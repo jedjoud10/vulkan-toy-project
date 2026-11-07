@@ -9,9 +9,7 @@ mod movement;
 mod physical_device;
 mod pipeline;
 mod swapchain;
-mod ticker;
 mod buffer;
-mod statistics;
 mod utils;
 mod renderer;
 mod skybox;
@@ -19,14 +17,16 @@ mod others;
 mod render_targets_data;
 mod per_frame_data;
 mod samplers;
-mod tesselation;
-mod voxel;
-mod model;
-mod ray_tracing;
+mod query_pool_statistics;
 mod material;
 mod texture;
 mod physical_device_vulkan_14_features;
 mod octree;
+mod debug_text;
+mod ray_tracing;
+mod texture_3d;
+mod shader_compiler;
+mod scene;
 
 use clap::Parser;
 use std::ops::ControlFlow;
@@ -42,16 +42,26 @@ use renderer::InternalApp;
 #[command(about = "Vulkan Experiments", long_about = None)]
 struct Args {
     /// Factor to use to decrease the screen resolution
-    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=4))]
+    #[arg(long, short, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=4))]
     downscale_factor: u32,
 
     /// Setting to start in fullscreen from the start. This can be toggled in-game using F5
-    #[arg(long, default_value_t = false)]
+    #[arg(long, short, default_value_t = false)]
     fullscreen: bool,
 
     /// Enable validation layers and debug stuff even when debug_assertions are disabled
-    #[arg(long, default_value_t = false)]
+    #[arg(long, short, default_value_t = false)]
     validate: bool,
+
+    /// Use a readback buffer to capture some performance queries from the shaders
+    /// This does incur a performance hit (1-2ms extra, at least on my hardware)
+    /// I'm writing the data to the buffer in the shader very inefficiently. Just used for quick profiling.
+    #[arg(long, short, action = clap::ArgAction::SetFalse, default_value_t = true)]
+    readback_performance_queries: bool,
+    
+    /// If on Linux, force winit to use X11 instead of Wayland
+    #[arg(long, default_value_t = false)]
+    x11: bool,
 }
 
 struct App {
@@ -124,7 +134,35 @@ pub fn main() {
         .format_file(true)
         .format_line_number(true)
         .init();
-    let event_loop = EventLoop::new().unwrap();
+
+    unsafe {
+        std::env::set_var("MESA_EXPERIMENTAL", "hic");
+
+        // what EVER you fucking do, do NOT enable MESA_VK_TRACE. this shit fries your GPU bro. don't do it bro
+        // std::env::set_var("MESA_VK_TRACE", "rgp");
+        // std::env::set_var("MESA_VK_TRACE_TRIGGER", "/tmp/trigger");
+    }
+
+    // https://github.com/rust-windowing/winit/issues/4327
+    let mut builder = EventLoop::builder();
+    let mut reference = &mut builder;
+    
+    {
+        #[cfg(all(unix, not(target_os = "macos")))] // Desktop only
+        {
+            use winit::platform::wayland::EventLoopBuilderExtWayland;
+            use winit::platform::x11::EventLoopBuilderExtX11;   
+        
+            if args.x11 {
+                reference = reference.with_x11()
+            } else {
+                reference = reference.with_wayland()
+            }
+        }
+    };
+
+    let event_loop = reference.build().unwrap();
+        
     let mut app = App {
         start: Instant::now(),
         last: Instant::now(),

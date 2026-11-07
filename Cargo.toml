@@ -6,7 +6,7 @@ edition = "2024"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-winit = "0.30.5"
+winit = "0.30.13"
 bytemuck = { version = "1.25.0", features = ["derive", "extern_crate_alloc"] }
 ash = "0.38.0"
 vek = { version = "0.17.1", features = ["bytemuck", "serde"]}
@@ -35,7 +35,11 @@ meshopt = "0.6.2"
 include_dir = "0.7.4"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 crossbeam = "0.8.4"
+half = { version = "2.7.1", features = ["bytemuck"] }
+shader-slang = { git = "https://github.com/FloatyMonkey/slang-rs.git" }
 ctt = "0.5.0"
+obvhs = "0.3.3"
+glam = "0.33.6"
 
 [build-dependencies]
 shader-slang = { git = "https://github.com/FloatyMonkey/slang-rs.git" }

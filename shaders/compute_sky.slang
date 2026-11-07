@@ -5,10 +5,6 @@
 #include "utils/bindless.slang"
 
 
-[SpecializationConstant] const uint SKYBOX_RESOLUTION = 32;
-[SpecializationConstant] const uint CLOUDS_RESOLUTION = 32;
-[SpecializationConstant] const uint AMBIENT_SKYBOX_RESOLUTION = 32;
-
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void write_clouds(uint3 id: SV_DispatchThreadID) {

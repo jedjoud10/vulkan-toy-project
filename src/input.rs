@@ -253,6 +253,24 @@ pub fn window_event(input: &mut Input, ev: &WindowEvent) {
             handle_button_input(input, Button::Mouse(*button), *state);
         }
 
+        // Update mouse wheel delta and summed value
+        WindowEvent::MouseWheel { delta, .. } => {
+            let delta = match delta {
+                winit::event::MouseScrollDelta::LineDelta(_, y) => *y,
+                winit::event::MouseScrollDelta::PixelDelta(physical) => physical.x as f32,
+            };
+
+
+            input
+                .axii
+                .insert(Axis::Mouse(MouseAxis::ScrollDelta), delta);
+            let scroll = input
+                .axii
+                .entry(Axis::Mouse(MouseAxis::Scroll))
+                .or_insert(0.0);
+            *scroll += delta;
+        }
+
         _ => {}
     }
 }
@@ -276,24 +294,7 @@ pub fn device_event(input: &mut Input, ev: &DeviceEvent) {
                 .or_insert(0.0);
             *y += delta.y;
         }
-
-        // Update mouse wheel delta and summed value
-        DeviceEvent::MouseWheel { delta } => {
-            let delta = match delta {
-                winit::event::MouseScrollDelta::LineDelta(_, y) => *y,
-                winit::event::MouseScrollDelta::PixelDelta(physical) => physical.x as f32,
-            };
-
-            input
-                .axii
-                .insert(Axis::Mouse(MouseAxis::ScrollDelta), delta);
-            let scroll = input
-                .axii
-                .entry(Axis::Mouse(MouseAxis::Scroll))
-                .or_insert(0.0);
-            *scroll += delta;
-        }
-
+        
         _ => {}
     }
 }

@@ -66,8 +66,6 @@ void render_debug_font(uint2 id, inout float3 color) {
     render_debug_font_raw(id, color, 1.0);
 }
 
-[SpecializationConstant] const uint DOWNSCALE_FACTOR = 1;
-
 // Narkowicz 2015, "ACES Filmic Tone Mapping Curve"
 float3 aces(float3 x) {
     const float a = 2.51;
