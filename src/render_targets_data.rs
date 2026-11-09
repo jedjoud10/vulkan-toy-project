@@ -150,7 +150,7 @@ impl RenderTargetsData {
         self.bloom_mip_image_views.clear();
 
         // create bloom image views
-        log::debug!("creating bloom image views...");
+        log::debug!("creating ({bloom_mip_levels}) bloom image views...");
         for mip_level in 0..bloom_mip_levels {
             let bloom_image_view_create_info = vk::ImageViewCreateInfo::default()
                 .components(vk::ComponentMapping::default())

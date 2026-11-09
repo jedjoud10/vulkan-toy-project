@@ -187,19 +187,18 @@ impl MultipleChunks {
                     .buffer_memory_barriers(&buffer_memory_barriers);
                 ctx.device.cmd_pipeline_barrier2(cmd, &dep);
 
-                let (blas, instance) = ray_tracing::create_blas(
-                    ctx,
-                    cmd,
-                    vertices.len(),
-                    0,
-                    VERTEX_STRIDE,
-                    indices.len(),
-                    0,
-                    INDEX_STRIDE,
-                    &vertex_buffer,
-                    &index_buffer,
-                    1
-                );
+                let blas = ray_tracing::create_blas(ctx, cmd, ray_tracing::BlasGeometry::Triangles {
+                    vertex_count: vertices.len(),
+                    vertex_offset: 0,
+                    vertex_stride: VERTEX_STRIDE,
+                    index_count: indices.len(),
+                    index_offset: 0,
+                    index_stride: INDEX_STRIDE,
+                    vertex_buffer_address: vertex_buffer.address,
+                    index_buffer_address: index_buffer.address
+                });
+
+                let instance = ray_tracing::instantiate_blas(vek::Quaternion::identity(), vek::Vec3::zero(), vek::Vec3::one(), &blas, 0, 0);
 
                 let chunk = Chunk {
                     vertex_buffer,

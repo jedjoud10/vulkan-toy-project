@@ -50,8 +50,6 @@ const static uint READBACK_BUFFER_RAYS_TRACED_QUERY_INDEX = 1;
 const static uint READBACK_BUFFER_SDF_PRIMITIVE_CALLS_QUERY_INDEX = 2;
 const static uint READBACK_BUFFER_SDF_BVH_INNER_LOOP_CALL_QUERY_INDEX = 3;
 
-
-
 const static uint STORAGE_BUFFER_MATERIALS_BUFFER = 3;
 const static uint STORAGE_BUFFER_SCENE_REPR_BUFFER = 4;
 const static uint STORAGE_BUFFER_PRIMITIVE_FLAT_LIST_BUFFER = 5;
@@ -61,15 +59,17 @@ const static uint STORAGE_BUFFER_CHUNKS_BUFFER = 8;
 const static uint STORAGE_BUFFER_BVH_NODES_BUFFER = 9;
 const static uint STORAGE_BUFFER_BVH_PRIMITIVE_INDICES_LOOKUP_BUFFER = 10;
 
-
 const static uint SKYBOX_SAMPLER_IMAGE_IDX = 0;
 const static uint AMBIENT_SKYBOX_SAMPLER_IMAGE_IDX = 1;
 const static uint CLOUDS_SAMPLER_IMAGE_IDX = 2;
+const static uint SDF_TEXTURE_SAMPLED_IMAGE_IDX = 4;
+const static uint SDF_TEXTURE2_SAMPLED_IMAGE_IDX = 5;
+const static uint VXGI_SAMPLED_IMAGE_IDX = 6;
+const static uint SDF_TEXTURE4_SAMPLED_IMAGE_IDX = 7;
 
 const static uint NEAREST_SAMPLER_IDX = 0;
 const static uint LINEAR_UNCAMPLED_SAMPLER_IDX = 1;
 const static uint LINEAR_CLAMPED_SAMPLER_IDX = 2;
-
 
 [[vk::binding(0, 0)]]
 RWTexture2D<float4> storage_images[];

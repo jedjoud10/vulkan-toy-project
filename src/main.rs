@@ -27,6 +27,8 @@ mod ray_tracing;
 mod texture_3d;
 mod shader_compiler;
 mod scene;
+mod voxel;
+mod model;
 
 use clap::Parser;
 use std::ops::ControlFlow;
@@ -62,6 +64,10 @@ struct Args {
     /// If on Linux, force winit to use X11 instead of Wayland
     #[arg(long, default_value_t = false)]
     x11: bool,
+
+    /// Force to wait on the end-of-frame fence. Basically disables multiple frames-in-flight. This forces the CPU and GPU to work sequentially and not in parallel
+    #[arg(long, default_value_t = false)]
+    force_wait_fence: bool
 }
 
 struct App {

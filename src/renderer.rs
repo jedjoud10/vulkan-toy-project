@@ -10,6 +10,7 @@ use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
 use smallvec::SmallVec;
 use crate::material::GpuMaterialInfo;
+use crate::model;
 use crate::ray_tracing;
 use crate::scene;
 use crate::texture_3d;
@@ -26,6 +27,7 @@ use crate::query_pool_statistics::QueryPoolStatistics;
 use crate::shader_compiler;
 use crate::utils::index_to_offset;
 use crate::utils::offset_to_index;
+use crate::voxel;
 use winit::event::MouseButton;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -148,10 +150,9 @@ pub struct InternalApp {
     materials: Vec<Material>,
     materials_buffer: buffer::Buffer,
 
-    scene: scene::Scene,
-    
-    // voxels: SparseVoxelOctree,
-    // voxels2: TestingStructure,
+    // scene: scene::Scene,
+    multiple_chunks: voxel::MultipleChunks,
+    models: Vec<model::Model>,
 
     counters_of_various_types: buffer::Buffer,
 
@@ -372,9 +373,7 @@ impl InternalApp {
 
         let tlas = ray_tracing::pre_create_tlas(&mut ctx);
 
-        let tesselation_buffer = tesselation::precompute_tesselation_buffer(&mut ctx);
-
-        let debug_text_buffer = buffer::create_buffer(&mut ctx, DEBUG_TEXT_BUFFER_SIZE_BYTES, "debug text", vk::BufferUsageFlags::STORAGE_BUFFER);
+        // let tesselation_buffer = tesselation::precompute_tesselation_buffer(&mut ctx);
 
         let render_finished_semaphores: SmallVec<[vk::Semaphore; swapchain::SWAPCHAIN_IMAGES]> = (0..swapchain::SWAPCHAIN_IMAGES).into_iter().map(|_| {
             device.create_semaphore(&Default::default(), None).unwrap()
@@ -387,7 +386,7 @@ impl InternalApp {
             vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST
         );
 
-        let scene = scene::Scene::new(&mut ctx);
+        // let scene = scene::Scene::new(&mut ctx);
         let counters_of_various_types = buffer::create_buffer_default_flags(&mut ctx, size_of::<u32>() * 100, "counters");
 
 
@@ -401,11 +400,20 @@ impl InternalApp {
         }
 
 
+        let materials = vec![
+            Material::new(&mut ctx, "metal/metal_0077"),
+            Material::new(&mut ctx, "ground/ground_0029"),
+            Material::new(&mut ctx, "metal_2/metal_0066"),
+            Material::new(&mut ctx, "ground_2/ground_0019"),
+        ];
+
+        let materials_buffer = buffer::create_buffer(&mut ctx, materials.len() * size_of::<GpuMaterialInfo>(), "gpu materials buffer", vk::BufferUsageFlags::TRANSFER_DST);
+        let debug_text = debug_text::DebugText::new(&mut ctx);
 
         Self {
             counters_of_various_types,
 
-            scene,
+            // scene,
 
             materials_buffer,
             materials,
@@ -457,6 +465,8 @@ impl InternalApp {
             uniform_buffer,
             acceleration_structure_device,
             host_image_copy_device,
+            multiple_chunks,
+            models,
         }
     }
 
@@ -614,7 +624,7 @@ impl InternalApp {
         if let Err(err) = self.device.wait_for_fences(&[end_fence], true, u64::MAX) {
             log::error!("wait on fence err: {:?}", err);
         } else {
-            self.stats.import_data(self.frame_count, &self.device, query_pool, self.timestamp_period);
+            // self.stats.import_data(self.frame_count, &self.device, query_pool, self.timestamp_period);
         }
 
         let post_wait_for_fence = Instant::now();
@@ -678,6 +688,7 @@ impl InternalApp {
                 .buffer(self.materials_buffer.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
+            /*
             vk::DescriptorBufferInfo::default()
                 .buffer(self.scene.gpu_packed_aabbs_buffer.buffer)
                 .offset(0)
@@ -706,6 +717,7 @@ impl InternalApp {
                 .buffer(self.scene.bvh_primitive_indices_lookup_buffer.buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE),
+            */
         ];
 
         let storage_buffer_write = vk::WriteDescriptorSet::default()
@@ -752,6 +764,7 @@ impl InternalApp {
             .dst_set(main_descriptor_set)
             .image_info(&samplers);
 
+        /*
         let tlases = [self.scene.tlas.data.acceleration_structure];
         let mut acceleration_structure_write_tmp = vk::WriteDescriptorSetAccelerationStructureKHR::default()
             .acceleration_structures(&tlases);
@@ -762,15 +775,17 @@ impl InternalApp {
             .dst_set(main_descriptor_set)
             .dst_binding(4)
             .push_next(&mut acceleration_structure_write_tmp);
+        */
 
         self.device.update_descriptor_sets(&[
             storage_images_allocator.to_descriptor_bindings(main_descriptor_set, vk::DescriptorType::STORAGE_IMAGE, 0),
             storage_buffer_write,
             sampled_images_allocator.to_descriptor_bindings(main_descriptor_set, vk::DescriptorType::SAMPLED_IMAGE, 2),
-            sampler_states_write,
-            acceleration_structure_write],
+            sampler_states_write],
+            //acceleration_structure_write],
             &[]
         );
+
 
         let cmd_buffer_begin_info = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
@@ -801,7 +816,7 @@ impl InternalApp {
             descriptor_pool: self.descriptor_pool,
         };
 
-
+        /*
         self.multiple_chunks.stuff(self.movement.position);
         self.multiple_chunks.frame(&mut ctx, scratch_buffer, cmd);
 
@@ -827,7 +842,7 @@ impl InternalApp {
                 storage_buffers_base_index: 0,
             });
         }
-
+        */
 
         // update models metadata buffer
         //self.device.cmd_update_buffer(cmd, self.models_buffer.buffer, 0, cast_slice(models_metadata_buffer_write.as_slice()));
@@ -859,12 +874,14 @@ impl InternalApp {
         dbgtext_writeln!(&mut self.debug_text, "reserved bytes: {}", reserved_bytes);
         dbgtext_writeln!(&mut self.debug_text, "allocated bytes: {}", allocated_bytes);
 
+        /*
         dbgtext_writeln!(&mut self.debug_text, "chunks in use: {}", self.scene.chunks.iter().filter(|x| x.used).count());
         dbgtext_writeln!(&mut self.debug_text, "total primitives: {}", self.scene.primitive_flat_list.len());
         dbgtext_writeln!(&mut self.debug_text, "total BVH nodes: {}", self.scene.bvh.nodes.len());
         dbgtext_writeln!(&mut self.debug_text, "max BVH depth: {}", if self.scene.bvh.nodes.is_empty() { 0 } else { self.scene.bvh.depth(0) });
+        */
         
-
+        /*
         if self.args.readback_performance_queries {
             let readback_buffer_readback_barrier = vk::BufferMemoryBarrier2::default()
                 .buffer(readback_buffer.buffer)
@@ -905,7 +922,7 @@ impl InternalApp {
             // clear data for next frame
             data.fill(0);
         }
-
+        */
 
         
         self.debug_text.update_debug_text(&ctx.device, cmd);        
@@ -913,8 +930,8 @@ impl InternalApp {
         let gpu_material_data = self.materials.iter().map(|x| GpuMaterialInfo { base_index: x.base_index }).collect::<Vec<_>>();
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&gpu_material_data), self.materials_buffer.buffer, 0);
 
-        self.scene.update(elapsed);
-        scene::rebuild_gpu_scene(&mut self.scene, cmd, scratch_buffer, &mut ctx, self.movement.position);
+        // self.scene.update(elapsed);
+        // scene::rebuild_gpu_scene(&mut self.scene, cmd, scratch_buffer, &mut ctx, self.movement.position);
 
         // bind the descriptor set for subsequent pipelines
         self.device.cmd_bind_descriptor_sets(
@@ -1007,6 +1024,7 @@ impl InternalApp {
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)
             .size(vk::WHOLE_SIZE);
+        /*
         let gpu_packed_aabbs_buffer = vk::BufferMemoryBarrier2::default()
             .buffer(self.scene.gpu_packed_aabbs_buffer.buffer)
             .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
@@ -1061,6 +1079,7 @@ impl InternalApp {
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)
             .size(vk::WHOLE_SIZE);
+        */
         let counters_of_various_types_buffer_barrier = vk::BufferMemoryBarrier2::default()
             .buffer(self.counters_of_various_types.buffer)
             .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
@@ -1074,13 +1093,16 @@ impl InternalApp {
             uniform_buffer_barrier,
             debug_text_buffer_barrier,
             materials_gpu_buffer_barrier,
+            counters_of_various_types_buffer_barrier
+            /*
             gpu_packed_aabbs_buffer,
             bvh_buffer_barrier,
             bvh_indices_lookup_buffer_barrier,
             primitive_flat_buffer_barrier,
             inv_transform_buffer_barrier,
             chunk_buffer_lookup_barrier,
-            counters_of_various_types_buffer_barrier];
+            */
+        ];
 
 
         let full_subresource_range = vk::ImageSubresourceRange::default()
@@ -1088,6 +1110,7 @@ impl InternalApp {
             .level_count(1)
             .layer_count(1);
 
+        /*
         let chunk_lookup_image_barrier = vk::ImageMemoryBarrier2::default()
             .old_layout(vk::ImageLayout::GENERAL)
             .new_layout(vk::ImageLayout::GENERAL)
@@ -1100,13 +1123,16 @@ impl InternalApp {
             .image(self.scene.chunk_lookup_texture.image)
             .subresource_range(full_subresource_range);
         let image_memory_barriers = [chunk_lookup_image_barrier];
-
-
+        
+        */
+        
+        let image_memory_barriers = [];
         let dep = vk::DependencyInfo::default().buffer_memory_barriers(&buffer_memory_barriers).image_memory_barriers(&image_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
-        self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, query_pool_statistics::ENTIRE_FRAME_QUERY_START);
-
+        // self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, query_pool_statistics::ENTIRE_FRAME_QUERY_START);
+        
+        
         self.device.cmd_bind_pipeline(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
@@ -1122,9 +1148,9 @@ impl InternalApp {
         );
 
         self.device.cmd_dispatch(cmd, skybox::SKYBOX_RESOLUTION.div_ceil(8), skybox::SKYBOX_RESOLUTION.div_ceil(8), 6);
-
-        self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, query_pool_statistics::SKYBOX_PASS_TO_SDF_PASS_QUERY);
-
+        
+        // self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, query_pool_statistics::SKYBOX_PASS_TO_SDF_PASS_QUERY);
+        /*
         scene::dispatch_compute_chunk_sdf(
             self.frame_count,
             &mut self.scene.chunks,
@@ -1132,7 +1158,8 @@ impl InternalApp {
             self.compute_pipelines[COMPUTE_SDF]["compute_chunk_sdf"],
             &ctx
         );
-        
+        */
+
         let skybox_subresource_range = vk::ImageSubresourceRange::default()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
             .level_count(1)
@@ -1174,12 +1201,14 @@ impl InternalApp {
         );
 
         self.device.cmd_dispatch(cmd, skybox::AMBIENT_SKYBOX_RESOLUTION, skybox::AMBIENT_SKYBOX_RESOLUTION, 6);
-        // self.device.cmd_dispatch(cmd, skybox::AMBIENT_SKYBOX_RESOLUTION.div_ceil(8), skybox::AMBIENT_SKYBOX_RESOLUTION.div_ceil(8), 6);
-
-        let left = self.input.get_button(Button::Mouse(MouseButton::Left)).pressed();
-        let right = self.input.get_button(Button::Mouse(MouseButton::Right)).pressed();
         
 
+        self.device.cmd_dispatch(cmd, skybox::AMBIENT_SKYBOX_RESOLUTION.div_ceil(8), skybox::AMBIENT_SKYBOX_RESOLUTION.div_ceil(8), 6);
+
+        // let left = self.input.get_button(Button::Mouse(MouseButton::Left)).pressed();
+        // let right = self.input.get_button(Button::Mouse(MouseButton::Right)).pressed();
+        
+        /*
         if  left {
             let pos = self.movement.position + self.movement.forward() * 5f32;
 
@@ -1200,7 +1229,7 @@ impl InternalApp {
                 }
             }
         }
-
+        */
         /*
         if right {
             let pos = glam::Vec3A::from_array(self.movement.position.into_array());
@@ -1230,16 +1259,17 @@ impl InternalApp {
         }
         */
 
+        /*
         self.device.cmd_bind_pipeline(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
             self.compute_pipelines[COMPUTE_SDF]["main2"]
         );
+        */
+        // let group_count = self.scene.texture2.size.map(|x| x.div_ceil(4));
+        // self.device.cmd_dispatch(cmd, group_count.w, group_count.h, group_count.d);
 
-        let group_count = self.scene.texture2.size.map(|x| x.div_ceil(4));
-        self.device.cmd_dispatch(cmd, group_count.w, group_count.h, group_count.d);
-
-        self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, query_pool_statistics::SDF_PASS_TO_VXGI_PASS_QUERY);
+        // self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, query_pool_statistics::SDF_PASS_TO_VXGI_PASS_QUERY);
 
         let skybox_subresource_range = vk::ImageSubresourceRange::default()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -1368,13 +1398,13 @@ impl InternalApp {
         self.device.cmd_dispatch(cmd, group_count.w, group_count.h, group_count.d);
         */
         
-        self.device.cmd_bind_pipeline(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.compute_pipelines[COMPUTE_FULLSCREEN]["prepass"],
-        );
+        // self.device.cmd_bind_pipeline(
+        //     cmd,
+        //     vk::PipelineBindPoint::COMPUTE,
+        //     self.compute_pipelines[COMPUTE_FULLSCREEN]["prepass"],
+        // );
         
-        self.device.cmd_dispatch(cmd, (size.x/4).div_ceil(8), (size.x/4).div_ceil(8), 1);
+        // self.device.cmd_dispatch(cmd, (size.x/4).div_ceil(8), (size.x/4).div_ceil(8), 1);
 
         
         let skybox_subresource_range = vk::ImageSubresourceRange::default()
@@ -1461,22 +1491,22 @@ impl InternalApp {
 
 
         
-        self.device.cmd_bind_pipeline(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.compute_pipelines[COMPUTE_FULLSCREEN]["main"],
-        );
+        // self.device.cmd_bind_pipeline(
+        //     cmd,
+        //     vk::PipelineBindPoint::COMPUTE,
+        //     self.compute_pipelines[COMPUTE_FULLSCREEN]["main"],
+        // );
 
-        let viewport = vk::Viewport::default().height(size.y as f32).width(size.x as f32).x(0f32).y(0f32).min_depth(0f32).max_depth(1f32);
-        self.device.cmd_set_viewport(cmd, 0, &[viewport]);
-        self.device.cmd_set_scissor(cmd, 0, &[render_area]);
+        // let viewport = vk::Viewport::default().height(size.y as f32).width(size.x as f32).x(0f32).y(0f32).min_depth(0f32).max_depth(1f32);
+        // self.device.cmd_set_viewport(cmd, 0, &[viewport]);
+        // self.device.cmd_set_scissor(cmd, 0, &[render_area]);
         
-        self.device.cmd_begin_rendering(cmd, &rendering_info);
+        // self.device.cmd_begin_rendering(cmd, &rendering_info);
 
         // render background skybox and clouds
-        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_BACKGROUND_SPV]);
-        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, vk::PolygonMode::FILL);
-        self.device.cmd_draw(cmd, 6, 1, 0, 0);
+        // self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_BACKGROUND_SPV]);
+        // self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, vk::PolygonMode::FILL);
+        // self.device.cmd_draw(cmd, 6, 1, 0, 0);
 
         
         let wireframe = crate::utils::is_set(self.toggles_bitmask as u64, 3);
@@ -1539,6 +1569,7 @@ impl InternalApp {
         */
 
         // render chunks
+        /*
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_CHUNK_SPV]);
         let material_base_index = self.materials[1].base_index;
         self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytes_of(&material_base_index));
@@ -1557,12 +1588,14 @@ impl InternalApp {
             self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
             model.render(cmd, &self.device, self.main_pipeline_layout, &self.materials);
         }        
+        */
 
-        self.device.cmd_end_rendering(cmd);
-        self.device.cmd_end_query(cmd, pipeline_statistics_query_pool, 0);
+        // self.device.cmd_end_rendering(cmd);
+        // self.device.cmd_end_query(cmd, pipeline_statistics_query_pool, 0);
 
-        self.device.cmd_dispatch(cmd, size.x.div_ceil(8), size.y.div_ceil(8), 1);
+        // self.device.cmd_dispatch(cmd, size.x.div_ceil(8), size.y.div_ceil(8), 1);
 
+        
         // transition rendered image from color attachment to sampled shader read (for bloom passes)
         let rendered_image_barrier = vk::ImageMemoryBarrier2::default()
             .old_layout(vk::ImageLayout::GENERAL)
@@ -1774,7 +1807,7 @@ impl InternalApp {
         );
 
         self.device.cmd_dispatch(cmd, window_size_no_downscale.x.div_ceil(8), window_size_no_downscale.y.div_ceil(8), 1);
-
+        
         let blit_dst_to_present_layout_transition = vk::ImageMemoryBarrier2::default()
             .old_layout(vk::ImageLayout::GENERAL)
             .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
@@ -1820,8 +1853,10 @@ impl InternalApp {
             .queue_present(self.queue, &present_info)
             .unwrap();
 
-        // self.device.wait_for_fences(&[end_fence], true, u64::MAX);
-
+        if self.args.force_wait_fence {
+            self.device.wait_for_fences(&[end_fence], true, u64::MAX).unwrap();
+        }
+        
         self.frame_count += 1;
         if suboptimal {
             self.recreate_swapchain();
@@ -1831,7 +1866,7 @@ impl InternalApp {
     pub unsafe fn destroy(mut self) {
         self.device.device_wait_idle().unwrap();
 
-        self.scene.destroy(&self.device, &self.acceleration_structure_device, &mut self.allocator);
+        // self.scene.destroy(&self.device, &self.acceleration_structure_device, &mut self.allocator);
         log::info!("destroyed scene");
 
         self.materials_buffer.destroy(&self.device, &mut self.allocator);
