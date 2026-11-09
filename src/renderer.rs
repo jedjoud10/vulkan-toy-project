@@ -61,13 +61,13 @@ const COMPUTE_SKY: &str = "compute_sky";
 const WRITE_CLOUDS_ENTRY_POINT: &str = "write_clouds";
 const WRITE_SKYBOX_ENTRY_POINT: &str = "write_skybox";
 const BLUR_AMBIENT_SKYBOX_ENTRY_POINT: &str = "blur_skybox_ambient";
-
 const COMPUTE_FULLSCREEN: &str = "fullscreen";
 
 const COMPUTE_SDF: &'static str = "compute_sdf";
 const COMPUTE_LIGHTPROBES: &'static str = "compute_lightprobes";
 const COMPUTE_VXGI: &'static str = "compute_vxgi";
-
+const RASTERIZED_SKY: &str = "rasterized_background";
+const RASTERIZED: &str = "rasterized";
 
 pub struct GraphicsContext<'a> {
     pub device: &'a ash::Device,
@@ -1497,16 +1497,38 @@ impl InternalApp {
         //     self.compute_pipelines[COMPUTE_FULLSCREEN]["main"],
         // );
 
-        // let viewport = vk::Viewport::default().height(size.y as f32).width(size.x as f32).x(0f32).y(0f32).min_depth(0f32).max_depth(1f32);
-        // self.device.cmd_set_viewport(cmd, 0, &[viewport]);
-        // self.device.cmd_set_scissor(cmd, 0, &[render_area]);
+        let viewport = vk::Viewport::default().height(size.y as f32).width(size.x as f32).x(0f32).y(0f32).min_depth(0f32).max_depth(1f32);
+        let render_area = vk::Rect2D::default().extent(vk::Extent2D::default().width(size.x as u32).height(size.y as u32));
+
+        let color_attachment = vk::RenderingAttachmentInfo::default()
+            .clear_value(vk::ClearValue { color: vk::ClearColorValue { float32: [0f32; 4] } })
+            .load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .image_view(render_targets.rendered_image_view);
+        let depth_attachment = vk::RenderingAttachmentInfo::default()
+            .clear_value(vk::ClearValue { depth_stencil: vk::ClearDepthStencilValue { depth: 1f32, stencil: 0 } })
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+            .image_view(render_targets.rendered_depth_image_image_view);
+        let color_attachments = [color_attachment];
+        let rendering_info = vk::RenderingInfo::default()
+            .color_attachments(&color_attachments)
+            .depth_attachment(&depth_attachment)
+            .layer_count(1)
+            .render_area(render_area)
+            .view_mask(0);
+
+        self.device.cmd_set_viewport(cmd, 0, &[viewport]);
+        self.device.cmd_set_scissor(cmd, 0, &[render_area]);
         
-        // self.device.cmd_begin_rendering(cmd, &rendering_info);
+        self.device.cmd_begin_rendering(cmd, &rendering_info);
 
         // render background skybox and clouds
-        // self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_BACKGROUND_SPV]);
-        // self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, vk::PolygonMode::FILL);
-        // self.device.cmd_draw(cmd, 6, 1, 0, 0);
+        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_SKY]);
+        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, vk::PolygonMode::FILL);
+        self.device.cmd_draw(cmd, 6, 1, 0, 0);
 
         
         let wireframe = crate::utils::is_set(self.toggles_bitmask as u64, 3);
@@ -1581,16 +1603,21 @@ impl InternalApp {
             self.device.cmd_bind_index_buffer(cmd, chunk.index_buffer.buffer, 0, vk::IndexType::UINT32);
             self.device.cmd_draw_indexed(cmd, chunk.index_count, 1, 0, 0, 0);
         }
+        */
+
+        for model in self.models.iter_mut() {
+            model.compute_matrices();
+        }
 
         // render models
-        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_SPV]);
+        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED]);
         for (_, model) in self.models.iter().enumerate() {
             self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
             model.render(cmd, &self.device, self.main_pipeline_layout, &self.materials);
         }        
-        */
+        
 
-        // self.device.cmd_end_rendering(cmd);
+        self.device.cmd_end_rendering(cmd);
         // self.device.cmd_end_query(cmd, pipeline_statistics_query_pool, 0);
 
         // self.device.cmd_dispatch(cmd, size.x.div_ceil(8), size.y.div_ceil(8), 1);
@@ -1977,6 +2004,26 @@ unsafe fn compile_all_shaders(
         scene::VXGI_TEXTURE_SIZE
     ];
 
+    let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
+
+
+    let position_attribute_description = vk::VertexInputAttributeDescription::default().format(vk::Format::R32G32B32_SFLOAT).binding(0).location(0).offset(0);
+    let normal_attribute_description = vk::VertexInputAttributeDescription::default().format(vk::Format::R32G32B32_SFLOAT).binding(1).location(1).offset(0);
+    let uv_attribute_description = vk::VertexInputAttributeDescription::default().format(vk::Format::R32G32_SFLOAT).binding(2).location(2).offset(0);
+
+    
+    let position_binding_description = vk::VertexInputBindingDescription::default().input_rate(vk::VertexInputRate::VERTEX).binding(0).stride(size_of::<vek::Vec3<f32>>() as u32);
+    let normal_binding_description = vk::VertexInputBindingDescription::default().input_rate(vk::VertexInputRate::VERTEX).binding(1).stride(size_of::<vek::Vec3<f32>>() as u32);
+    let uv_binding_description = vk::VertexInputBindingDescription::default().input_rate(vk::VertexInputRate::VERTEX).binding(2).stride(size_of::<vek::Vec2<f32>>() as u32);
+    
+
+    let attrs = [position_attribute_description, normal_attribute_description, uv_attribute_description];
+    let binds = [position_binding_description, normal_binding_description, uv_binding_description];
+    let model_vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
+        .vertex_attribute_descriptions(&attrs)
+        .vertex_binding_descriptions(&binds);
+    
+
     let settings = [pipeline::PipelineCreateSettings {
         pipeline_debug_name: "post process compute pipeline",
         wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &[WRITE_SWAPCHAIN_IMAGE_ENTRY_POINT, BLOOM_DOWNSAMPLE_ENTRY_POINT, BLOOM_UPSAMPLE_ENTRY_POINT] },
@@ -1998,13 +2045,23 @@ unsafe fn compile_all_shaders(
         spec_constants: Some(&spec_constants),
         file_name_without_extension: COMPUTE_SDF,
     }, pipeline::PipelineCreateSettings {
+        pipeline_debug_name: "rasterized sky",
+        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Graphics { face_culling: false, vertex_input: vertex_input },
+        spec_constants: Some(&spec_constants),
+        file_name_without_extension: RASTERIZED_SKY,
+    }, pipeline::PipelineCreateSettings {
+        pipeline_debug_name: "rasterized models",
+        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Graphics { face_culling: false, vertex_input: model_vertex_input },
+        spec_constants: Some(&spec_constants),
+        file_name_without_extension: RASTERIZED,
+    }, pipeline::PipelineCreateSettings {
         pipeline_debug_name: "compute vxgi shader",
         wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["voxelize", "mip_map_downsample"] },
         spec_constants: Some(&spec_constants),
         file_name_without_extension: COMPUTE_VXGI,
     }];
 
-    let compiled = shader_compiler::compile_all_shaders(first_time);
+    let compiled = shader_compiler::compile_required_shaders(first_time, &settings);
 
     let compiled = match compiled {
         Ok(data) => data,

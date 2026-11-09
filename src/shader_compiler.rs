@@ -73,7 +73,8 @@ fn visit_dirs(dir: &Path, list: &mut Vec<DirEntry>) {
 }
 
 // TODO: implement some sort of caching system that avoid recompiling shaders that have already been compiled
-pub fn compile_all_shaders(panic_on_error: bool) -> Result<HashMap<String, Vec<u8>>, ()> {
+// compiles shaders that are actually used by pipelines. does NOT compile unused shaders
+pub fn compile_required_shaders(panic_on_error: bool, pipelines: &[crate::pipeline::PipelineCreateSettings]) -> Result<HashMap<String, Vec<u8>>, ()> {
     log::info!("compiling slang shaders");
     let start = std::time::Instant::now();
 
@@ -89,7 +90,7 @@ pub fn compile_all_shaders(panic_on_error: bool) -> Result<HashMap<String, Vec<u
     //visit_dirs(&shaders_path, &mut entries);
     for entry in fs::read_dir(shaders_path).unwrap() {
         let entry = entry.unwrap();
-        if entry.path().is_file() {
+        if entry.path().is_file() && pipelines.iter().any(|x| x.file_name_without_extension == entry.path().file_prefix().unwrap().to_str().unwrap()) {
             entries.push(entry);
         }
     }

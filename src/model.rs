@@ -118,19 +118,14 @@ impl Model {
         storage_buffers.push(vk::DescriptorBufferInfo::default().buffer(self.vertex_uvs_buffer.buffer).range(vk::WHOLE_SIZE));
     }
 
-    pub fn update(&mut self, elapsed: f32, movement: &crate::movement::Movement) {
+    pub fn compute_matrices(&mut self) {
         let position = self.position;
         let rotation = vek::Quaternion::identity();
         
-        /*
-        let position = self.position + vek::Vec3::unit_y() * elapsed.sin() * 0.2f32;
-        let rotation = vek::Quaternion::rotation_x(elapsed * 0.2f32);
-        */
         let scale = 3f32;
-
         let matrix = vek::Mat4::from(rotation).scaled_3d(scale).translated_3d(position);
-
         self.object_to_world = matrix;
+
 
         let row_arrays = &matrix.into_row_arrays()[0..3];
         let matrix: [f32; 12] = cast_slice::<[f32;4],f32>(row_arrays).try_into().unwrap();
