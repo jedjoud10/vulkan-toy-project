@@ -124,6 +124,52 @@ void InitRandom(uint2 pos, uint frameNo) {
     g_RandomSeed ^= frameNo * 1234;
 }
 
+float hw_trace_shadow_towards_sun(float3 world, float3 normal, float3 sun_direction) {
+	RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_CULL_NON_OPAQUE> sq;
+	let flags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_CULL_NON_OPAQUE;
+
+	static const float SHADOW_RAY_NORMAL_OFFSET = 0.001;
+	static const float SHADOW_RAY_TMAX = 1000;
+	static const float SHADOW_RAY_TMIN = 0.01;
+	static const int SAMPLES = 1;
+	static const bool PERTURB = SAMPLES > 1;
+
+	float factor = 0.0;
+
+	for (int i = 0; i < SAMPLES; i++) {
+		RayDesc desc;
+		desc.Origin = world + normal * SHADOW_RAY_NORMAL_OFFSET;
+		desc.Direction = normalize(sun_direction + (hash33(i * 400.12324 + world * float3(3.1231, -432.342, 54.343)) - 0.5) * 0.02 * PERTURB);
+		desc.TMax = SHADOW_RAY_TMAX;
+		desc.TMin = SHADOW_RAY_TMIN;
+
+		sq.TraceRayInline(acceleration_structures[0], flags, 0xFF, desc);
+
+		sq.Proceed();
+
+		factor += (sq.CommittedStatus() == COMMITTED_TRIANGLE_HIT) ? 0.0 : 1.0;
+	}
+
+	return factor / (float)SAMPLES;
+}
+
+float hw_trace_shadow_light(float3 world, float3 light) {
+	RayDesc desc;
+	desc.Origin = world;
+	desc.Direction = normalize(light - world);
+	desc.TMax = distance(world, light);
+	desc.TMin = 0.01;
+
+	RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_CULL_NON_OPAQUE> sq;
+	let flags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_CULL_NON_OPAQUE;
+
+	sq.TraceRayInline(acceleration_structures[0], flags, 0xFF, desc);
+
+	sq.Proceed();
+
+	return (sq.CommittedStatus() == COMMITTED_TRIANGLE_HIT) ? 0.0 : 1.0;
+}
+
 float3 get_sun_shadow(float3 world, float3 normal, float3 sun) {
 	float3 randomized_sun_direction = normalize(sun + GetRandomSphereDir() * 0.02);
 	let clouds_shadow = 1-clouds(randomized_sun_direction, world).a;
@@ -132,12 +178,18 @@ float3 get_sun_shadow(float3 world, float3 normal, float3 sun) {
 		return 0.0;
 	}
 
-#ifdef SDF_SOFT_SHADOWS_SUPPORTED
-	let res = shadow_trace(world, sun);
-#else
-	let res = shadow_trace(world + normal * THRESHOLD_DISTANCE + randomized_sun_direction * THRESHOLD_DISTANCE, randomized_sun_direction);
-#endif	
+    float res = 1.0;
 
+#ifdef SDF_SOFT_SHADOWS_SUPPORTED
+	res = shadow_trace(world, sun);
+#endif
+
+    res = hw_trace_shadow_towards_sun(world, normal, sun);
+    // res = 0.0;
+
+
+
+	
 	return min(res, clouds_shadow);
 }
 

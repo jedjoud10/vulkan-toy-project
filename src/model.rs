@@ -93,7 +93,14 @@ impl Model {
             index_buffer_address: index_buffer.address
         });
 
-        let instance = ray_tracing::instantiate_blas(vek::Quaternion::identity(), vek::Vec3::zero(), vek::Vec3::one(), &blas, 0, 0);
+        let instance = ray_tracing::instantiate_blas(
+            vek::Quaternion::identity(),
+            vek::Vec3::zero(),
+            vek::Vec3::one(),
+            &blas,
+            0,
+            0xFF
+        );
 
         Self {
             vertex_positions_buffer,

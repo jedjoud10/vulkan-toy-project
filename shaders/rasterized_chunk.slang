@@ -49,14 +49,10 @@ float4 frag_main(VertexOutput in_vert, uniform uint material_base_texture_index)
     float3 view = -normalize(in_vert.world_pos - uniforms.position.xyz);  
 
     
-    //float3 diffuse = sample_triplanar(material_base_texture_index, world, normal);
-    //float3 arm = sample_triplanar(material_base_texture_index+1, world, normal);
+    float3 diffuse = sample_triplanar(material_base_texture_index, world, normal);
+    float3 arm = sample_triplanar(material_base_texture_index+1, world, normal);
     normal = normalize(sample_triplanar_normal(material_base_texture_index+2, world, normal));
-    
 
-    float3 diffuse = in_vert.colour;
-    float3 arm = float3(1.0, 0.8, 0);
-    
     
 
     
@@ -69,5 +65,6 @@ float4 frag_main(VertexOutput in_vert, uniform uint material_base_texture_index)
 
     // return float4(lighting3<1>(pbr_surface_data, camera_data, sun_data), 1);
     float3 rendered = lighting2(pbr_surface_data, camera_data, sun_data);
+    // float3 rendered = hw_trace_shadow_light(world, sun);
     return float4(rendered, 1);
 }

@@ -68,6 +68,7 @@ const COMPUTE_LIGHTPROBES: &'static str = "compute_lightprobes";
 const COMPUTE_VXGI: &'static str = "compute_vxgi";
 const RASTERIZED_SKY: &str = "rasterized_background";
 const RASTERIZED: &str = "rasterized";
+const RASTERIZED_CHUNKS: &str = "rasterized_chunk";
 
 pub struct GraphicsContext<'a> {
     pub device: &'a ash::Device,
@@ -149,6 +150,7 @@ pub struct InternalApp {
 
     materials: Vec<Material>,
     materials_buffer: buffer::Buffer,
+    tlas: ray_tracing::TopLevelAccelerationStructure,
 
     // scene: scene::Scene,
     multiple_chunks: voxel::MultipleChunks,
@@ -411,6 +413,7 @@ impl InternalApp {
         let debug_text = debug_text::DebugText::new(&mut ctx);
 
         Self {
+            tlas,
             counters_of_various_types,
 
             // scene,
@@ -764,8 +767,8 @@ impl InternalApp {
             .dst_set(main_descriptor_set)
             .image_info(&samplers);
 
-        /*
-        let tlases = [self.scene.tlas.data.acceleration_structure];
+        
+        let tlases = [self.tlas.data.acceleration_structure];
         let mut acceleration_structure_write_tmp = vk::WriteDescriptorSetAccelerationStructureKHR::default()
             .acceleration_structures(&tlases);
 
@@ -775,14 +778,14 @@ impl InternalApp {
             .dst_set(main_descriptor_set)
             .dst_binding(4)
             .push_next(&mut acceleration_structure_write_tmp);
-        */
+        
 
         self.device.update_descriptor_sets(&[
             storage_images_allocator.to_descriptor_bindings(main_descriptor_set, vk::DescriptorType::STORAGE_IMAGE, 0),
             storage_buffer_write,
             sampled_images_allocator.to_descriptor_bindings(main_descriptor_set, vk::DescriptorType::SAMPLED_IMAGE, 2),
-            sampler_states_write],
-            //acceleration_structure_write],
+            sampler_states_write,
+            acceleration_structure_write],
             &[]
         );
 
@@ -816,33 +819,35 @@ impl InternalApp {
             descriptor_pool: self.descriptor_pool,
         };
 
-        /*
         self.multiple_chunks.stuff(self.movement.position);
         self.multiple_chunks.frame(&mut ctx, scratch_buffer, cmd);
-
-
-
-
+        let mut dynamic_instances = Vec::<vk::AccelerationStructureInstanceKHR>::new();
 
         // update dynamic instances for TLAS
-        self.dynamic_instances.clear();
-        let mut models_metadata_buffer_write =  Vec::<GpuModelMetadata>::new();
+        // self.dynamic_instances.clear();
+        // let mut models_metadata_buffer_write =  Vec::<GpuModelMetadata>::new();
         for model in self.models.iter() {
-            self.dynamic_instances.push(model.instance);
+            dynamic_instances.push(model.instance);
+            /*
             models_metadata_buffer_write.push(GpuModelMetadata {
                 material_base_index: self.materials[model.material_index as usize].base_index,
                 storage_buffers_base_index: model.base_index,
             });
+            */
         }
 
         for chunk in self.multiple_chunks.chunks.values().filter_map(|x| x.as_ref()) {
-            self.dynamic_instances.push(chunk.instance);
+            dynamic_instances.push(chunk.instance);
+            /*
             models_metadata_buffer_write.push(GpuModelMetadata {
                 material_base_index: self.materials[0].base_index,
                 storage_buffers_base_index: 0,
             });
+            */
         }
-        */
+        // */
+
+
 
         // update models metadata buffer
         //self.device.cmd_update_buffer(cmd, self.models_buffer.buffer, 0, cast_slice(models_metadata_buffer_write.as_slice()));
@@ -929,6 +934,9 @@ impl InternalApp {
 
         let gpu_material_data = self.materials.iter().map(|x| GpuMaterialInfo { base_index: x.base_index }).collect::<Vec<_>>();
         buffer::write_with_scratch_buffer(&mut ctx, cmd, scratch_buffer, cast_slice(&gpu_material_data), self.materials_buffer.buffer, 0);
+
+
+        ray_tracing::rebuild_tlas(dynamic_instances.iter().cloned(), &self.tlas, &mut ctx, cmd, scratch_buffer);
 
         // self.scene.update(elapsed);
         // scene::rebuild_gpu_scene(&mut self.scene, cmd, scratch_buffer, &mut ctx, self.movement.position);
@@ -1591,8 +1599,8 @@ impl InternalApp {
         */
 
         // render chunks
-        /*
-        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_CHUNK_SPV]);
+    
+        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_CHUNKS]);
         let material_base_index = self.materials[1].base_index;
         self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytes_of(&material_base_index));
 
@@ -1603,8 +1611,7 @@ impl InternalApp {
             self.device.cmd_bind_index_buffer(cmd, chunk.index_buffer.buffer, 0, vk::IndexType::UINT32);
             self.device.cmd_draw_indexed(cmd, chunk.index_count, 1, 0, 0, 0);
         }
-        */
-
+    
         for model in self.models.iter_mut() {
             model.compute_matrices();
         }
@@ -2022,6 +2029,12 @@ unsafe fn compile_all_shaders(
     let model_vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
         .vertex_attribute_descriptions(&attrs)
         .vertex_binding_descriptions(&binds);
+
+    let attrs = [position_attribute_description];
+    let binds = [position_binding_description];
+    let chunk_vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
+        .vertex_attribute_descriptions(&attrs)
+        .vertex_binding_descriptions(&binds);
     
 
     let settings = [pipeline::PipelineCreateSettings {
@@ -2054,6 +2067,11 @@ unsafe fn compile_all_shaders(
         wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Graphics { face_culling: false, vertex_input: model_vertex_input },
         spec_constants: Some(&spec_constants),
         file_name_without_extension: RASTERIZED,
+    }, pipeline::PipelineCreateSettings {
+        pipeline_debug_name: "rasterized chunks",
+        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Graphics { face_culling: false, vertex_input: chunk_vertex_input },
+        spec_constants: Some(&spec_constants),
+        file_name_without_extension: RASTERIZED_CHUNKS,
     }, pipeline::PipelineCreateSettings {
         pipeline_debug_name: "compute vxgi shader",
         wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["voxelize", "mip_map_downsample"] },

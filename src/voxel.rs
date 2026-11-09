@@ -57,7 +57,7 @@ impl MultipleChunks {
             },
         });
 
-        let _threads = (0..0).into_iter().map(|thread_id| {
+        let _threads = (0..4).into_iter().map(|thread_id| {
             let shared = shared.clone();
             let tx = tx.clone();
             let thread = std::thread::spawn(move || {
@@ -122,14 +122,14 @@ impl MultipleChunks {
             receiver: rx,
             chunks: Default::default(),
             destruction: Default::default(),
-            octree: Octree::new(8, CHUNK_SIZE as u32),
+            octree: Octree::new(5, CHUNK_SIZE as u32),
         }
     }
 
     pub fn stuff(&mut self, position: vek::Vec3<f32>) {
-	    return;
+	    // return;
 	
-        if !self.chunks.is_empty() { return; }
+        // if !self.chunks.is_empty() { return; }
         let OctreeDelta { added, removed } = self.octree.compute(&[position]);
 
 
@@ -198,7 +198,7 @@ impl MultipleChunks {
                     index_buffer_address: index_buffer.address
                 });
 
-                let instance = ray_tracing::instantiate_blas(vek::Quaternion::identity(), vek::Vec3::zero(), vek::Vec3::one(), &blas, 0, 0);
+                let instance = ray_tracing::instantiate_blas(vek::Quaternion::identity(), vek::Vec3::zero(), vek::Vec3::one(), &blas, 0, 0xFF);
 
                 let chunk = Chunk {
                     vertex_buffer,
