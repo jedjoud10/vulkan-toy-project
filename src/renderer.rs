@@ -1564,7 +1564,11 @@ impl InternalApp {
         self.device.cmd_draw(cmd, 6, 1, 0, 0);
 
         
-        let wireframe = crate::utils::is_set(self.toggles_bitmask as u64, 3);
+        let polygon_mode = match self.debug_type {
+            1 => vk::PolygonMode::LINE,
+            2 => vk::PolygonMode::POINT,
+            _ => vk::PolygonMode::FILL,
+        };
 
         /*
         // render objs using mesh shaders (passthrough) 
@@ -1633,16 +1637,16 @@ impl InternalApp {
         struct ChunkPushConstants {
             vertex_buffer_address: vk::DeviceAddress,
             material_base_index: u32,
-            _padding: u32,
+            draw_index: u32,
         }
         
-        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
-        for chunk in self.multiple_chunks.chunks.values().filter_map(|x| x.as_ref()) {
+        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, polygon_mode);
+        for (i, chunk) in self.multiple_chunks.chunks.values().filter_map(|x| x.as_ref()).enumerate() {
             // self.device.cmd_bind_vertex_buffers(cmd, 0, &[chunk.vertex_buffer.buffer], &[0]);
             let pc = ChunkPushConstants {
                 vertex_buffer_address: chunk.vertex_buffer.address,
                 material_base_index,
-                _padding: 0,
+                draw_index: i as u32,
             };
 
             self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytes_of(&pc));
@@ -1657,7 +1661,7 @@ impl InternalApp {
         // render models
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED]);
         for (_, model) in self.models.iter().enumerate() {
-            self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
+            self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, polygon_mode);
             model.render(cmd, &self.device, self.main_pipeline_layout, &self.materials);
         }        
         

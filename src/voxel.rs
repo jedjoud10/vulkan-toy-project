@@ -124,7 +124,7 @@ impl MultipleChunks {
             receiver: rx,
             chunks: Default::default(),
             destruction: Default::default(),
-            octree: Octree::new(5, CHUNK_SIZE as u32),
+            octree: Octree::new(3, CHUNK_SIZE as u32),
         }
     }
 

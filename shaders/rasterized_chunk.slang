@@ -6,7 +6,7 @@
 struct PushConstants {
     float3 *vertex_buffer_address;
     uint material_base_texture_index;
-    uint _padding;
+    uint draw_index;
 };
 
 struct VertexOutput {
@@ -42,7 +42,7 @@ float4 frag_main(VertexOutput in_vert, uniform PushConstants pc) : SV_Target {
     let uniforms = load_per_frame_uniforms();
 
     if ((uniforms.toggles_bitmask & 8) == 8) {
-        return 1.0;
+        return float4(hash31((float)pc.draw_index * 123.456), 1);
     }
 
     uint material_base_texture_index = pc.material_base_texture_index;

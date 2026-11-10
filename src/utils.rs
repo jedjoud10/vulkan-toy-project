@@ -21,6 +21,9 @@ pub fn set_bit(mask: &mut u64, index: u32, set: bool) {
     }
 }
 
+pub fn in_range(offset: vek::Vec3<usize>, size: usize) -> bool {
+    offset.cmpge(&vek::Vec3::broadcast(0)).reduce_and() && offset.cmplt(&vek::Vec3::broadcast(size)).reduce_and()
+}
 
 pub fn offset_to_index(offset: vek::Vec3<usize>, size: usize) -> usize {
     assert!(offset.cmpge(&vek::Vec3::broadcast(0)).reduce_and());
@@ -124,6 +127,15 @@ pub const OFFSETS: [vek::Vec3::<i32>; 6] = [
     vek::Vec3::new(0, -1, 0),
     vek::Vec3::new(0, 1, 0),
     vek::Vec3::new(0, 0, -1),
+    vek::Vec3::new(0, 0, 1),
+];
+
+pub const FORWARD: [vek::Vec3::<i32>; 3] = [
+    // vek::Vec3::new(-1, 0, 0),
+    vek::Vec3::new(1, 0, 0),
+    // vek::Vec3::new(0, -1, 0),
+    vek::Vec3::new(0, 1, 0),
+    // vek::Vec3::new(0, 0, -1),
     vek::Vec3::new(0, 0, 1),
 ];
 
