@@ -69,6 +69,8 @@ const COMPUTE_VXGI: &'static str = "compute_vxgi";
 const RASTERIZED_SKY: &str = "rasterized_background";
 const RASTERIZED: &str = "rasterized";
 const RASTERIZED_CHUNKS: &str = "rasterized_chunk";
+const RASTERIZED_MS_GENERATED_GRASS_SPV: &str = "rasterized_ms_generated_grass";
+
 
 pub struct GraphicsContext<'a> {
     pub device: &'a ash::Device,
@@ -1591,8 +1593,8 @@ impl InternalApp {
         }
         */
 
-        /*
         // render grass
+        /*
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_GENERATED_GRASS_SPV]);
         self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if self.wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
         self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  16, 16, 1);
@@ -2062,6 +2064,11 @@ unsafe fn compile_all_shaders(
         wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["voxelize", "mip_map_downsample"] },
         spec_constants: Some(&spec_constants),
         file_name_without_extension: COMPUTE_VXGI,
+    }, pipeline::PipelineCreateSettings {
+        pipeline_debug_name: "mesh shader grass",
+        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::GraphicsMeshShader { face_culling: true, task_shader: true },
+        spec_constants: Some(&spec_constants),
+        file_name_without_extension: RASTERIZED_MS_GENERATED_GRASS_SPV,
     }];
 
     let compiled = shader_compiler::compile_required_shaders(first_time, &settings);

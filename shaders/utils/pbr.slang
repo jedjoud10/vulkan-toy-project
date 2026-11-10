@@ -184,7 +184,10 @@ float3 get_sun_shadow(float3 world, float3 normal, float3 sun) {
 	res = shadow_trace(world, sun);
 #endif
 
+// #define HW_RAY_TRACED_SUN_SHADOW
+#ifdef HW_RAY_TRACED_SUN_SHADOW
     res = hw_trace_shadow_towards_sun(world, normal, sun);
+#endif
     // res = 0.0;
 
 

@@ -29,6 +29,7 @@ mod shader_compiler;
 mod scene;
 mod voxel;
 mod model;
+mod mesher;
 
 use clap::Parser;
 use std::ops::ControlFlow;

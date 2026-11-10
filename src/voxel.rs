@@ -75,7 +75,7 @@ impl MultipleChunks {
                         let mut positive = false;
                         let mut negative = false;
                         for index in 0..CHUNK_VOLUME  {
-                            let local_position = index_to_offset(index, CHUNK_SIZE_WITH_PADDING).as_::<f32>();
+                            let local_position = crate::utils::index_to_offset(index, CHUNK_SIZE_WITH_PADDING).as_::<f32>();
                             let world_position = local_position * chunk_scale + chunk_position.as_::<f32>();
                             let pos = world_position.as_::<f64>();
                         
@@ -84,7 +84,8 @@ impl MultipleChunks {
                             let stepped = height;
                             let diff = ((height - stepped).abs() / 5.0f64) - 0.5;
                         
-                            let density = pos.y - (stepped + -diff * shared.extra.get([pos.x,pos.y*3.21,pos.z]).abs() as f64 * 10.0f64);
+                            // let density = pos.y - (stepped + -diff * shared.extra.get([pos.x,pos.y*3.21,pos.z]).abs() as f64 * 10.0f64);
+                            let density = pos.y - 5.0f64;
                             densities[index] = density as f32;
 
                             positive |= densities[index] >= 0f32;
@@ -95,7 +96,7 @@ impl MultipleChunks {
                         if positive == negative {
                             log::debug!("TID: {thread_id}. generating mesh for chunk");
                     
-                            let (vertices, indices) = mesh_chunk(densities, chunk_position, chunk_scale);
+                            let crate::mesher::MeshedChunk { vertices, indices } = crate::mesher::mesh_chunk(densities, chunk_position, chunk_scale);
                             log::debug!("TID: {thread_id}. vert count: {}. index count: {}", vertices.len(), indices.len());
 
                             if !vertices.is_empty() && !indices.is_empty() {
@@ -239,179 +240,6 @@ impl Chunk {
         self.blas.destroy(acceleration_structure_device, device, allocator);
     } 
 }
-
-
-const INDEX_QUAD_ORDER: [usize; 6] = [0, 1, 2, 2, 1, 3];
-const INDEX_OPPOSITE_QUAD_ORDER: [usize; 6] = [1, 0, 2, 1, 2, 3];
-
-const EDGE_POSITIONS_0: [vek::Vec3<u32>; 12] = [
-    vek::Vec3::new(0, 0, 0),
-    vek::Vec3::new(1, 0, 0),
-    vek::Vec3::new(1, 1, 0),
-    vek::Vec3::new(0, 1, 0),
-    vek::Vec3::new(0, 0, 1),
-    vek::Vec3::new(1, 0, 1),
-    vek::Vec3::new(1, 1, 1),
-    vek::Vec3::new(0, 1, 1),
-    vek::Vec3::new(0, 0, 0),
-    vek::Vec3::new(1, 0, 0),
-    vek::Vec3::new(1, 1, 0),
-    vek::Vec3::new(0, 1, 0),
-];
-
-const EDGE_POSITIONS_1: [vek::Vec3<u32>; 12] = [
-    vek::Vec3::new(1, 0, 0),
-    vek::Vec3::new(1, 1, 0),
-    vek::Vec3::new(0, 1, 0),
-    vek::Vec3::new(0, 0, 0),
-    vek::Vec3::new(1, 0, 1),
-    vek::Vec3::new(1, 1, 1),
-    vek::Vec3::new(0, 1, 1),
-    vek::Vec3::new(0, 0, 1),
-    vek::Vec3::new(0, 0, 1),
-    vek::Vec3::new(1, 0, 1),
-    vek::Vec3::new(1, 1, 1),
-    vek::Vec3::new(0, 1, 1),
-];
-
-fn unlerp(x: f32, a: f32, b: f32) -> f32 {
-    return (x - a) / (b - a);
-}
-
-// stupid and unoptimized but works for now ig
-fn mesh_chunk(densities: Vec<f32>, chunk_position: vek::Vec3<i32>, chunk_scale: f32) -> (Vec::<vek::Vec3<f32>>, Vec<u32>) {
-    let mut vertices = Vec::<vek::Vec3<f32>>::new();
-    let mut indices = Vec::<u32>::new();
-    let mut lookup = vec![0u32; CHUNK_VOLUME];
-
-    // first pass will generate vertex positions
-    for x in 0..(CHUNK_SIZE_WITH_PADDING-1) {
-        for y in 0..(CHUNK_SIZE_WITH_PADDING-1) {
-            for z in 0..(CHUNK_SIZE_WITH_PADDING-1) {
-                let pos = vek::Vec3::new(x,y,z);
-
-                let mut vertex = vek::Vec3::<f32>::zero();
-                let mut count = 0;
-
-                for edge in 0..12 {
-                    let p1_offsetted = EDGE_POSITIONS_0[edge];
-                    let p2_offsetted = EDGE_POSITIONS_1[edge];
-
-                    let p1_offsetted_index = offset_to_index(pos + p1_offsetted.as_::<usize>(), CHUNK_SIZE_WITH_PADDING as usize);
-                    let p2_offsetted_index = offset_to_index(pos + p2_offsetted.as_::<usize>(), CHUNK_SIZE_WITH_PADDING as usize);
-
-                    let d1 = densities[p1_offsetted_index];
-                    let d2 = densities[p2_offsetted_index];
-
-                    if (d1 < 0f32) ^ (d2 < 0f32) {
-                        let factor = unlerp(0f32, d1, d2);
-                        vertex += vek::Vec3::lerp(p1_offsetted.as_::<f32>(), p2_offsetted.as_::<f32>(), factor);
-                        count += 1;
-                    }
-                }
-
-                if count > 0 {
-                    let inside_cell_offset = vertex / count as f32;
-                    let vertex_position = (inside_cell_offset + pos.as_::<f32>()) * chunk_scale + chunk_position.as_::<f32>();
-                    let index = vertices.len();
-                    lookup[offset_to_index(pos, CHUNK_SIZE_WITH_PADDING)] = index as u32;
-                    vertices.push(vertex_position);
-                }
-            }
-        }
-    }
-
-    // second pass will generate quads
-    for x in 1..(CHUNK_SIZE_WITH_PADDING-1) {
-        for y in 1..(CHUNK_SIZE_WITH_PADDING-1) {
-            for z in 1..(CHUNK_SIZE_WITH_PADDING-1) {
-                let pos = vek::Vec3::new(x,y,z);
-                let is_set = densities[offset_to_index(pos, CHUNK_SIZE_WITH_PADDING)] < 0f32;
-                
-                for axis in 0..3 {
-                    // next cell is the cell "forward" to the current cell based on axiss
-                    let mut next_cell = pos;
-                    next_cell[axis] += 1;
-                    
-                    let next_cell_is_set = densities[offset_to_index(next_cell, CHUNK_SIZE_WITH_PADDING)] < 0f32;
-                    
-                    if is_set != next_cell_is_set {
-                        let mut quad_vertex_indices: [u32; 4] = [u32::MAX; 4];
-                        
-                        let dir = is_set ^ (axis == 1);
-                        let vertex_offsets: [vek::Vec3<usize>; 4] = quad_vertex_offsets_for_axis(axis as u32);
-
-                        // inside quad local vertex index
-                        for index in 0..4 {
-                            let target = vertex_offsets[index] + next_cell - 1;
-
-                            if let Some(looked_up_vertex_index) = try_offset_to_index(target, CHUNK_SIZE_WITH_PADDING).map(|x| lookup[x]) {
-                                quad_vertex_indices[index] = looked_up_vertex_index;
-                            }
-                        }
-
-                        // don't do anything if quad contains invalid vertices
-                        if quad_vertex_indices.iter().any(|x| *x == u32::MAX) {
-                            continue;
-                        }
-
-                        // holy cursed
-                        let quad_vertex_order = if dir { INDEX_QUAD_ORDER } else { INDEX_OPPOSITE_QUAD_ORDER };
-                        for what_to_call_this_index in 0..6 {
-                            indices.push(quad_vertex_indices[quad_vertex_order[what_to_call_this_index]]);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    return (vertices, indices);
-}
-
-fn quad_vertex_offsets_for_axis(axis: u32) -> [vek::Vec3<usize>; 4] {
-    match axis {
-        0 => [vek::Vec3::new(0, 0, 0), vek::Vec3::new(0, 1, 0), vek::Vec3::new(0, 0, 1), vek::Vec3::new(0, 1, 1)], // x
-        1 => [vek::Vec3::new(0, 0, 0), vek::Vec3::new(1, 0, 0), vek::Vec3::new(0, 0, 1), vek::Vec3::new(1, 0, 1)], // y
-        2 => [vek::Vec3::new(0, 0, 0), vek::Vec3::new(1, 0, 0), vek::Vec3::new(0, 1, 0), vek::Vec3::new(1, 1, 0)], // z
-        _ => unreachable!()
-    }
-}
-
-
-pub fn try_offset_to_index(offset: vek::Vec3<usize>, size: usize) -> Option<usize> {
-    if offset.cmpge(&vek::Vec3::broadcast(0)).reduce_and() && offset.cmplt(&vek::Vec3::broadcast(size)).reduce_and() {
-        Some(offset.x + offset.y * size + offset.z * size * size)
-    } else {
-        None
-    }
-}
-
-pub fn offset_to_index(offset: vek::Vec3<usize>, size: usize) -> usize {
-    assert!(offset.cmpge(&vek::Vec3::broadcast(0)).reduce_and());
-    assert!(offset.cmplt(&vek::Vec3::broadcast(size)).reduce_and());
-    
-    offset.x + offset.y * size + offset.z * size * size
-}
-
-pub fn index_to_offset(index: usize, size: usize) -> vek::Vec3<usize> {
-    assert!(index < (size*size*size));
-    
-    let x: usize = index % size;
-    let y = (index / size) % size;
-    let z = index / (size*size);
-    vek::Vec3::new(x,y,z)
-}
-
-pub fn child_offset_to_child_index(offset: vek::Vec3<usize>) -> usize {
-    offset_to_index(offset, 4)
-}
-
-pub fn child_index_to_child_offset(index: usize) -> vek::Vec3<usize> {
-    index_to_offset(index, 4)
-}
-
-
 
 /*
 use ash::vk;

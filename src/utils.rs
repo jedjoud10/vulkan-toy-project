@@ -38,6 +38,52 @@ pub fn index_to_offset(index: usize, size: usize) -> vek::Vec3<usize> {
     vek::Vec3::new(x,y,z)
 }
 
+
+pub fn offset_to_index_flat(offset: vek::Vec2<usize>, size: usize) -> usize {
+    assert!(offset.cmpge(&vek::Vec2::broadcast(0)).reduce_and());
+    assert!(offset.cmplt(&vek::Vec2::broadcast(size)).reduce_and());
+    
+    offset.x + offset.y * size
+}
+
+pub fn index_to_offset_flat(index: usize, size: usize) -> vek::Vec2<usize> {
+    assert!(index < (size*size));
+    
+    let x: usize = index % size;
+    let y = (index / size) % size;
+    vek::Vec2::new(x,y)
+}
+
+pub fn quad_vertex_offsets_for_axis(axis: u32) -> [vek::Vec3<usize>; 4] {
+    match axis {
+        0 => [vek::Vec3::new(0, 0, 0), vek::Vec3::new(0, 1, 0), vek::Vec3::new(0, 0, 1), vek::Vec3::new(0, 1, 1)], // x
+        1 => [vek::Vec3::new(0, 0, 0), vek::Vec3::new(1, 0, 0), vek::Vec3::new(0, 0, 1), vek::Vec3::new(1, 0, 1)], // y
+        2 => [vek::Vec3::new(0, 0, 0), vek::Vec3::new(1, 0, 0), vek::Vec3::new(0, 1, 0), vek::Vec3::new(1, 1, 0)], // z
+        _ => unreachable!()
+    }
+}
+
+
+pub fn try_offset_to_index(offset: vek::Vec3<usize>, size: usize) -> Option<usize> {
+    if offset.cmpge(&vek::Vec3::broadcast(0)).reduce_and() && offset.cmplt(&vek::Vec3::broadcast(size)).reduce_and() {
+        Some(offset.x + offset.y * size + offset.z * size * size)
+    } else {
+        None
+    }
+}
+
+pub fn child_offset_to_child_index(offset: vek::Vec3<usize>) -> usize {
+    offset_to_index(offset, 4)
+}
+
+pub fn child_index_to_child_offset(index: usize) -> vek::Vec3<usize> {
+    index_to_offset(index, 4)
+}
+
+pub fn unlerp(x: f32, a: f32, b: f32) -> f32 {
+    return (x - a) / (b - a);
+}
+
 pub const OFFSETS: [vek::Vec3::<i32>; 6] = [
     vek::Vec3::new(-1, 0, 0),
     vek::Vec3::new(1, 0, 0),
