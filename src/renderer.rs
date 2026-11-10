@@ -33,6 +33,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ops::ControlFlow;
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 use std::fmt::Write;
@@ -128,6 +129,7 @@ pub struct InternalApp {
     // pipelines
     graphics_pipelines: HashMap<&'static str, pipeline::GenericGraphicsPipeline>,
     compute_pipelines: HashMap<&'static str, pipeline::GenericComputePipeline>,
+    recompiler: pipeline::DedicatedPipelineRecompiler,
 
     // extra devices
     mesh_shader_device: ash::ext::mesh_shader::Device,
@@ -316,10 +318,15 @@ impl InternalApp {
         let main_pipeline_layout = pipeline::create_bindless_pipeline_layout(&device, &debug_marker, main_descriptor_set_layout);
         log::info!("created bindless pipeline layout");
 
-        let mut graphics_pipelines = HashMap::<&'static str, pipeline::GenericGraphicsPipeline>::new();
-        let mut compute_pipelines = HashMap::<&'static str, pipeline::GenericComputePipeline>::new();
+        let recompilation_context = pipeline::PipelineCompilationContext {
+            device: device.clone(),
+            debug_marker: debug_marker.clone(),
+            main_pipeline_layout: main_pipeline_layout.clone(),
+        };
 
-        compile_all_shaders(&args, &device, &debug_marker, main_pipeline_layout, &mut graphics_pipelines, &mut compute_pipelines, true);
+        let settings = create_pipeline_create_settings(&args);
+        let mut recompiler = pipeline::spool_up_dedicated_compilation_thread(settings, recompilation_context);
+        recompiler.request();
 
         let samplers = samplers::Samplers::create_samplers(&device);
         log::info!("created samplers");        
@@ -412,6 +419,12 @@ impl InternalApp {
         let materials_buffer = buffer::create_buffer(&mut ctx, materials.len() * size_of::<GpuMaterialInfo>(), "gpu materials buffer", vk::BufferUsageFlags::TRANSFER_DST);
         let debug_text = debug_text::DebugText::new(&mut ctx);
 
+
+        // force to wait for pipeline compilation to finish
+        let mut graphics_pipelines: HashMap<&str, pipeline::GenericGraphicsPipeline> = Default::default();
+        let mut compute_pipelines: HashMap<&str, pipeline::GenericComputePipeline> = Default::default();
+        recompiler.wait(&mut graphics_pipelines, &mut compute_pipelines);
+
         Self {
             tlas,
             counters_of_various_types,
@@ -470,6 +483,7 @@ impl InternalApp {
             host_image_copy_device,
             multiple_chunks,
             models,
+            recompiler,
         }
     }
 
@@ -586,7 +600,8 @@ impl InternalApp {
         }
 
         if self.input.get_button(Button::Keyboard(KeyCode::KeyR)).pressed() {
-            compile_all_shaders(&self.args, &self.device, &self.debug_marker, self.main_pipeline_layout, &mut self.graphics_pipelines, &mut self.compute_pipelines, false);
+            self.recompiler.request();
+            // compile_all_shaders(&self.args, &self.device, &self.debug_marker, self.main_pipeline_layout, &mut self.graphics_pipelines, &mut self.compute_pipelines, false);
         }
 
 
@@ -629,6 +644,8 @@ impl InternalApp {
         } else {
             // self.stats.import_data(self.frame_count, &self.device, query_pool, self.timestamp_period);
         }
+
+        self.recompiler.try_wait(&self.device, &mut self.graphics_pipelines, &mut self.compute_pipelines);
 
         let post_wait_for_fence = Instant::now();
 
@@ -858,6 +875,12 @@ impl InternalApp {
             .aspect_mask(vk::ImageAspectFlags::COLOR)
             .level_count(1)
             .layer_count(1);
+
+        if self.recompiler.recompiling {
+            dbgtext_writeln!(&mut self.debug_text, "SHADERS RECOMPILING ...");
+        } else {
+            dbgtext_writeln!(&mut self.debug_text, "COMPILED SHADERS IN {:.2}s", self.recompiler.last_time_taken);
+        }
 
         dbgtext_writeln!(&mut self.debug_text, "CPU delta: {:.2}ms", delta*1000f32);
         dbgtext_writeln!(&mut self.debug_text, "CPU command buffer record duration: {:.2}ms", self.last_frame_cpu_cmd_record_duration.as_micros() as f32 / 1000.0f32);
@@ -2003,112 +2026,57 @@ impl InternalApp {
     }
 }
 
-
-unsafe fn compile_all_shaders(
-    args: &crate::Args,
-    device: &ash::Device,
-    debug_marker: &Option<ash::ext::debug_utils::Device>,
-    main_pipeline_layout: vk::PipelineLayout,
-    graphics_pipelines: &mut HashMap<&str, pipeline::GenericGraphicsPipeline>,
-    compute_pipelines: &mut HashMap<&str, pipeline::GenericComputePipeline>,
-    first_time: bool,
-) {
+fn create_pipeline_create_settings(args: &crate::Args) -> Vec<pipeline::PipelineCreateSettings> {
     let spec_constants_bitflags = if args.readback_performance_queries { 1u32 } else { 0 };
-
-    let spec_constants = [
+    
+    let spec_constants = vec![
         spec_constants_bitflags,
         skybox::SKYBOX_RESOLUTION, skybox::CLOUDS_RESOLUTION, skybox::AMBIENT_SKYBOX_RESOLUTION,
         args.downscale_factor,
         scene::VXGI_TEXTURE_SIZE
     ];
-
-    let settings = [pipeline::PipelineCreateSettings {
+    
+    let settings = vec![pipeline::PipelineCreateSettings {
         pipeline_debug_name: "post process compute pipeline",
         wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &[WRITE_SWAPCHAIN_IMAGE_ENTRY_POINT, BLOOM_DOWNSAMPLE_ENTRY_POINT, BLOOM_UPSAMPLE_ENTRY_POINT] },
-        spec_constants: Some(&spec_constants),
+        spec_constants: Some(spec_constants.clone()),
         file_name_without_extension: COMPUTE_POST_PROCESS,
     }, pipeline::PipelineCreateSettings {
         pipeline_debug_name: "sky compute pipeline",
         wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &[WRITE_SKYBOX_ENTRY_POINT, WRITE_CLOUDS_ENTRY_POINT, BLUR_AMBIENT_SKYBOX_ENTRY_POINT] },
-        spec_constants: Some(&spec_constants),
+        spec_constants: Some(spec_constants.clone()),
         file_name_without_extension: COMPUTE_SKY,
     }, pipeline::PipelineCreateSettings {
         pipeline_debug_name: "compute fullscreen shader",
         wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["main", "prepass"] },
-        spec_constants: Some(&spec_constants),
+        spec_constants: Some(spec_constants.clone()),
         file_name_without_extension: COMPUTE_FULLSCREEN,
     }, pipeline::PipelineCreateSettings {
         pipeline_debug_name: "compute SDF shader",
         wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["main", "main2", "compute_chunk_sdf"] },
-        spec_constants: Some(&spec_constants),
+        spec_constants: Some(spec_constants.clone()),
         file_name_without_extension: COMPUTE_SDF,
     }, pipeline::PipelineCreateSettings {
         pipeline_debug_name: "rasterized sky",
         wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Graphics { face_culling: false },
-        spec_constants: Some(&spec_constants),
+        spec_constants: Some(spec_constants.clone()),
         file_name_without_extension: RASTERIZED_SKY,
     }, pipeline::PipelineCreateSettings {
         pipeline_debug_name: "rasterized models",
         wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Graphics { face_culling: true },
-        spec_constants: Some(&spec_constants),
+        spec_constants: Some(spec_constants.clone()),
         file_name_without_extension: RASTERIZED,
     }, pipeline::PipelineCreateSettings {
         pipeline_debug_name: "rasterized chunks",
         wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Graphics { face_culling: true },
-        spec_constants: Some(&spec_constants),
+        spec_constants: Some(spec_constants.clone()),
         file_name_without_extension: RASTERIZED_CHUNKS,
     }, pipeline::PipelineCreateSettings {
         pipeline_debug_name: "compute vxgi shader",
         wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["voxelize", "mip_map_downsample"] },
-        spec_constants: Some(&spec_constants),
+        spec_constants: Some(spec_constants.clone()),
         file_name_without_extension: COMPUTE_VXGI,
     }];
 
-    let compiled = shader_compiler::compile_required_shaders(first_time, &settings);
-
-    let compiled = match compiled {
-        Ok(data) => data,
-        Err(_) => {
-            return;
-        },
-    };
-
-    device.device_wait_idle().unwrap();
-
-    for (_, graphic_pipeline) in graphics_pipelines.drain() {
-        graphic_pipeline.destroy(&device);
-    }
-
-    for (_, compute_pipeline) in compute_pipelines.drain() {
-        compute_pipeline.destroy(&device);
-    }
-
-
-    // compile the pipelines in parallel
-    // ouug shii :eyes:
-    log::info!("creating pipelines...");
-    let generic_pipelines = settings.into_par_iter().map(|setting| {
-        let spv_file_name = setting.file_name_without_extension;
-        let raw_bytes = &compiled[spv_file_name];
-    
-        let len = raw_bytes.len();
-        assert!(len.is_multiple_of(4));
-
-        // align to word sizes
-        // previous assertion upholds that the number of bytes is a multiple of word size
-        let mut vec = vec![0u32; len / 4];
-        let dst_slice = bytemuck::cast_slice_mut::<u32, u8>(vec.as_mut_slice());
-        dst_slice.copy_from_slice(&raw_bytes);
-
-        let raw_words = &vec;
-        let pipeline = pipeline::create_generic_pipeline(raw_words, device, debug_marker, main_pipeline_layout, setting);
-        (spv_file_name, pipeline)
-    }).collect::<Vec<_>>();
-
-    for (spv_file_name, pipeline) in generic_pipelines {
-        match pipeline {
-            pipeline::GenericPipeline::Graphics(generic_graphics_pipeline) => { graphics_pipelines.insert(spv_file_name, generic_graphics_pipeline); },
-            pipeline::GenericPipeline::Compute(generic_compute_pipeline) => { compute_pipelines.insert(spv_file_name, generic_compute_pipeline); },
-        }
-    }
+    settings
 }

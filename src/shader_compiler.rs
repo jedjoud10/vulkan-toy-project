@@ -72,9 +72,14 @@ fn visit_dirs(dir: &Path, list: &mut Vec<DirEntry>) {
     }
 }
 
+pub struct ShaderCompilatioResult {
+    pub compiled: HashMap<String, Vec<u8>>,
+    pub time_taken: f32,
+}
+
 // TODO: implement some sort of caching system that avoid recompiling shaders that have already been compiled
 // compiles shaders that are actually used by pipelines. does NOT compile unused shaders
-pub fn compile_required_shaders(panic_on_error: bool, pipelines: &[crate::pipeline::PipelineCreateSettings]) -> Result<HashMap<String, Vec<u8>>, ()> {
+pub fn compile_required_shaders(panic_on_error: bool, pipelines: &[crate::pipeline::PipelineCreateSettings]) -> Result<ShaderCompilatioResult, ()> {
     log::info!("compiling slang shaders");
     let start = std::time::Instant::now();
 
@@ -157,7 +162,11 @@ pub fn compile_required_shaders(panic_on_error: bool, pipelines: &[crate::pipeli
 
 
     let end = std::time::Instant::now();
+    let time_taken = (end-start).as_secs_f32();
 
-    log::info!("compiled {} shaders in {:.2}s", compiled.len(), (end-start).as_secs_f32());
-    Ok(compiled)
+    log::info!("compiled {} shaders in {:.2}s", compiled.len(), time_taken);
+    Ok(ShaderCompilatioResult {
+        compiled,
+        time_taken,
+    })
 }
