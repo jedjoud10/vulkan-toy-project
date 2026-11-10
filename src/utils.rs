@@ -87,7 +87,7 @@ pub fn flatten_to_face_relative<T>(pos: vek::Vec3<T>, direction: u32) -> vek::Ve
 }
 
 // https://github.com/jedjoud10/VoxelTerrain/blob/e949784031a0b32104f467e3c3d2138f54286dd4/Runtime/Utils/SkirtUtils.cs#L50-L63
-pub fn unflatten_fo_face_relative<T>(relative: vek::Vec2<T>, missing: T, direction: u32) -> vek::Vec3<T> {
+pub fn unflatten_from_face_relative<T>(relative: vek::Vec2<T>, missing: T, direction: u32) -> vek::Vec3<T> {
     assert!(direction <= 2);
 
     match direction {

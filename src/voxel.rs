@@ -84,8 +84,8 @@ impl MultipleChunks {
                             let stepped = height;
                             let diff = ((height - stepped).abs() / 5.0f64) - 0.5;
                         
-                            // let density = pos.y - (stepped + -diff * shared.extra.get([pos.x,pos.y*3.21,pos.z]).abs() as f64 * 10.0f64);
-                            let density = pos.y - 5.0f64;
+                            let density = pos.y - (stepped + -diff * shared.extra.get([pos.x,pos.y*3.21,pos.z]).abs() as f64 * 10.0f64);
+                            // let density = pos.y - 5.0f64;
                             densities[index] = density as f32;
 
                             positive |= densities[index] >= 0f32;
