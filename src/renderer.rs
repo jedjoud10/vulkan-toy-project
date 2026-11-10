@@ -1602,12 +1602,25 @@ impl InternalApp {
     
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_CHUNKS]);
         let material_base_index = self.materials[1].base_index;
-        self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytes_of(&material_base_index));
-
-
+        
+        #[derive(Clone, Copy, Pod, Zeroable)]
+        #[repr(C)]
+        struct ChunkPushConstants {
+            vertex_buffer_address: vk::DeviceAddress,
+            material_base_index: u32,
+            _padding: u32,
+        }
+        
         self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, if wireframe { vk::PolygonMode::LINE } else { vk::PolygonMode::FILL });
         for chunk in self.multiple_chunks.chunks.values().filter_map(|x| x.as_ref()) {
-            self.device.cmd_bind_vertex_buffers(cmd, 0, &[chunk.vertex_buffer.buffer], &[0]);
+            // self.device.cmd_bind_vertex_buffers(cmd, 0, &[chunk.vertex_buffer.buffer], &[0]);
+            let pc = ChunkPushConstants {
+                vertex_buffer_address: chunk.vertex_buffer.address,
+                material_base_index,
+                _padding: 0,
+            };
+
+            self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytes_of(&pc));
             self.device.cmd_bind_index_buffer(cmd, chunk.index_buffer.buffer, 0, vk::IndexType::UINT32);
             self.device.cmd_draw_indexed(cmd, chunk.index_count, 1, 0, 0, 0);
         }
@@ -2009,32 +2022,6 @@ unsafe fn compile_all_shaders(
         scene::VXGI_TEXTURE_SIZE
     ];
 
-    let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
-
-
-    let position_attribute_description = vk::VertexInputAttributeDescription::default().format(vk::Format::R32G32B32_SFLOAT).binding(0).location(0).offset(0);
-    let normal_attribute_description = vk::VertexInputAttributeDescription::default().format(vk::Format::R32G32B32_SFLOAT).binding(1).location(1).offset(0);
-    let uv_attribute_description = vk::VertexInputAttributeDescription::default().format(vk::Format::R32G32_SFLOAT).binding(2).location(2).offset(0);
-
-    
-    let position_binding_description = vk::VertexInputBindingDescription::default().input_rate(vk::VertexInputRate::VERTEX).binding(0).stride(size_of::<vek::Vec3<f32>>() as u32);
-    let normal_binding_description = vk::VertexInputBindingDescription::default().input_rate(vk::VertexInputRate::VERTEX).binding(1).stride(size_of::<vek::Vec3<f32>>() as u32);
-    let uv_binding_description = vk::VertexInputBindingDescription::default().input_rate(vk::VertexInputRate::VERTEX).binding(2).stride(size_of::<vek::Vec2<f32>>() as u32);
-    
-
-    let attrs = [position_attribute_description, normal_attribute_description, uv_attribute_description];
-    let binds = [position_binding_description, normal_binding_description, uv_binding_description];
-    let model_vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
-        .vertex_attribute_descriptions(&attrs)
-        .vertex_binding_descriptions(&binds);
-
-    let attrs = [position_attribute_description];
-    let binds = [position_binding_description];
-    let chunk_vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
-        .vertex_attribute_descriptions(&attrs)
-        .vertex_binding_descriptions(&binds);
-    
-
     let settings = [pipeline::PipelineCreateSettings {
         pipeline_debug_name: "post process compute pipeline",
         wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &[WRITE_SWAPCHAIN_IMAGE_ENTRY_POINT, BLOOM_DOWNSAMPLE_ENTRY_POINT, BLOOM_UPSAMPLE_ENTRY_POINT] },
@@ -2057,17 +2044,17 @@ unsafe fn compile_all_shaders(
         file_name_without_extension: COMPUTE_SDF,
     }, pipeline::PipelineCreateSettings {
         pipeline_debug_name: "rasterized sky",
-        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Graphics { face_culling: false, vertex_input: vertex_input },
+        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Graphics { face_culling: false },
         spec_constants: Some(&spec_constants),
         file_name_without_extension: RASTERIZED_SKY,
     }, pipeline::PipelineCreateSettings {
         pipeline_debug_name: "rasterized models",
-        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Graphics { face_culling: true, vertex_input: model_vertex_input },
+        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Graphics { face_culling: true },
         spec_constants: Some(&spec_constants),
         file_name_without_extension: RASTERIZED,
     }, pipeline::PipelineCreateSettings {
         pipeline_debug_name: "rasterized chunks",
-        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Graphics { face_culling: true, vertex_input: chunk_vertex_input },
+        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Graphics { face_culling: true },
         spec_constants: Some(&spec_constants),
         file_name_without_extension: RASTERIZED_CHUNKS,
     }, pipeline::PipelineCreateSettings {

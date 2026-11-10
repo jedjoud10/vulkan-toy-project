@@ -3,9 +3,10 @@
 #include "utils/bindless.slang"
 #include "utils/triplanar.slang"
 
-struct VertexInput {
-    float3 world;
-    //float3 normal;
+struct PushConstants {
+    float3 *vertex_buffer_address;
+    uint material_base_texture_index;
+    uint _padding;
 };
 
 struct VertexOutput {
@@ -16,12 +17,14 @@ struct VertexOutput {
 };
 
 [shader("vertex")]
-VertexOutput vert_main(VertexInput input) {
+VertexOutput vert_main(uint index: SV_VertexID, uniform PushConstants pc) {
     VertexOutput output;
+
+    float3 world = pc.vertex_buffer_address[index];
 
     let uniforms = load_per_frame_uniforms();
 
-    float4 world_position = float4(input.world, 1.0);
+    float4 world_position = float4(world, 1.0);
 
     float4 t = mul(world_position, uniforms.view_projection_matrix);
     t.y = -t.y;
@@ -35,12 +38,14 @@ VertexOutput vert_main(VertexInput input) {
 }
 
 [shader("fragment")]
-float4 frag_main(VertexOutput in_vert, uniform uint material_base_texture_index) : SV_Target {
+float4 frag_main(VertexOutput in_vert, uniform PushConstants pc) : SV_Target {
     let uniforms = load_per_frame_uniforms();
 
     if ((uniforms.toggles_bitmask & 8) == 8) {
         return 1.0;
     }
+
+    uint material_base_texture_index = pc.material_base_texture_index;
 
     float3 dp1 = ddx(in_vert.world_pos);
     float3 dp2 = ddy(in_vert.world_pos);

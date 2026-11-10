@@ -99,7 +99,6 @@ pub struct PipelineCreateSettings<'a> {
 pub enum PipelineCreateType<'a> {
     Graphics {
         face_culling: bool,
-        vertex_input: vk::PipelineVertexInputStateCreateInfo<'a>
     },
     GraphicsMeshShader {
         face_culling: bool,
@@ -122,7 +121,7 @@ pub unsafe fn create_generic_pipeline(
     let pipeline_debug_name = settings.pipeline_debug_name;
 
     match settings.wtf_kind_of_pipeline_is_this {
-        PipelineCreateType::Graphics { face_culling, vertex_input } => {
+        PipelineCreateType::Graphics { face_culling } => {
             let pipeline = create_graphics_pipeline(
                 device,
                 binder,
@@ -130,7 +129,6 @@ pub unsafe fn create_generic_pipeline(
                 pipeline_layout,
                 spec_constants,
                 spec_constants,
-                vertex_input,
                 pipeline_debug_name,
                 face_culling
             );
@@ -285,8 +283,6 @@ pub unsafe fn create_graphics_pipeline(
     pipeline_layout: vk::PipelineLayout,
     spec_constants_vert: Option<&[u32]>,
     spec_constants_frag: Option<&[u32]>,
-    
-    vertex_input: vk::PipelineVertexInputStateCreateInfo<'_>,
     name: &str,
     face_culling: bool,
 ) -> vk::Pipeline {
@@ -359,6 +355,8 @@ pub unsafe fn create_graphics_pipeline(
         .depth_write_enable(true)
         .depth_test_enable(true)
         .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL);
+
+    let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
 
     let graphics_pipeline_create_info = vk::GraphicsPipelineCreateInfo::default()
         .render_pass(vk::RenderPass::null())

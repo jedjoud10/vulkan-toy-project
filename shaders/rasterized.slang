@@ -6,12 +6,11 @@
 struct PushConstants {
     float4x4 object_to_world;
     uint material_base_sampled_image_index;
-}
+    uint _padding;
 
-struct VertexInput {
-    float3 vertex;
-    float3 normal;
-    float2 uv;
+    float3* vertex_buffer_address;
+    float3* normal_buffer_address;
+    float2* uv_buffer_address;
 };
 
 struct VertexOutput {
@@ -22,13 +21,17 @@ struct VertexOutput {
 };
 
 [shader("vertex")]
-VertexOutput vert_main(VertexInput input, uniform PushConstants pc) {
+VertexOutput vert_main(uint index: SV_VertexID, uniform PushConstants pc) {
     VertexOutput output;
 
     let uniforms = load_per_frame_uniforms();
 
-    float4 world_position = mul(float4(input.vertex, 1), pc.object_to_world);
-    float4 world_normal = mul(float4(input.normal, 0), pc.object_to_world);
+    float3 local_position = pc.vertex_buffer_address[index];
+    float3 local_normal = pc.normal_buffer_address[index];
+    float2 uv = pc.uv_buffer_address[index];
+
+    float4 world_position = mul(float4(local_position, 1), pc.object_to_world);
+    float4 world_normal = mul(float4(local_normal, 0), pc.object_to_world);
     
 
 
@@ -39,7 +42,7 @@ VertexOutput vert_main(VertexInput input, uniform PushConstants pc) {
     output.sv_position = t;
     output.world_pos = world_position.xyz;
     output.world_normal = world_normal.xyz;
-    output.uv = input.uv;
+    output.uv = uv;
     return output;
 }
 

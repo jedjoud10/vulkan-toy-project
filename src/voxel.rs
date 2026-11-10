@@ -15,7 +15,7 @@ pub const CHUNK_SIZE: usize = 32;
 pub const CHUNK_SIZE_WITH_PADDING: usize = 34;
 pub const CHUNK_VOLUME: usize = CHUNK_SIZE_WITH_PADDING*CHUNK_SIZE_WITH_PADDING*CHUNK_SIZE_WITH_PADDING;
 
-pub const ENABLED: bool = false;
+pub const ENABLED: bool = true;
 
 struct GeneratedChunk {
     node: Node,
@@ -132,7 +132,7 @@ impl MultipleChunks {
             return;
         }
 	
-        // if !self.chunks.is_empty() { return; }
+        if !self.chunks.is_empty() { return; }
         let OctreeDelta { added, removed } = self.octree.compute(&[position]);
 
 

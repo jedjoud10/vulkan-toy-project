@@ -145,14 +145,23 @@ impl Model {
         struct PushConstant {
             object_to_world: vek::Mat4<f32>,
             albedo_sampled_image_index: u32,
+            _padding: u32,
+
+            vertex_buffer_address: vk::DeviceAddress,
+            normal_buffer_address: vk::DeviceAddress,
+            uv_buffer_address: vk::DeviceAddress,
         }
 
         let pc = PushConstant {
             object_to_world: self.object_to_world,
             albedo_sampled_image_index: materials[self.material_index as usize].base_index,
+            vertex_buffer_address: self.vertex_positions_buffer.address,
+            normal_buffer_address: self.vertex_normals_buffer.address,
+            uv_buffer_address: self.vertex_uvs_buffer.address,
+            _padding: 0,            
         };
 
-        device.cmd_bind_vertex_buffers(cmd, 0, &[self.vertex_positions_buffer.buffer, self.vertex_normals_buffer.buffer, self.vertex_uvs_buffer.buffer], &[0, 0, 0]);
+        // device.cmd_bind_vertex_buffers(cmd, 0, &[self.vertex_positions_buffer.buffer, self.vertex_normals_buffer.buffer, self.vertex_uvs_buffer.buffer], &[0, 0, 0]);
         device.cmd_bind_index_buffer(cmd, self.index_buffer.buffer, 0, vk::IndexType::UINT32);
         device.cmd_push_constants(cmd, pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytes_of(&pc));
         device.cmd_draw_indexed(cmd, self.index_count as u32, 1, 0, 0, 0);
