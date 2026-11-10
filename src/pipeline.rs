@@ -468,7 +468,7 @@ pub struct PipelineCompilationContext {
     pub main_pipeline_layout: vk::PipelineLayout,
 }
 
-struct RecompilationResult {
+struct PipelineCompilationResult {
     graphics_pipelines: HashMap<&'static str, GenericGraphicsPipeline>,
     compute_pipelines: HashMap<&'static str, GenericComputePipeline>,
     time_taken: f32,
@@ -477,7 +477,7 @@ struct RecompilationResult {
 pub struct DedicatedPipelineRecompiler {
     thread: std::thread::JoinHandle<()>,
     request_channel: std::sync::mpsc::Sender<()>,
-    result_channel: std::sync::mpsc::Receiver<RecompilationResult>,
+    result_channel: std::sync::mpsc::Receiver<PipelineCompilationResult>,
     pub recompiling: bool,
     pub last_time_taken: f32,
 }
@@ -524,7 +524,7 @@ impl DedicatedPipelineRecompiler {
 
 pub fn spool_up_dedicated_compilation_thread(settings: Vec<PipelineCreateSettings>, compiler: PipelineCompilationContext) -> DedicatedPipelineRecompiler {
     let (tx_req, rx_req) = std::sync::mpsc::channel::<()>();
-    let (tx_res, rx_res) = std::sync::mpsc::channel::<RecompilationResult>();
+    let (tx_res, rx_res) = std::sync::mpsc::channel::<PipelineCompilationResult>();
 
     let thread = std::thread::spawn(move || {
         loop {                
@@ -553,10 +553,10 @@ unsafe fn compile_pipelines(
     settings: &[PipelineCreateSettings],
     compiler: &PipelineCompilationContext,
     first_time: bool,
-) -> Option<RecompilationResult> {
+) -> Option<PipelineCompilationResult> {
     let compiled = crate::shader_compiler::compile_required_shaders(first_time, &settings);
 
-    let crate::shader_compiler::ShaderCompilatioResult {
+    let crate::shader_compiler::ShaderCompilationResult {
         compiled,
         time_taken,
     } = match compiled {
@@ -589,7 +589,7 @@ unsafe fn compile_pipelines(
 
 
 
-    let mut result = RecompilationResult {
+    let mut result = PipelineCompilationResult {
         graphics_pipelines: Default::default(),
         compute_pipelines: Default::default(),
         time_taken,
