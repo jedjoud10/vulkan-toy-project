@@ -2081,7 +2081,7 @@ fn create_pipeline_create_settings(args: &crate::Args) -> Vec<pipeline::Pipeline
     }, pipeline::PipelineCreateSettings {
         pipeline_debug_name: "mesh shader grass",
         wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::GraphicsMeshShader { face_culling: true, task_shader: true },
-        spec_constants: Some(&spec_constants),
+        spec_constants: Some(spec_constants.clone()),
         file_name_without_extension: RASTERIZED_MS_GENERATED_GRASS_SPV,
     }];
 

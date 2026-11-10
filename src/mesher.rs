@@ -213,7 +213,7 @@ pub fn mesh_skirt(densities: Vec<f32>, chunk_position: vek::Vec3<i32>, chunk_sca
                     let flip = is_set ^ (axis == 1);
 
                     // are these the perpendicular offsets value?
-                    let vertex_offsets: [vek::Vec3<usize>; 4] = utils::quad_vertex_offsets_for_axis(axis as u32);
+                    let vertex_offsets: [vek::Vec3<usize>; 4] = utils::quad_vertex_offsets_for_axis_ccw_order_looking_from_positive_axis(axis as u32);
 
                     // inside quad local vertex index
                     for index in 0..4 {
@@ -231,7 +231,7 @@ pub fn mesh_skirt(densities: Vec<f32>, chunk_position: vek::Vec3<i32>, chunk_sca
                     }
 
                     // triangulate mode based on missing/duplicated vertices
-                    if let Some(mode) = try_calculate_quads_or_tris(quad_vertex_indices, flip) {
+                    if let Some(mode) = try_calculate_quads_or_tris(quad_vertex_indices, !flip) {
                         add_quads_or_tris(mode, indices);
                     } 
 
@@ -276,6 +276,8 @@ pub fn mesh_skirt(densities: Vec<f32>, chunk_position: vek::Vec3<i32>, chunk_sca
 */
 // assume xy plane, z=0
 fn fetch_skirt_or_base_index(target: vek::Vec3<i32>, lookup: &[u32], skirt_lookup: &[u32]) -> Option<u32> {
+
+    log::trace!("fetch: {target}");
     let face_relative = target.xy();
     let other = target.z;
 
@@ -283,9 +285,16 @@ fn fetch_skirt_or_base_index(target: vek::Vec3<i32>, lookup: &[u32], skirt_looku
         // let face_relative = face_relative + 1; 
         let face_relative = face_relative.clamped(0, CHUNK_SIZE_WITH_PADDING as i32);
         let a = utils::offset_to_index_flat(face_relative.as_::<usize>(), CHUNK_SIZE_WITH_PADDING);
+        log::trace!("skirt index: {}", skirt_lookup[a]);
+
+        
         return Some(skirt_lookup[a])
     } else {
-        utils::try_offset_to_index(target.as_::<usize>(), CHUNK_SIZE_WITH_PADDING).map(|x| lookup[x])
+        let other = utils::try_offset_to_index(target.as_::<usize>(), CHUNK_SIZE_WITH_PADDING).map(|x| lookup[x]);
+        log::trace!("base index: {:?}", &other);
+        
+
+        other
     }
 }
 
@@ -330,8 +339,10 @@ static  void AddQuadsOrTris(Triangulate triangulate, NativeCounter.Concurrent co
 }
 */
 fn add_quads_or_tris(triangulate: Mode, indices: &mut Vec<u32>) {
+    
     match triangulate {
         Mode::Quad(v) => {
+            log::trace!("handle quad: {v}");
             indices.push(v[0]);
             indices.push(v[1]);
             indices.push(v[2]);
@@ -341,6 +352,7 @@ fn add_quads_or_tris(triangulate: Mode, indices: &mut Vec<u32>) {
             indices.push(v[0]);
         },
         Mode::Tri(v) => {
+            log::trace!("handle tri: {v}");
             indices.push(v[0]);
             indices.push(v[1]);
             indices.push(v[2]);
@@ -426,6 +438,7 @@ static bool TryCalculateQuadOrTris(bool flip, int4 v, out Triangulate data) {
 // We NEED to have triangle fallback to handle the literal "edge" case (since there are only 3 vertices there)
 fn try_calculate_quads_or_tris(quad_vertex_indices: [u32; 4], flip: bool) -> Option<Mode> {
     let v = vek::Vec4::<u32>::from(quad_vertex_indices);
+    log::trace!("v = {v}");
 
     // Ts gpt-ed kek
     let mut dupe_type: u32 = 0;
@@ -452,6 +465,7 @@ fn try_calculate_quads_or_tris(quad_vertex_indices: [u32; 4], flip: bool) -> Opt
 
     // If there's only a SINGLE invalid index, then consider it as an extra duplicate one (and create a triangle for the valid ones instead of a quad)
     if (bitmask.count_ones() == 1) {
+        log::trace!("invalid index, fallbacking to try");
         let remapper = IGNORE_SPECIFIC_VALUE_TRI[bitmask.trailing_zeros() as usize].as_::<usize>();
         let uniques = vek::Vec3::new(v[remapper[0]], v[remapper[1]], v[remapper[2]]);
 
@@ -465,6 +479,7 @@ fn try_calculate_quads_or_tris(quad_vertex_indices: [u32; 4], flip: bool) -> Opt
     }
 
     if (dupe_type == 0) {
+        log::trace!("no duplicate verts, quad");
         if (v.reduce_max() == u32::MAX) {
             return None;
         }
@@ -478,6 +493,8 @@ fn try_calculate_quads_or_tris(quad_vertex_indices: [u32; 4], flip: bool) -> Opt
             ))
         );
     } else {
+        log::trace!("duplicate verts, triangle");
+
         let remapper = DEDUPE_TRIS_THING[dupe_type.trailing_zeros() as usize].as_::<usize>();
         let uniques = vek::Vec3::new(v[remapper[0]], v[remapper[1]], v[remapper[2]]);
 
