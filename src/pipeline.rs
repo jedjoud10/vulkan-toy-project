@@ -2,6 +2,7 @@ use std::{collections::HashMap, ffi::CString, ops::{Deref, Index}, str::FromStr}
 
 use ash::vk;
 use bytemuck::{Pod, Zeroable};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use smallvec::SmallVec;
 
 // TODO: redesign this so that it is better aligned to memory
@@ -89,14 +90,14 @@ impl GenericGraphicsPipeline {
     }
 }
 
-pub struct PipelineCreateSettings<'a> {
+pub struct PipelineCreateSettings {
     pub pipeline_debug_name: &'static str,
     pub file_name_without_extension: &'static str,
-    pub wtf_kind_of_pipeline_is_this: PipelineCreateType<'a>,
-    pub spec_constants: Option<&'a [u32]>
+    pub wtf_kind_of_pipeline_is_this: PipelineCreateType,
+    pub spec_constants: Option<Vec<u32>>
 } 
 
-pub enum PipelineCreateType<'a> {
+pub enum PipelineCreateType {
     Graphics {
         face_culling: bool,
     },
@@ -105,7 +106,7 @@ pub enum PipelineCreateType<'a> {
         task_shader: bool
     },
     Compute {
-        entry_points: &'a [&'static str],
+        entry_points: &'static [&'static str],
     }
 }
 
@@ -114,10 +115,10 @@ pub unsafe fn create_generic_pipeline(
     device: &ash::Device,
     binder: &Option<ash::ext::debug_utils::Device>,
     pipeline_layout: vk::PipelineLayout,
-    settings: PipelineCreateSettings,
+    settings: &PipelineCreateSettings,
 ) -> GenericPipeline {
     let shader_module = create_shader_module(raw, device, binder, settings.pipeline_debug_name);
-    let spec_constants = settings.spec_constants;
+    let spec_constants = &settings.spec_constants;
     let pipeline_debug_name = settings.pipeline_debug_name;
 
     match settings.wtf_kind_of_pipeline_is_this {
@@ -281,8 +282,8 @@ pub unsafe fn create_graphics_pipeline(
     binder: &Option<ash::ext::debug_utils::Device>,
     shader_module: vk::ShaderModule,
     pipeline_layout: vk::PipelineLayout,
-    spec_constants_vert: Option<&[u32]>,
-    spec_constants_frag: Option<&[u32]>,
+    spec_constants_vert: &Option<Vec<u32>>,
+    spec_constants_frag: &Option<Vec<u32>>,
     name: &str,
     face_culling: bool,
 ) -> vk::Pipeline {
@@ -384,7 +385,7 @@ pub unsafe fn create_single_entry_point_pipeline(
     compute_shader_module: vk::ShaderModule,
     entry_point_name: &'static str,
     pipeline_layout: vk::PipelineLayout,
-    spec_constants: Option<&[u32]>
+    spec_constants: &Option<Vec<u32>>
 ) -> SingleEntryPointWrapper {
     let string = CString::from_str(entry_point_name).unwrap();
 
@@ -418,7 +419,7 @@ pub unsafe fn create_single_entry_point_pipeline(
     SingleEntryPointWrapper { pipeline: compute_pipelines[0], debug_pipeline_name: entry_point_name }
 }
 
-fn convert_spec_constants(spec_constants: Option<&[u32]>) -> (Vec<u8>, Vec::<vk::SpecializationMapEntry>) {
+fn convert_spec_constants(spec_constants: &Option<Vec<u32>>) -> (Vec<u8>, Vec::<vk::SpecializationMapEntry>) {
     let mut data = Vec::<u8>::new();
     let mut specialization_entries = Vec::new();
     if let Some(spec_constants) = spec_constants {
@@ -458,3 +459,148 @@ pub unsafe fn create_bindless_pipeline_layout(device: &ash::Device, binder: &Opt
     pipeline_layout
 }
 
+
+
+
+pub struct PipelineCompilationContext {
+    pub device: ash::Device,
+    pub debug_marker: Option<ash::ext::debug_utils::Device>,
+    pub main_pipeline_layout: vk::PipelineLayout,
+}
+
+struct PipelineCompilationResult {
+    graphics_pipelines: HashMap<&'static str, GenericGraphicsPipeline>,
+    compute_pipelines: HashMap<&'static str, GenericComputePipeline>,
+    time_taken: f32,
+}
+
+pub struct DedicatedPipelineRecompiler {
+    thread: std::thread::JoinHandle<()>,
+    request_channel: std::sync::mpsc::Sender<()>,
+    result_channel: std::sync::mpsc::Receiver<PipelineCompilationResult>,
+    pub recompiling: bool,
+    pub last_time_taken: f32,
+}
+
+impl DedicatedPipelineRecompiler {
+    pub fn request(&mut self) {
+        if !self.recompiling {
+            self.request_channel.send(()).unwrap();
+            self.recompiling = true;
+        }
+    }
+
+    pub fn wait(&mut self, graphics: &mut HashMap<&'static str, GenericGraphicsPipeline>, compute: &mut HashMap<&'static str, GenericComputePipeline>) {
+        self.recompiling = false;
+        let result = self.result_channel.recv().unwrap();
+        graphics.extend(result.graphics_pipelines.into_iter());
+        compute.extend(result.compute_pipelines.into_iter());
+        self.last_time_taken = result.time_taken;
+    }
+
+    pub unsafe fn try_wait(&mut self, device: &ash::Device, graphics: &mut HashMap<&'static str, GenericGraphicsPipeline>, compute: &mut HashMap<&'static str, GenericComputePipeline>) {
+        if !self.recompiling {
+            return;
+        }
+
+        if let Ok(result) = self.result_channel.try_recv() {
+            device.device_wait_idle().unwrap();
+            
+            for (_, graphic_pipeline) in graphics.drain() {
+                graphic_pipeline.destroy(&device);
+            }
+        
+            for (_, compute_pipeline) in compute.drain() {
+                compute_pipeline.destroy(&device);
+            }
+
+            graphics.extend(result.graphics_pipelines.into_iter());
+            compute.extend(result.compute_pipelines.into_iter());
+            self.recompiling = false;
+            self.last_time_taken = result.time_taken;
+        }
+    }
+}
+
+pub fn spool_up_dedicated_compilation_thread(settings: Vec<PipelineCreateSettings>, compiler: PipelineCompilationContext) -> DedicatedPipelineRecompiler {
+    let (tx_req, rx_req) = std::sync::mpsc::channel::<()>();
+    let (tx_res, rx_res) = std::sync::mpsc::channel::<PipelineCompilationResult>();
+
+    let thread = std::thread::spawn(move || {
+        loop {                
+            if let Ok(_) = rx_req.recv() {
+                let result = unsafe {
+                    compile_pipelines(&settings, &compiler, false)
+                };
+
+                if let Some(pipelines) = result {
+                    tx_res.send(pipelines).unwrap();
+                }
+            }
+        }
+    });
+
+    DedicatedPipelineRecompiler {
+        thread,
+        request_channel: tx_req,
+        result_channel: rx_res,
+        recompiling: false,
+        last_time_taken: 0f32,
+    }
+}
+
+unsafe fn compile_pipelines(
+    settings: &[PipelineCreateSettings],
+    compiler: &PipelineCompilationContext,
+    first_time: bool,
+) -> Option<PipelineCompilationResult> {
+    let compiled = crate::shader_compiler::compile_required_shaders(first_time, &settings);
+
+    let crate::shader_compiler::ShaderCompilationResult {
+        compiled,
+        time_taken,
+    } = match compiled {
+        Ok(data) => data,
+        Err(_) => {
+            return None;
+        },
+    };
+
+    // compile the pipelines in parallel
+    // ouug shii :eyes:
+    log::info!("creating pipelines...");
+    let generic_pipelines = settings.into_par_iter().map(|setting| {
+        let spv_file_name = setting.file_name_without_extension;
+        let raw_bytes = &compiled[spv_file_name];
+    
+        let len = raw_bytes.len();
+        assert!(len.is_multiple_of(4));
+
+        // align to word sizes
+        // previous assertion upholds that the number of bytes is a multiple of word size
+        let mut vec = vec![0u32; len / 4];
+        let dst_slice = bytemuck::cast_slice_mut::<u32, u8>(vec.as_mut_slice());
+        dst_slice.copy_from_slice(&raw_bytes);
+
+        let raw_words = &vec;
+        let pipeline = create_generic_pipeline(raw_words, &compiler.device, &compiler.debug_marker, compiler.main_pipeline_layout, setting);
+        (spv_file_name, pipeline)
+    }).collect::<Vec<_>>();
+
+
+
+    let mut result = PipelineCompilationResult {
+        graphics_pipelines: Default::default(),
+        compute_pipelines: Default::default(),
+        time_taken,
+    };
+
+    for (spv_file_name, pipeline) in generic_pipelines {
+        match pipeline {
+            GenericPipeline::Graphics(generic_graphics_pipeline) => { result.graphics_pipelines.insert(spv_file_name, generic_graphics_pipeline); },
+            GenericPipeline::Compute(generic_compute_pipeline) => { result.compute_pipelines.insert(spv_file_name, generic_compute_pipeline); },
+        }
+    }
+
+    Some(result)
+}

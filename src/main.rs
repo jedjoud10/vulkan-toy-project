@@ -41,7 +41,7 @@ use winit::window::WindowId;
 use renderer::InternalApp;
 
 
-#[derive(clap::Parser, Debug)]
+#[derive(clap::Parser, Clone, Debug)]
 #[command(about = "Vulkan Experiments", long_about = None)]
 struct Args {
     /// Factor to use to decrease the screen resolution
