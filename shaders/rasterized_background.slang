@@ -28,9 +28,9 @@ float4 frag_main(float4 sv_position : SV_Position) : SV_Target {
     let ndc = float4(screen_uvs * 2 - 1, 1, 1);
     float3 ray_dir = mul(ndc, uniform_data.inv_projection_matrix).xyz;
     ray_dir = mul(float4(ray_dir.xy, 1, 0), uniform_data.inv_view_matrix).xyz;
-    ray_dir = -ray_dir;
+    ray_dir = normalize(-ray_dir);
 
     float3 ray_pos = uniform_data.position.xyz;
     return float4(sample_skybox_and_clouds(ray_pos, ray_dir), 1.0);
-    //return float4(get_environment_diffuse(ray_dir), 1.0);
+    // return float4(get_environment_diffuse(ray_dir), 1.0);
 }

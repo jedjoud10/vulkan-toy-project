@@ -2,8 +2,6 @@ use ash::vk;
 use gpu_allocator::vulkan::{Allocation, Allocator};
 use crate::{buffer, others, pipeline::{self, PerFrameUniformData}, query_pool_statistics, renderer::GraphicsContext};
 
-pub const FRAMES_IN_FLIGHT: usize = 3;
-
 pub struct PerFrameData {
     pub main_descriptor_set: vk::DescriptorSet,
     pub present_complete_semaphore: vk::Semaphore,

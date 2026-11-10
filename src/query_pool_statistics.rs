@@ -72,11 +72,13 @@ impl QueryPoolStatistics {
         }
     }
 
-    pub unsafe fn import_data(&mut self, frame_count: u64, device: &ash::Device, query_pool: vk::QueryPool, timestamp_period: f32) {
+    pub unsafe fn import_data(&mut self, frames_in_flight: usize, frame_count: u64, device: &ash::Device, query_pool: vk::QueryPool, timestamp_period: f32) {
         // wait for a few frames so that the queries get populated
+        /*
         if frame_count <= per_frame_data::FRAMES_IN_FLIGHT as u64 {
             return;
         }
+        */
 
 
         // try to fetch timestamp queries

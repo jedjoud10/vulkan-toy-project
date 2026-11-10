@@ -65,9 +65,9 @@ struct Args {
     #[arg(long, default_value_t = false)]
     x11: bool,
 
-    /// Force to wait on the end-of-frame fence. Basically disables multiple frames-in-flight. This forces the CPU and GPU to work sequentially and not in parallel
-    #[arg(long, default_value_t = false)]
-    force_wait_fence: bool
+    /// Number of frames in flight to use. Set to 1 to basically disable frames in flight
+    #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u32).range(1..=6))]
+    frames_in_flight: u32
 }
 
 struct App {

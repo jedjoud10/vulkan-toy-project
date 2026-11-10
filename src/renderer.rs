@@ -139,7 +139,7 @@ pub struct InternalApp {
     // descriptors & frames in flight
     main_descriptor_set_layout: vk::DescriptorSetLayout,
     main_pipeline_layout: vk::PipelineLayout,
-    frames_in_flight: SmallVec<[PerFrameData; per_frame_data::FRAMES_IN_FLIGHT]>,
+    frames_in_flight: Vec<PerFrameData>,
     render_finished_semaphores: SmallVec<[vk::Semaphore; swapchain::SWAPCHAIN_IMAGES]>,
     descriptor_pool: vk::DescriptorPool,
     render_targets_data: RenderTargetsData,
@@ -343,10 +343,10 @@ impl InternalApp {
         let skybox = skybox::create_skybox(&mut ctx);
         log::info!("created skybox");
 
-        let frames_in_flight = (0..per_frame_data::FRAMES_IN_FLIGHT).into_iter().map(|_| {
+        let frames_in_flight = (0..(args.frames_in_flight)).into_iter().map(|_| {
             PerFrameData::create_per_frame_data(&mut ctx)
-        }).collect::<SmallVec<[PerFrameData; per_frame_data::FRAMES_IN_FLIGHT]>>();
-        log::info!("created frames in flight structures");
+        }).collect::<Vec<PerFrameData>>();
+        log::info!("created {} frames in flight structures", args.frames_in_flight);
 
         let mut render_targets_data = RenderTargetsData::create_constant_descriptor_sets();
         render_targets_data.recreate_rt_images_and_image_views_and_update_descriptor_sets(&mut ctx, extent, args.downscale_factor);
@@ -1887,9 +1887,7 @@ impl InternalApp {
             .queue_present(self.queue, &present_info)
             .unwrap();
 
-        if self.args.force_wait_fence {
-            self.device.wait_for_fences(&[end_fence], true, u64::MAX).unwrap();
-        }
+        // self.device.wait_for_fences(&[end_fence], true, u64::MAX).unwrap();
         
         self.frame_count += 1;
         if suboptimal {
@@ -2064,12 +2062,12 @@ unsafe fn compile_all_shaders(
         file_name_without_extension: RASTERIZED_SKY,
     }, pipeline::PipelineCreateSettings {
         pipeline_debug_name: "rasterized models",
-        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Graphics { face_culling: false, vertex_input: model_vertex_input },
+        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Graphics { face_culling: true, vertex_input: model_vertex_input },
         spec_constants: Some(&spec_constants),
         file_name_without_extension: RASTERIZED,
     }, pipeline::PipelineCreateSettings {
         pipeline_debug_name: "rasterized chunks",
-        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Graphics { face_culling: false, vertex_input: chunk_vertex_input },
+        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Graphics { face_culling: true, vertex_input: chunk_vertex_input },
         spec_constants: Some(&spec_constants),
         file_name_without_extension: RASTERIZED_CHUNKS,
     }, pipeline::PipelineCreateSettings {

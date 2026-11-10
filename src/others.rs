@@ -10,7 +10,7 @@ pub const UNIFORM_BUFFER_COUNT: u32 = 60;
 pub const SAMPLED_IMAGE_COUNT: u32 = 26000;
 pub const SAMPLER_COUNT: u32 = 5;
 pub const ACCELERATION_STRUCTURES_COUNT: u32 = 1;
-pub const MAX_DESCRIPTOR_SETS: u32 = crate::per_frame_data::FRAMES_IN_FLIGHT as u32;
+pub const MAX_DESCRIPTOR_SETS: u32 = 32;
 
 
 pub unsafe fn create_descriptor_pool_and_bindless_descriptor_set(device: &ash::Device, debug_marker: &DebugMarker) -> (vk::DescriptorPool, vk::DescriptorSetLayout) {

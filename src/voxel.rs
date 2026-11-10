@@ -14,7 +14,8 @@ pub const INDEX_STRIDE: usize = size_of::<u32>();
 pub const CHUNK_SIZE: usize = 32;
 pub const CHUNK_SIZE_WITH_PADDING: usize = 34;
 pub const CHUNK_VOLUME: usize = CHUNK_SIZE_WITH_PADDING*CHUNK_SIZE_WITH_PADDING*CHUNK_SIZE_WITH_PADDING;
-        
+
+pub const ENABLED: bool = false;
 
 struct GeneratedChunk {
     node: Node,
@@ -127,7 +128,9 @@ impl MultipleChunks {
     }
 
     pub fn stuff(&mut self, position: vek::Vec3<f32>) {
-	    // return;
+        if !ENABLED {
+            return;
+        }
 	
         // if !self.chunks.is_empty() { return; }
         let OctreeDelta { added, removed } = self.octree.compute(&[position]);
