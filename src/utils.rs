@@ -57,16 +57,6 @@ pub fn index_to_offset_flat(index: usize, size: usize) -> vek::Vec2<usize> {
     vek::Vec2::new(x,y)
 }
 
-// fuck the ordering is all messed up and isn't following either CCW or CW
-pub fn quad_vertex_offsets_for_axis(axis: u32) -> [vek::Vec3<usize>; 4] {
-    match axis {
-        0 => [vek::Vec3::new(0, 0, 0), vek::Vec3::new(0, 1, 0), vek::Vec3::new(0, 0, 1), vek::Vec3::new(0, 1, 1)], // x
-        1 => [vek::Vec3::new(0, 0, 0), vek::Vec3::new(1, 0, 0), vek::Vec3::new(0, 0, 1), vek::Vec3::new(1, 0, 1)], // y
-        2 => [vek::Vec3::new(0, 0, 0), vek::Vec3::new(1, 0, 0), vek::Vec3::new(0, 1, 0), vek::Vec3::new(1, 1, 0)], // z
-        _ => unreachable!()
-    }
-}
-
 // ok temporary solution time
 pub fn quad_vertex_offsets_for_axis_ccw_order_looking_from_positive_axis(axis: u32) -> [vek::Vec3<usize>; 4] {
     match axis {
