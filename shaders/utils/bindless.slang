@@ -26,6 +26,10 @@ struct GpuModelMetadata {
     uint32_t storage_buffers_base_index;
 };
 
+struct GpuMaterialMetadata {
+    uint32_t texture_base_index;
+}
+
 struct PostProcessPushConstants {
     uint entire_bloom_sampled_image_idx;
 };

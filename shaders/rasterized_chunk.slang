@@ -5,8 +5,10 @@
 
 struct PushConstants {
     float3 *vertex_buffer_address;
-    uint material_base_texture_index;
+    uint *index_buffer_address;
+
     uint draw_index;
+    uint triangle_count_mesh;
 };
 
 struct VertexOutput {
@@ -45,7 +47,11 @@ float4 frag_main(VertexOutput in_vert, uniform PushConstants pc) : SV_Target {
         return float4(hash31((float)pc.draw_index * 123.456), 1);
     }
 
-    uint material_base_texture_index = pc.material_base_texture_index;
+    uint material_index = 0;
+    // material_index = ceil(snoise(in_vert.world_pos.xz));
+    GpuMaterialMetadata material = storage_buffers_readonly[STORAGE_BUFFER_MATERIALS_BUFFER].Load<GpuMaterialMetadata>(sizeof(GpuMaterialMetadata) * material_index);
+    uint material_base_texture_index = material.texture_base_index;
+    // uint material_base_texture_index = storage_buffers_readonly[STORAGE_BUFFER_MATERIALS_BUFFER].Load<uint>(4 * );
 
     float3 dp1 = ddx(in_vert.world_pos);
     float3 dp2 = ddy(in_vert.world_pos);

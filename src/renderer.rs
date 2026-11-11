@@ -70,6 +70,7 @@ const COMPUTE_VXGI: &'static str = "compute_vxgi";
 const RASTERIZED_SKY: &str = "rasterized_background";
 const RASTERIZED: &str = "rasterized";
 const RASTERIZED_CHUNKS: &str = "rasterized_chunk";
+const RASTERIZED_MS_CHUNKS: &str = "rasterized_ms_chunk";
 const RASTERIZED_MS_GENERATED_GRASS_SPV: &str = "rasterized_ms_generated_grass";
 
 
@@ -1627,33 +1628,6 @@ impl InternalApp {
         self.mesh_shader_device.cmd_draw_mesh_tasks(cmd,  16, 16, 1);
         */
 
-        // render chunks
-    
-        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_CHUNKS]);
-        let material_base_index = self.materials[1].base_index;
-        
-        #[derive(Clone, Copy, Pod, Zeroable)]
-        #[repr(C)]
-        struct ChunkPushConstants {
-            vertex_buffer_address: vk::DeviceAddress,
-            material_base_index: u32,
-            draw_index: u32,
-        }
-        
-        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, polygon_mode);
-        for (i, chunk) in self.multiple_chunks.chunks.values().filter_map(|x| x.as_ref()).enumerate() {
-            // self.device.cmd_bind_vertex_buffers(cmd, 0, &[chunk.vertex_buffer.buffer], &[0]);
-            let pc = ChunkPushConstants {
-                vertex_buffer_address: chunk.vertex_buffer.address,
-                material_base_index,
-                draw_index: i as u32,
-            };
-
-            self.device.cmd_push_constants(cmd, self.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytes_of(&pc));
-            self.device.cmd_bind_index_buffer(cmd, chunk.index_buffer.buffer, 0, vk::IndexType::UINT32);
-            self.device.cmd_draw_indexed(cmd, chunk.index_count, 1, 0, 0, 0);
-        }
-    
         for model in self.models.iter_mut() {
             model.compute_matrices();
         }
@@ -1665,7 +1639,12 @@ impl InternalApp {
             model.render(cmd, &self.device, self.main_pipeline_layout, &self.materials);
         }        
         
-
+        // render chunks
+        // self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_CHUNKS]);
+        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_CHUNKS]);
+        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, polygon_mode);
+        self.multiple_chunks.render_all_chunks(&mut ctx, cmd, &self.materials);
+    
         self.device.cmd_end_rendering(cmd);
         // self.device.cmd_end_query(cmd, pipeline_statistics_query_pool, 0);
 
@@ -2077,6 +2056,11 @@ fn create_pipeline_create_settings(args: &crate::Args) -> Vec<pipeline::Pipeline
         wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Graphics { face_culling: true },
         spec_constants: Some(spec_constants.clone()),
         file_name_without_extension: RASTERIZED_CHUNKS,
+    }, pipeline::PipelineCreateSettings {
+        pipeline_debug_name: "rasterized chunks (mesh shaders)",
+        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::GraphicsMeshShader { face_culling: true, task_shader: false },
+        spec_constants: Some(spec_constants.clone()),
+        file_name_without_extension: RASTERIZED_MS_CHUNKS,
     }, pipeline::PipelineCreateSettings {
         pipeline_debug_name: "compute vxgi shader",
         wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["voxelize", "mip_map_downsample"] },

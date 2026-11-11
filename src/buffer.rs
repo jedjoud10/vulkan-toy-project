@@ -45,7 +45,7 @@ pub unsafe fn create_buffer_with_location(
     location: gpu_allocator::MemoryLocation
 ) -> Buffer {
     let bytes_formatted = bytesize::ByteSize::b(size as u64);
-    log::debug!("creating buffer '{}' ({})", name, bytes_formatted.display().si());
+    log::trace!("creating buffer '{}' ({})", name, bytes_formatted.display().si());
     let buffer_create_info = vk::BufferCreateInfo::default()
         .flags(vk::BufferCreateFlags::DEVICE_ADDRESS_CAPTURE_REPLAY)
         .usage(flags | vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::STORAGE_BUFFER)
@@ -73,7 +73,7 @@ pub unsafe fn create_buffer_with_location(
     let device_memory = allocation.memory();
     ctx.device.bind_buffer_memory(buffer, device_memory, allocation.offset()).unwrap();
     
-    log::debug!("created buffer '{}' of size {}", name, bytes_formatted.display().si());
+    log::trace!("created buffer '{}' of size {}", name, bytes_formatted.display().si());
 
     
     let info = vk::BufferDeviceAddressInfo::default()
@@ -250,7 +250,7 @@ pub unsafe fn write_to_buffer_with_offset(
     }
 
     let end = std::time::Instant::now();
-    log::debug!("buffer write took {}μs", (end-start).as_micros());
+    log::trace!("buffer write took {}μs", (end-start).as_micros());
 }
 
 pub unsafe fn create_staging_buffer(device: &ash::Device, allocator: &mut Allocator, bytes: &[u8]) -> (vk::Buffer, Allocation) {

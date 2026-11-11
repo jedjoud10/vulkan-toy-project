@@ -71,7 +71,7 @@ impl MultipleChunks {
                         let chunk_scale = (chunk_size as f32 / CHUNK_SIZE as f32);
                          
 
-                        log::debug!("TID: {thread_id}. generating densities for chunk");
+                        log::trace!("TID: {thread_id}. generating densities for chunk");
                         let mut positive = false;
                         let mut negative = false;
                         for index in 0..CHUNK_VOLUME  {
@@ -94,10 +94,10 @@ impl MultipleChunks {
                         }
                     
                         if positive == negative {
-                            log::debug!("TID: {thread_id}. generating mesh for chunk");
+                            log::trace!("TID: {thread_id}. generating mesh for chunk");
                     
                             let crate::mesher::MeshedChunk { vertices, indices } = crate::mesher::mesh_chunk(densities, chunk_position, chunk_scale);
-                            log::debug!("TID: {thread_id}. vert count: {}. index count: {}", vertices.len(), indices.len());
+                            log::trace!("TID: {thread_id}. vert count: {}. index count: {}", vertices.len(), indices.len());
 
                             if !vertices.is_empty() && !indices.is_empty() {
                                 let result = GeneratedChunk {
@@ -133,7 +133,7 @@ impl MultipleChunks {
             return;
         }
 	
-        if !self.chunks.is_empty() { return; }
+        // if !self.chunks.is_empty() { return; }
         let OctreeDelta { added, removed } = self.octree.compute(&[position]);
 
 
@@ -220,6 +220,40 @@ impl MultipleChunks {
     pub unsafe fn destroy(self, acceleration_structure_device: &ash::khr::acceleration_structure::Device, device: &ash::Device, allocator: &mut Allocator) {
         for chunk in self.chunks.into_iter().filter_map(|(_, b)| b) {
             chunk.destroy(acceleration_structure_device, device, allocator);
+        }
+    }
+    
+    pub unsafe fn render_all_chunks(&self, ctx: &mut GraphicsContext, cmd: vk::CommandBuffer, materials: &[crate::material::Material]) {
+        let material_base_index = materials[1].base_index;
+        
+        #[derive(Clone, Copy, Pod, Zeroable)]
+        #[repr(C)]
+        struct ChunkPushConstants {
+            vertex_buffer_address: vk::DeviceAddress,
+            index_buffer_address: vk::DeviceAddress,
+            
+            // material_base_index: u32,
+            draw_index: u32,
+            triangle_count_mesh: u32,
+            // _padding: u32,
+        }
+        
+
+        for (i, chunk) in self.chunks.values().filter_map(|x| x.as_ref()).enumerate() {
+            // self.device.cmd_bind_vertex_buffers(cmd, 0, &[chunk.vertex_buffer.buffer], &[0]);
+            let pc = ChunkPushConstants {
+                vertex_buffer_address: chunk.vertex_buffer.address,
+                index_buffer_address: chunk.index_buffer.address,
+                // material_base_index,
+                draw_index: i as u32,
+                triangle_count_mesh: chunk.index_count / 3,
+                // _padding: 0,
+            };
+
+            ctx.device.cmd_push_constants(cmd, ctx.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytemuck::bytes_of(&pc));
+            ctx.device.cmd_bind_index_buffer(cmd, chunk.index_buffer.buffer, 0, vk::IndexType::UINT32);
+            ctx.device.cmd_draw_indexed(cmd, chunk.index_count, 1, 0, 0, 0);
+            // ctx.mesh_shader_device.cmd_draw_mesh_tasks(cmd, (chunk.index_count / 3).div_ceil(32), 1, 1);
         }
     }
 }

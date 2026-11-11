@@ -166,7 +166,7 @@ pub unsafe fn create_blas(
     cmd: vk::CommandBuffer,
     geometry: BlasGeometry,
 ) -> AccelerationStructureData {
-    log::debug!("creating & building BLAS");
+    log::trace!("creating & building BLAS");
 
     let (geometries, max_primitive_counts) = match geometry {
         BlasGeometry::Triangles { vertex_count, vertex_offset, vertex_stride, index_count, index_offset, index_stride, vertex_buffer_address, index_buffer_address } => {
@@ -285,7 +285,7 @@ pub const TLAS_MAX_INSTANCES: u32 = 50_000;
 pub unsafe fn pre_create_tlas(
     ctx: &mut GraphicsContext,
 ) -> TopLevelAccelerationStructure {
-    log::debug!("precreating TLAS");
+    log::trace!("precreating TLAS");
     let instances = vk::AccelerationStructureGeometryInstancesDataKHR::default()
         .array_of_pointers(false);
     let geometry_tmp = vk::AccelerationStructureGeometryDataKHR { instances: instances };
