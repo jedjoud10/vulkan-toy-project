@@ -17,14 +17,13 @@ pub const CHUNK_VOLUME: usize = CHUNK_SIZE_WITH_PADDING*CHUNK_SIZE_WITH_PADDING*
 
 pub const ENABLED: bool = true;
 
+
 struct GeneratedChunk {
     node: Node,
-    vertices: Vec<vek::Vec3<f32>>,
-    indices: Vec<u32>,
+    mesh: Option<crate::mesher::MeshedChunk>
 }
 
 struct Shared {
-    queue: crossbeam::queue::SegQueue<Node>,
     fbm: noise::Fbm::<noise::Perlin>,
     extra: noise::Fbm::<noise::Billow::<noise::Simplex>>,
 }
@@ -33,17 +32,21 @@ pub struct MultipleChunks {
     pub octree: Octree,
     pub destruction: Vec<Chunk>,
     pub chunks: HashMap<Node, Option<Chunk>>,
+    request_tx: crossbeam::channel::Sender<Node>,
     shared: Arc<Shared>,
-    receiver: Receiver<GeneratedChunk>,
+    result_rx: Receiver<GeneratedChunk>,
+    pub chunks_requested: usize,
+    pub chunks_to_remove: Vec<Node>,
 }
 
 impl MultipleChunks {
     pub unsafe fn create(
         ctx: &mut GraphicsContext,
     ) -> Self {
-        let (tx, rx) = std::sync::mpsc::channel::<GeneratedChunk>();
+        let (result_tx, result_rx) = std::sync::mpsc::channel::<GeneratedChunk>();
+        let (request_tx, request_rx) = crossbeam::channel::unbounded::<Node>();
+
         let shared = Arc::<Shared>::new(Shared {
-            queue: Default::default(),
             fbm: {
                 let mut fbm = noise::Fbm::<noise::Perlin>::new(0); 
                 fbm.octaves = 4;
@@ -60,10 +63,11 @@ impl MultipleChunks {
 
         let _threads = (0..4).into_iter().map(|thread_id| {
             let shared = shared.clone();
-            let tx = tx.clone();
+            let tx = result_tx.clone();
+            let request_rx = request_rx.clone();
             let thread = std::thread::spawn(move || {
                 loop {                
-                    if let Some(node) = shared.queue.pop() {
+                    if let Ok(node) = request_rx.recv() {
                         let mut densities = vec![0f32; CHUNK_VOLUME];
 
                         let chunk_position = node.position();
@@ -92,25 +96,26 @@ impl MultipleChunks {
                             negative |= densities[index] < 0f32;
                             
                         }
+
+                        let mut chunk = GeneratedChunk {
+                            mesh: None,
+                            node,
+                        };
                     
                         if positive == negative {
                             log::trace!("TID: {thread_id}. generating mesh for chunk");
                     
-                            let crate::mesher::MeshedChunk { vertices, indices } = crate::mesher::mesh_chunk(densities, chunk_position, chunk_scale);
-                            log::trace!("TID: {thread_id}. vert count: {}. index count: {}", vertices.len(), indices.len());
+                            let mesh = crate::mesher::mesh_chunk(densities, chunk_position, chunk_scale);
+                            log::trace!("TID: {thread_id}. vert count: {}. index count: {}", mesh.vertices.len(), mesh.indices.len());
 
-                            if !vertices.is_empty() && !indices.is_empty() {
-                                let result = GeneratedChunk {
-                                    vertices,
-                                    indices,
-                                    node,
-                                };
-
-                                if let Err(err) = tx.send(result) {
-                                    log::warn!("Tx Send Error: {err}");
-                                    break;
-                                }
+                            if !mesh.vertices.is_empty() && !mesh.indices.is_empty() {
+                                chunk.mesh = Some(mesh);
                             }
+                        }
+
+                        if let Err(err) = tx.send(chunk) {
+                            log::warn!("Tx Send Error: {err}");
+                            break;
                         }
                     }
                 }
@@ -120,10 +125,13 @@ impl MultipleChunks {
         }).collect::<Vec<_>>();
         
         Self {
+            chunks_requested: 0,
+            request_tx,
             shared,
-            receiver: rx,
+            result_rx,
             chunks: Default::default(),
             destruction: Default::default(),
+            chunks_to_remove: Vec::new(),
             octree: Octree::new(3, CHUNK_SIZE as u32),
         }
     }
@@ -133,20 +141,30 @@ impl MultipleChunks {
             return;
         }
 	
-        // if !self.chunks.is_empty() { return; }
-        let OctreeDelta { added, removed } = self.octree.compute(&[position]);
+        // terrain is still busy, don't start generating chunks yet
+        if self.chunks_requested > 0 {
+            return;
+        }
 
-
-        for removed in removed {
-            if let Some(chunk) = self.chunks.remove(&removed).flatten() {
+        // when we generated all chunks and they are all visible, remove older ones that were pending for deletion
+        for x in self.chunks_to_remove.drain(..) {
+            if let Some(chunk) = self.chunks.remove(&x).flatten() {
+                // chunk has been removed, put it pending for destruction (where we destroy its GPU data)
                 self.destruction.push(chunk)
             }
+        }
+
+        let OctreeDelta { added, removed } = self.octree.compute(&[position]);
+
+        for removed in removed {
+            self.chunks_to_remove.push(removed.clone());
         }
         
         for added in added {
             if added.leaf() {
-                self.shared.queue.push(added);
+                self.request_tx.send(added).unwrap();
                 self.chunks.insert(added, None);
+                self.chunks_requested += 1;
             }
         }
     }
@@ -156,13 +174,14 @@ impl MultipleChunks {
             chunk.destroy(ctx.acceleration_structure_device, ctx.device, ctx.allocator);
         }
 
-
-        for GeneratedChunk { node, vertices, indices } in self.receiver.try_iter() {
+        for GeneratedChunk { node, mesh } in self.result_rx.try_iter() {
+            self.chunks_requested -= 1;
+            
             if !self.chunks.contains_key(&node) {
                 continue;
             }
 
-            if indices.len() > 0 && vertices.len() > 0 {
+            if let Some(crate::mesher::MeshedChunk { vertices, indices }) = mesh {
                 let vertex_buffer = buffer::create_buffer_write_with_scratch_buffer(ctx, cmd, scratchy, cast_slice(vertices.as_slice()), "vertex buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
                 let index_buffer = buffer::create_buffer_write_with_scratch_buffer(ctx, cmd, scratchy, cast_slice(indices.as_slice()), "index buffer", vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
                 

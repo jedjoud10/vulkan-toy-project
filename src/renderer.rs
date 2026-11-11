@@ -905,6 +905,11 @@ impl InternalApp {
         dbgtext_writeln!(&mut self.debug_text, "reserved bytes: {}", reserved_bytes);
         dbgtext_writeln!(&mut self.debug_text, "allocated bytes: {}", allocated_bytes);
 
+        dbgtext_writeln!(&mut self.debug_text, "chunks: {}", self.multiple_chunks.chunks.len());
+        dbgtext_writeln!(&mut self.debug_text, "nodes: {}", self.multiple_chunks.octree.nodes().len());
+        dbgtext_writeln!(&mut self.debug_text, "requested: {}", self.multiple_chunks.chunks_requested);
+        dbgtext_writeln!(&mut self.debug_text, "to remove: {}", self.multiple_chunks.chunks_to_remove.len());
+
         /*
         dbgtext_writeln!(&mut self.debug_text, "chunks in use: {}", self.scene.chunks.iter().filter(|x| x.used).count());
         dbgtext_writeln!(&mut self.debug_text, "total primitives: {}", self.scene.primitive_flat_list.len());
@@ -1920,11 +1925,16 @@ impl InternalApp {
         self.device.device_wait_idle().unwrap();
 
         // self.scene.destroy(&self.device, &self.acceleration_structure_device, &mut self.allocator);
+        self.multiple_chunks.destroy(&self.acceleration_structure_device, &self.device, &mut self.allocator);
         log::info!("destroyed scene");
 
         self.materials_buffer.destroy(&self.device, &mut self.allocator);
         for material in self.materials {
             material.destroy(&self.device, &mut self.allocator);
+        }
+        
+        for model in self.models {
+            model.destroy(&self.acceleration_structure_device, &self.device, &mut self.allocator);
         }
         
         
@@ -1974,6 +1984,8 @@ impl InternalApp {
             .destroy_swapchain(self.swapchain, None);
         log::info!("destroyed swapchain");
 
+        self.tlas.destroy(&self.acceleration_structure_device, &self.device, &mut self.allocator);
+        log::info!("destroyed TLAS");
 
         self.surface_loader.destroy_surface(self.surface_khr, None);
         log::info!("destroyed surface");

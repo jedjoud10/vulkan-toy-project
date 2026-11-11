@@ -47,7 +47,7 @@ float4 frag_main(VertexOutput in_vert, uniform PushConstants pc) : SV_Target {
         return float4(hash31((float)pc.draw_index * 123.456), 1);
     }
 
-    uint material_index = 0;
+    uint material_index = 1;
     // material_index = ceil(snoise(in_vert.world_pos.xz));
     GpuMaterialMetadata material = storage_buffers_readonly[STORAGE_BUFFER_MATERIALS_BUFFER].Load<GpuMaterialMetadata>(sizeof(GpuMaterialMetadata) * material_index);
     uint material_base_texture_index = material.texture_base_index;

@@ -187,6 +187,11 @@ pub fn add_quads_or_tris(quad_or_tri: QuadOrTri, flip: bool, indices: &mut Vec<u
                 add_ccw_quad(v, indices);
             }
         },
+
+        // TODO: the only way a triangle can be generated is if we connect inner skirt vertex to edge skirt vertex and main mesh vertex
+        // we should NOT generate triangles in the "inner part" of the skirt (i.e not edges or corners)
+        // very easy fix for this, just have to implement it :P
+        // just handle this in `try_calculate_quads_or_tris`
         QuadOrTri::Tri(v) => {
             log::trace!("handle tri: {v}, flip: {flip}");
 
