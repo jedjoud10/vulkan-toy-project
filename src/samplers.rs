@@ -18,6 +18,8 @@ impl Samplers {
             .mag_filter(vk::Filter::LINEAR)
             .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
             .mip_lod_bias(MIP_LOD_BIAS)
+            .max_anisotropy(16.0)
+            .anisotropy_enable(true)
             .max_lod(100f32)
             .min_lod(0f32);
         let linear_unclamped = device.create_sampler(&linear_unclamped_create_info, None).unwrap();

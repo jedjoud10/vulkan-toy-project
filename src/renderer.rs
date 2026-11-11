@@ -417,6 +417,10 @@ impl InternalApp {
             Material::new(&mut ctx, "ground/ground_0029"),
             Material::new(&mut ctx, "metal_2/metal_0066"),
             Material::new(&mut ctx, "ground_2/ground_0019"),
+
+            Material::new_packed_zip(&mut ctx, "rocks_ground_02"),
+            Material::new_packed_zip(&mut ctx, "rocks_ground_06"),
+            Material::new_packed_zip(&mut ctx, "rocky_trail_02"),
         ];
 
         let materials_buffer = buffer::create_buffer(&mut ctx, materials.len() * size_of::<GpuMaterialInfo>(), "gpu materials buffer", vk::BufferUsageFlags::TRANSFER_DST);

@@ -1,4 +1,4 @@
-use std::{borrow::Cow, io::Read};
+use std::{borrow::Cow, io::{BufRead, Read}};
 
 use ash::vk;
 use bytemuck::{Pod, Zeroable, bytes_of, cast_slice};
@@ -21,6 +21,10 @@ pub struct Material {
     pub base_index: u32,
 }
 
+const CONST_TEXTURE_RESOLUTION: u32 = 1024; 
+const RESIZE_IMAGE_FILTER: image::imageops::FilterType = image::imageops::FilterType::CatmullRom;
+
+
 unsafe fn load_image_and_create_texture(
     ctx: &mut GraphicsContext,
     image_file_bytes: &[u8],
@@ -30,7 +34,7 @@ unsafe fn load_image_and_create_texture(
     let dynamic_image = image::load_from_memory(image_file_bytes).unwrap();
 
     let dynamic_image = if size != dynamic_image.width() {
-        dynamic_image.resize_exact(size, size, image::imageops::FilterType::Nearest)
+        dynamic_image.resize_exact(size, size, RESIZE_IMAGE_FILTER)
     } else {
         dynamic_image
     };
@@ -46,7 +50,7 @@ fn store_in_channel(
     size: u32
 ) {
     let single_channel_image = if size != single_channel_image.width() {
-        single_channel_image.resize_exact(size, size, image::imageops::FilterType::Nearest)
+        single_channel_image.resize_exact(size, size, RESIZE_IMAGE_FILTER)
     } else {
         single_channel_image
     };
@@ -58,7 +62,63 @@ fn store_in_channel(
     }
 }
 
+
+// {name}_arm_1k.jpg
+// {name}_diff_1k.jpg
+// {name}_nor_dx_1k.png
+// {name}_nor_gl_1k.png
+fn fun_name<R: std::io::Seek + std::io::Read>(material_name: &str, map_names: &[&str], stream: &mut zip::ZipArchive<R>) -> Option<Vec<u8>> {
+    // either called `diff` or `col` it seems?
+    let mut albedo_data = None;
+    for map_name in map_names {
+        // could either be jpg or png, favour png first, then fallback to jpg
+        for file_extension in ["png", "jpg"] {
+            
+            // TODO: wow this is horrible. fix this bs
+            let s = format!("/textures/{material_name}_{map_name}_1k.{file_extension}");
+
+            let p = std::path::Path::new(&s);
+            log::debug!("checking zipped path: {:?}", &p);
+            if let Ok(mut albedo_file) = stream.by_path(p) {
+                log::debug!("file exists, loading zipped data");
+                let mut data = vec![0; albedo_file.size() as usize];
+                albedo_file.read_exact(&mut data).unwrap();
+                albedo_data = Some(data);
+                break;
+            }
+        }
+    };
+    albedo_data
+}
+
 impl Material {
+    pub unsafe fn new_packed_zip(
+        ctx: &mut GraphicsContext,
+        name: &str,
+    ) -> Self {
+        let zipped = others::load_material_texture(&format!("{name}_1k.zip")).unwrap();
+
+        let reader = std::io::Cursor::new(zipped);
+        let mut stream = zip::read::ZipArchive::new(reader).unwrap();
+
+        let albedo_data = fun_name(name, &["diff", "col"], &mut stream).expect("could not read albedo map");
+        let normal_data = fun_name(name, &["nor_gl"], &mut stream).expect("could not read normal map");
+        let arm_data = fun_name(name, &["arm"], &mut stream).expect("could not read arm map");
+        
+
+        let size = CONST_TEXTURE_RESOLUTION;
+        let albedo_texture = load_image_and_create_texture(ctx, &albedo_data, size, texture::TextureType::Albedo);
+        let normal_texture = load_image_and_create_texture(ctx, &normal_data, size, texture::TextureType::NormalMap);
+        let arm_texture = load_image_and_create_texture(ctx, &arm_data, size, texture::TextureType::Arm);
+        
+        Self {
+            albedo_texture,
+            normal_texture,
+            arm_texture,
+            base_index: 0,
+        }
+    }
+
     pub unsafe fn new(
         ctx: &mut GraphicsContext,
         name: &str,
@@ -67,7 +127,7 @@ impl Material {
             others::load_material_texture(&format!("{name}_{thing_in_middle}_1k.png")).or_else(|| others::load_material_texture(&format!("{name}_{thing_in_middle}_1k.jpg")))
         };
 
-        let size = 1024;
+        let size = CONST_TEXTURE_RESOLUTION;
         let albedo_texture = load_image_and_create_texture(ctx, &load_file("color").unwrap(), size, texture::TextureType::Albedo);
         let normal_texture = load_image_and_create_texture(ctx, &load_file("normal_opengl").unwrap(), size, texture::TextureType::NormalMap);
 

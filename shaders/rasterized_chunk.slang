@@ -2,6 +2,7 @@
 #include "utils/pbr.slang"
 #include "utils/bindless.slang"
 #include "utils/triplanar.slang"
+#include "utils/materials.slang"
 
 struct PushConstants {
     float3 *vertex_buffer_address;
@@ -47,28 +48,29 @@ float4 frag_main(VertexOutput in_vert, uniform PushConstants pc) : SV_Target {
         return float4(hash31((float)pc.draw_index * 123.456), 1);
     }
 
-    uint material_index = 1;
-    // material_index = ceil(snoise(in_vert.world_pos.xz));
-    GpuMaterialMetadata material = storage_buffers_readonly[STORAGE_BUFFER_MATERIALS_BUFFER].Load<GpuMaterialMetadata>(sizeof(GpuMaterialMetadata) * material_index);
-    uint material_base_texture_index = material.texture_base_index;
-    // uint material_base_texture_index = storage_buffers_readonly[STORAGE_BUFFER_MATERIALS_BUFFER].Load<uint>(4 * );
+
 
     float3 dp1 = ddx(in_vert.world_pos);
     float3 dp2 = ddy(in_vert.world_pos);
     float3 normal = normalize(cross(dp1, dp2));            
     float3 world = in_vert.world_pos;
-    float3 view = -normalize(in_vert.world_pos - uniforms.position.xyz);  
+    float3 view = -normalize(in_vert.world_pos - uniforms.position.xyz);
 
-    
-    float3 diffuse = sample_triplanar(material_base_texture_index, world, normal);
-    float3 arm = sample_triplanar(material_base_texture_index+1, world, normal);
-    normal = normalize(sample_triplanar_normal(material_base_texture_index+2, world, normal));
+    // bottom layer
+    let base_layer = BaseEmptyLayer();
+    let with_rock = add_layer(base_layer, Material.load(4), 1);
 
-    
+    // top layer
+    let top_layer = BaseEmptyLayer();
+    let with_sand = add_layer(top_layer, Material.load(6), 1.0);
+    let with_puddles = add_layer(with_sand, Material.load(3), smoothstep(0.0, 0.3, snoise(world * 0.01)));
 
-    
+    // combine bottom and top with normal
+    let combined = add_layer(with_rock, with_puddles, smoothstep(0.6, 0.96, normal.y));
+    Layer res = smush(combined, world, normal);
+
     // construct PBR data
-    PbrSurfaceData pbr_surface_data = PbrSurfaceData(world, diffuse, normal, AoRoughnessMetallic(arm));
+    PbrSurfaceData pbr_surface_data = PbrSurfaceData(world, res.diffuse, res.normal, AoRoughnessMetallic(res.arm));
     CameraData camera_data = CameraData(view);
     float3 sun = uniforms.sun.xyz;
     float3 sun_colour = sun_colour(sun.xyz);
