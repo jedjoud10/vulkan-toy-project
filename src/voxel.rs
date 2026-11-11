@@ -132,7 +132,7 @@ impl MultipleChunks {
             chunks: Default::default(),
             destruction: Default::default(),
             chunks_to_remove: Vec::new(),
-            octree: Octree::new(3, CHUNK_SIZE as u32),
+            octree: Octree::new(5, CHUNK_SIZE as u32),
         }
     }
 
@@ -181,8 +181,9 @@ impl MultipleChunks {
                 continue;
             }
 
-            if let Some(crate::mesher::MeshedChunk { vertices, indices }) = mesh {
+            if let Some(crate::mesher::MeshedChunk { vertices, normals, indices }) = mesh {
                 let vertex_buffer = buffer::create_buffer_write_with_scratch_buffer(ctx, cmd, scratchy, cast_slice(vertices.as_slice()), "vertex buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
+                let normals_buffer = buffer::create_buffer_write_with_scratch_buffer(ctx, cmd, scratchy, cast_slice(normals.as_slice()), "normals buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
                 let index_buffer = buffer::create_buffer_write_with_scratch_buffer(ctx, cmd, scratchy, cast_slice(indices.as_slice()), "index buffer", vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
                 
                 let vertex_buffer_barrier = vk::BufferMemoryBarrier2::default()
@@ -226,6 +227,7 @@ impl MultipleChunks {
                 let chunk = Chunk {
                     vertex_buffer,
                     index_buffer,
+                    normals_buffer,
                     blas,
                     instance,
                     index_count: indices.len() as u32,
@@ -249,6 +251,7 @@ impl MultipleChunks {
         #[repr(C)]
         struct ChunkPushConstants {
             vertex_buffer_address: vk::DeviceAddress,
+            normals_buffer_address: vk::DeviceAddress,
             index_buffer_address: vk::DeviceAddress,
             
             // material_base_index: u32,
@@ -262,6 +265,7 @@ impl MultipleChunks {
             // self.device.cmd_bind_vertex_buffers(cmd, 0, &[chunk.vertex_buffer.buffer], &[0]);
             let pc = ChunkPushConstants {
                 vertex_buffer_address: chunk.vertex_buffer.address,
+                normals_buffer_address: chunk.normals_buffer.address,
                 index_buffer_address: chunk.index_buffer.address,
                 // material_base_index,
                 draw_index: i as u32,
@@ -279,6 +283,7 @@ impl MultipleChunks {
 
 pub struct Chunk {    
     pub vertex_buffer: buffer::Buffer,
+    pub normals_buffer: buffer::Buffer,
     pub index_buffer: buffer::Buffer,
 
     pub blas: ray_tracing::AccelerationStructureData,
@@ -289,6 +294,7 @@ pub struct Chunk {
 impl Chunk {
     pub unsafe fn destroy(self, acceleration_structure_device: &ash::khr::acceleration_structure::Device, device: &ash::Device, allocator: &mut Allocator) {
         self.index_buffer.destroy(device, allocator);
+        self.normals_buffer.destroy(device, allocator);
         self.vertex_buffer.destroy(device, allocator);
         self.blas.destroy(acceleration_structure_device, device, allocator);
     } 

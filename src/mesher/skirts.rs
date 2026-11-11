@@ -13,12 +13,14 @@ pub const SKIRT_FACE: usize = SKIRT_SIZE*SKIRT_SIZE;
 struct VertexToSpawn {
     use_world_position: bool,
     world_position: vek::Vec3<f32>,
+    normal: vek::Vec3<f32>,
     inner_offset: vek::Vec3<f32>,
 }
 
 #[derive(Clone, Copy)]
 struct VertexSpawningData<'a> {
     densities: &'a [f32],
+    normal_lookup: &'a [vek::Vec3<f32>],
     direction: u32,
     negative: bool,
     missing: usize,
@@ -32,7 +34,7 @@ fn create_corner(data: &VertexSpawningData) -> Option<VertexToSpawn> {
 }
 
 fn create_skirt_sn_1d(data: &VertexSpawningData) -> Option<VertexToSpawn> {
-    let VertexSpawningData { densities, direction, negative, relative, min_max_mask, .. } = *data;
+    let VertexSpawningData { densities, direction, negative, relative, min_max_mask, normal_lookup, .. } = *data;
 
     let mask = vek::Vec2::new(min_max_mask.x || min_max_mask.z, min_max_mask.y || min_max_mask.w);
     let edge_direction_index = edge_dir_face_relative(mask, direction);
@@ -55,6 +57,9 @@ fn create_skirt_sn_1d(data: &VertexSpawningData) -> Option<VertexToSpawn> {
     let d1 = densities[p1_offsetted_index];
     let d2 = densities[p2_offsetted_index];
 
+    let n1 = normal_lookup[p1_offsetted_index];
+    let n2 = normal_lookup[p2_offsetted_index];
+
     // log::trace!("{} {} {} {}", p1_offsetted_index, p2_offsetted_index, d1, d2);
     
     if (d1 < 0f32) ^ (d2 < 0f32) {
@@ -71,6 +76,7 @@ fn create_skirt_sn_1d(data: &VertexSpawningData) -> Option<VertexToSpawn> {
         Some(VertexToSpawn {
             use_world_position: true,
             world_position,
+            normal: vek::Vec3::lerp(n1, n2, factor).normalized(),
             inner_offset
         })
         
@@ -107,12 +113,13 @@ fn edge_dir_face_relative(mask: vek::Vec2<bool>, face_normal: u32) -> u32 {
 }
 
 fn create_skirt_sn_2d(data: &VertexSpawningData) -> Option<VertexToSpawn> {
-    let VertexSpawningData { direction, negative, relative, missing, densities, .. } = *data;
+    let VertexSpawningData { direction, negative, relative, missing, densities, normal_lookup: normals_lookup, .. } = *data;
 
     // it is safe to subtract 1 here because we know both coordinates of x,y are > 0 because this is the "middle" vertex, not an edge nor a corner
     let position = utils::unflatten_from_face_relative(relative - 1, missing, direction);
 
     let mut vertex = vek::Vec3::<f32>::zero();
+    let mut normal = vek::Vec3::<f32>::zero();
     let mut count = 0;
 
     // this is INSIDE cell, so offset is 1 and not the chunk size (we add the chunk offset position afterwards)
@@ -130,10 +137,14 @@ fn create_skirt_sn_2d(data: &VertexSpawningData) -> Option<VertexToSpawn> {
         
         let d1 = densities[p1_offsetted_index];
         let d2 = densities[p2_offsetted_index];
+
+        let n1 = normals_lookup[p1_offsetted_index];
+        let n2 = normals_lookup[p1_offsetted_index];        
         
         if (d1 < 0f32) ^ (d2 < 0f32) {
             let factor = utils::unlerp(0f32, d1, d2);
             vertex += vek::Vec3::lerp(p1_offsetted.as_::<f32>(), p2_offsetted.as_::<f32>(), factor);
+            normal += vek::Vec3::lerp(n1, n2, factor);
             count += 1;
         }
     }
@@ -152,6 +163,7 @@ fn create_skirt_sn_2d(data: &VertexSpawningData) -> Option<VertexToSpawn> {
         Some(VertexToSpawn {
             use_world_position: false,
             world_position: vek::Vec3::zero(),
+            normal: normal.normalized(),
             inner_offset
         })
     } else {
@@ -159,7 +171,7 @@ fn create_skirt_sn_2d(data: &VertexSpawningData) -> Option<VertexToSpawn> {
     }
 }
 
-pub fn skirt_vertices(densities: &Vec<f32>, chunk_position: vek::Vec3<i32>, chunk_scale: f32, vertices: &mut Vec<vek::Vec3<f32>>, skirt_lookup: &mut Vec<u32>, direction: u32, negative: bool, face: u32) {
+pub fn skirt_vertices(densities: &[f32], normal_lookup: &[vek::Vec3<f32>], chunk_position: vek::Vec3<i32>, chunk_scale: f32, vertices: &mut Vec<vek::Vec3<f32>>, normals: &mut Vec<vek::Vec3<f32>>, skirt_lookup: &mut Vec<u32>, direction: u32, negative: bool, face: u32) {
     let missing = if negative { 0 } else { CHUNK_SIZE_WITH_PADDING - 3 }; 
 
     // this handles center vertices
@@ -178,6 +190,7 @@ pub fn skirt_vertices(densities: &Vec<f32>, chunk_position: vek::Vec3<i32>, chun
                 missing,
                 relative,
                 min_max_mask,
+                normal_lookup,
             };
 
             let maybe_vertex = if count == 2 {
@@ -195,7 +208,7 @@ pub fn skirt_vertices(densities: &Vec<f32>, chunk_position: vek::Vec3<i32>, chun
             let unoffsetted = utils::unflatten_from_face_relative(relative, missing, direction);
 
             // actually spawn the vertex if needed
-            if let Some(VertexToSpawn { use_world_position, world_position, inner_offset }) = maybe_vertex {
+            if let Some(VertexToSpawn { use_world_position, world_position, inner_offset, normal }) = maybe_vertex {
                 let local_vertex_position = if use_world_position {
                     world_position + inner_offset
                 } else {
@@ -205,6 +218,7 @@ pub fn skirt_vertices(densities: &Vec<f32>, chunk_position: vek::Vec3<i32>, chun
                 let index = vertices.len();
                 let world_vertex_position = local_vertex_position * chunk_scale + chunk_position.as_::<f32>();
                 vertices.push(world_vertex_position);
+                normals.push(normal);
                 
                 skirt_lookup[utils::offset_to_index_flat(relative, SKIRT_SIZE)] = index as u32;
             }

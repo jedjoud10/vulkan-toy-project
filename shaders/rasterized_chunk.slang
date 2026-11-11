@@ -6,6 +6,7 @@
 
 struct PushConstants {
     float3 *vertex_buffer_address;
+    float3 *normal_buffer_address;
     uint *index_buffer_address;
 
     uint draw_index;
@@ -14,7 +15,7 @@ struct PushConstants {
 
 struct VertexOutput {
     float3 world_pos;
-    //float3 normal;
+    float3 normal;
     float3 colour;
     float4 sv_position : SV_Position;
 };
@@ -36,7 +37,7 @@ VertexOutput vert_main(uint index: SV_VertexID, uniform PushConstants pc) {
     output.sv_position = t;
     output.world_pos = world_position.xyz;
     output.colour = (snoise(world_position.xyz * 0.1) * 0.5 + 0.5);
-    //output.normal = input.normal;
+    output.normal = pc.normal_buffer_address[index];
     return output;
 }
 
@@ -48,11 +49,13 @@ float4 frag_main(VertexOutput in_vert, uniform PushConstants pc) : SV_Target {
         return float4(hash31((float)pc.draw_index * 123.456), 1);
     }
 
-
-
+    /*
     float3 dp1 = ddx(in_vert.world_pos);
     float3 dp2 = ddy(in_vert.world_pos);
-    float3 normal = normalize(cross(dp1, dp2));            
+    float3 normal = normalize(cross(dp1, dp2));
+    */
+
+    float3 normal = normalize(in_vert.normal);
     float3 world = in_vert.world_pos;
     float3 view = -normalize(in_vert.world_pos - uniforms.position.xyz);
 

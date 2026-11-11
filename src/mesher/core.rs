@@ -2,6 +2,31 @@ use vek::Clamp;
 use super::*;
 use super::utils;
 
+
+pub fn compute_normals(densities: &Vec<f32>, normals_lookup: &mut [vek::Vec3<f32>]) {
+    for x in 0..(CHUNK_SIZE_WITH_PADDING-1) {
+        for y in 0..(CHUNK_SIZE_WITH_PADDING-1) {
+            for z in 0..(CHUNK_SIZE_WITH_PADDING-1) {
+                let pos = vek::Vec3::new(x,y,z);
+                let mut normal = vek::Vec3::<f32>::zero();
+                let d1 = densities[utils::offset_to_index(pos, CHUNK_SIZE_WITH_PADDING)];
+            
+                for axis in 0..3 {
+                    // next cell is the cell "forward" to the current cell based on axiss
+                    let mut next_cell = pos;
+                    next_cell[axis] += 1;
+                    
+                    let d2 = densities[utils::offset_to_index(next_cell, CHUNK_SIZE_WITH_PADDING)];
+                    normal[axis] = d2 - d1;
+                }
+
+                normal.normalize();
+                normals_lookup[utils::offset_to_index(pos, CHUNK_SIZE_WITH_PADDING)] = normal;
+            }
+        }
+    }
+}
+
 pub fn core_quads(densities: &Vec<f32>, indices: &mut Vec<u32>, lookup: &Vec<u32>) {
     for x in 1..(CHUNK_SIZE_WITH_PADDING-2) {
         for y in 1..(CHUNK_SIZE_WITH_PADDING-2) {
@@ -49,13 +74,15 @@ pub fn core_quads(densities: &Vec<f32>, indices: &mut Vec<u32>, lookup: &Vec<u32
     }
 }
 
-pub fn core_vertices(densities: &Vec<f32>, chunk_position: vek::Vec3<i32>, chunk_scale: f32, vertices: &mut Vec<vek::Vec3<f32>>, lookup: &mut Vec<u32>) {
+pub fn core_vertices(densities: &Vec<f32>, chunk_position: vek::Vec3<i32>, chunk_scale: f32, vertices: &mut Vec<vek::Vec3<f32>>, normals: &mut Vec<vek::Vec3<f32>>, normals_lookup: &[vek::Vec3<f32>], lookup: &mut Vec<u32>) {
     for x in 0..(CHUNK_SIZE_WITH_PADDING-2) {
         for y in 0..(CHUNK_SIZE_WITH_PADDING-2) {
             for z in 0..(CHUNK_SIZE_WITH_PADDING-2) {
                 let pos = vek::Vec3::new(x,y,z);
 
                 let mut vertex = vek::Vec3::<f32>::zero();
+                let mut normal = vek::Vec3::<f32>::zero();
+                
                 let mut count = 0;
 
                 for edge in 0..12 {
@@ -68,9 +95,13 @@ pub fn core_vertices(densities: &Vec<f32>, chunk_position: vek::Vec3<i32>, chunk
                     let d1 = densities[p1_offsetted_index];
                     let d2 = densities[p2_offsetted_index];
 
+                    let n1 = normals_lookup[p1_offsetted_index];
+                    let n2 = normals_lookup[p2_offsetted_index];
+
                     if (d1 < 0f32) ^ (d2 < 0f32) {
                         let factor = utils::unlerp(0f32, d1, d2);
                         vertex += vek::Vec3::lerp(p1_offsetted.as_::<f32>(), p2_offsetted.as_::<f32>(), factor);
+                        normal += vek::Vec3::lerp(n1, n2, factor);
                         count += 1;
                     }
                 }
@@ -87,6 +118,7 @@ pub fn core_vertices(densities: &Vec<f32>, chunk_position: vek::Vec3<i32>, chunk
                     let index = vertices.len();
                     lookup[utils::offset_to_index(pos, CHUNK_SIZE_WITH_PADDING)] = index as u32;
                     vertices.push(vertex_position);
+                    normals.push(normal.normalized())
                 }
             }
         }
