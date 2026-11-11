@@ -41,56 +41,6 @@ pub fn index_to_offset(index: usize, size: usize) -> vek::Vec3<usize> {
     vek::Vec3::new(x,y,z)
 }
 
-
-pub fn offset_to_index_flat(offset: vek::Vec2<usize>, size: usize) -> usize {
-    assert!(offset.cmpge(&vek::Vec2::broadcast(0)).reduce_and());
-    assert!(offset.cmplt(&vek::Vec2::broadcast(size)).reduce_and());
-    
-    offset.x + offset.y * size
-}
-
-pub fn index_to_offset_flat(index: usize, size: usize) -> vek::Vec2<usize> {
-    assert!(index < (size*size));
-    
-    let x: usize = index % size;
-    let y = (index / size) % size;
-    vek::Vec2::new(x,y)
-}
-
-// ok temporary solution time
-pub fn quad_vertex_offsets_for_axis_ccw_order_looking_from_positive_axis(axis: u32) -> [vek::Vec3<usize>; 4] {
-    match axis {
-        0 => [vek::Vec3::new(0, 0, 0), vek::Vec3::new(0, 1, 0), vek::Vec3::new(0,1, 1), vek::Vec3::new(0, 0, 1)], // x
-        1 => [vek::Vec3::new(0, 0, 0), vek::Vec3::new(0, 0, 1), vek::Vec3::new(1, 0, 1), vek::Vec3::new(1, 0, 0)], // y
-        2 => [vek::Vec3::new(0, 0, 0), vek::Vec3::new(1, 0, 0), vek::Vec3::new(1, 1, 0), vek::Vec3::new(0, 1, 0)], // z
-        _ => unreachable!()
-    }
-}
-
-// https://github.com/jedjoud10/VoxelTerrain/blob/e949784031a0b32104f467e3c3d2138f54286dd4/Runtime/Utils/SkirtUtils.cs#L32-L45
-pub fn flatten_to_face_relative<T>(pos: vek::Vec3<T>, direction: u32) -> vek::Vec2<T> {
-    assert!(direction <= 2);
-
-    match direction {
-        0 => vek::Vec2::new(pos.y,pos.z),
-        1 => vek::Vec2::new(pos.x,pos.z),
-        2 => vek::Vec2::new(pos.x,pos.y),
-        _ => unreachable!()
-    }
-}
-
-// https://github.com/jedjoud10/VoxelTerrain/blob/e949784031a0b32104f467e3c3d2138f54286dd4/Runtime/Utils/SkirtUtils.cs#L50-L63
-pub fn unflatten_from_face_relative<T>(relative: vek::Vec2<T>, missing: T, direction: u32) -> vek::Vec3<T> {
-    assert!(direction <= 2);
-
-    match direction {
-        0 => vek::Vec3::new(missing, relative.x, relative.y),
-        1 => vek::Vec3::new(relative.x, missing, relative.y),
-        2 => vek::Vec3::new(relative.x, relative.y, missing),
-        _ => unreachable!()
-    }
-}
-
 pub fn try_offset_to_index(offset: vek::Vec3<usize>, size: usize) -> Option<usize> {
     if offset.cmpge(&vek::Vec3::broadcast(0)).reduce_and() && offset.cmplt(&vek::Vec3::broadcast(size)).reduce_and() {
         Some(offset.x + offset.y * size + offset.z * size * size)

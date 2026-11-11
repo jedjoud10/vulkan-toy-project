@@ -11,8 +11,8 @@ use crate::{buffer, octree::{Node, Octree, OctreeDelta}, others, ray_tracing, re
 pub const VERTEX_STRIDE: usize = size_of::<vek::Vec3::<f32>>();
 pub const INDEX_STRIDE: usize = size_of::<u32>();
 
-pub const CHUNK_SIZE: usize = 32;
-pub const CHUNK_SIZE_WITH_PADDING: usize = 34;
+pub const CHUNK_SIZE: usize = crate::mesher::CHUNK_SIZE;
+pub const CHUNK_SIZE_WITH_PADDING: usize = crate::mesher::CHUNK_SIZE_WITH_PADDING;
 pub const CHUNK_VOLUME: usize = CHUNK_SIZE_WITH_PADDING*CHUNK_SIZE_WITH_PADDING*CHUNK_SIZE_WITH_PADDING;
 
 pub const ENABLED: bool = true;
