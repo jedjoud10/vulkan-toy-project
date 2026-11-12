@@ -378,6 +378,9 @@ impl InternalApp {
             model::Model::new(vek::Vec3::new(-50f32, 20f32, 0f32), "dust_mesh_a.obj", &mut ctx, 2, cmd, &mut writer),     
             model::Model::new(vek::Vec3::new(0f32, 18f32, 0f32), "rough_plane.obj", &mut ctx, 0, cmd, &mut writer),         
             model::Model::new(vek::Vec3::new(0f32, 30f32, 0f32), "space_thing.obj", &mut ctx, 0, cmd, &mut writer),     
+            model::Model::new(vek::Vec3::new(0f32, 40f32, 0f32), "rock1.obj", &mut ctx, 0, cmd, &mut writer),     
+            model::Model::new(vek::Vec3::new(0f32, 50f32, 0f32), "rock2.obj", &mut ctx, 0, cmd, &mut writer),     
+            
         ];
 
         others::end_recording_and_submit(&mut ctx, cmd);
@@ -886,7 +889,12 @@ impl InternalApp {
         if self.recompiler.recompiling {
             dbgtext_writeln!(&mut self.debug_text, "SHADERS RECOMPILING ...");
         } else {
-            dbgtext_writeln!(&mut self.debug_text, "COMPILED SHADERS IN {:.2}s", self.recompiler.last_time_taken);
+            if self.recompiler.errored {
+                dbgtext_writeln!(&mut self.debug_text, "SHADER COMPILATION ERROR CHECK LOGS");
+            
+            } else {
+                dbgtext_writeln!(&mut self.debug_text, "COMPILED SHADERS IN {:.2}s", self.recompiler.last_time_taken);
+            }
         }
 
         dbgtext_writeln!(&mut self.debug_text, "CPU delta: {:.2}ms", delta*1000f32);

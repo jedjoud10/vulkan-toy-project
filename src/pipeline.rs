@@ -477,8 +477,9 @@ struct PipelineCompilationResult {
 pub struct DedicatedPipelineRecompiler {
     thread: std::thread::JoinHandle<()>,
     request_channel: std::sync::mpsc::Sender<()>,
-    result_channel: std::sync::mpsc::Receiver<PipelineCompilationResult>,
+    result_channel: std::sync::mpsc::Receiver<Option<PipelineCompilationResult>>,
     pub recompiling: bool,
+    pub errored: bool,
     pub last_time_taken: f32,
 }
 
@@ -487,15 +488,21 @@ impl DedicatedPipelineRecompiler {
         if !self.recompiling {
             self.request_channel.send(()).unwrap();
             self.recompiling = true;
+            self.errored = false;
         }
     }
 
     pub fn wait(&mut self, graphics: &mut HashMap<&'static str, GenericGraphicsPipeline>, compute: &mut HashMap<&'static str, GenericComputePipeline>) {
         self.recompiling = false;
         let result = self.result_channel.recv().unwrap();
-        graphics.extend(result.graphics_pipelines.into_iter());
-        compute.extend(result.compute_pipelines.into_iter());
-        self.last_time_taken = result.time_taken;
+
+        if let Some(result) = result {
+            graphics.extend(result.graphics_pipelines.into_iter());
+            compute.extend(result.compute_pipelines.into_iter());
+            self.last_time_taken = result.time_taken;
+        } else {
+            panic!("error during initial shader compilation");
+        }
     }
 
     pub unsafe fn try_wait(&mut self, device: &ash::Device, graphics: &mut HashMap<&'static str, GenericGraphicsPipeline>, compute: &mut HashMap<&'static str, GenericComputePipeline>) {
@@ -504,27 +511,34 @@ impl DedicatedPipelineRecompiler {
         }
 
         if let Ok(result) = self.result_channel.try_recv() {
-            device.device_wait_idle().unwrap();
+            if let Some(result) = result {
+                device.device_wait_idle().unwrap();
+                
+                for (_, graphic_pipeline) in graphics.drain() {
+                    graphic_pipeline.destroy(&device);
+                }
             
-            for (_, graphic_pipeline) in graphics.drain() {
-                graphic_pipeline.destroy(&device);
-            }
-        
-            for (_, compute_pipeline) in compute.drain() {
-                compute_pipeline.destroy(&device);
+                for (_, compute_pipeline) in compute.drain() {
+                    compute_pipeline.destroy(&device);
+                }
+
+                graphics.extend(result.graphics_pipelines.into_iter());
+                compute.extend(result.compute_pipelines.into_iter());
+                self.last_time_taken = result.time_taken;
+                self.errored = false;
+            } else {
+                log::error!("hot-reload shader compilation failed. check logs for shader errors");
+                self.errored = true;
             }
 
-            graphics.extend(result.graphics_pipelines.into_iter());
-            compute.extend(result.compute_pipelines.into_iter());
             self.recompiling = false;
-            self.last_time_taken = result.time_taken;
         }
     }
 }
 
 pub fn spool_up_dedicated_compilation_thread(settings: Vec<PipelineCreateSettings>, compiler: PipelineCompilationContext) -> DedicatedPipelineRecompiler {
     let (tx_req, rx_req) = std::sync::mpsc::channel::<()>();
-    let (tx_res, rx_res) = std::sync::mpsc::channel::<PipelineCompilationResult>();
+    let (tx_res, rx_res) = std::sync::mpsc::channel::<Option<PipelineCompilationResult>>();
 
     let thread = std::thread::spawn(move || {
         loop {                
@@ -533,9 +547,7 @@ pub fn spool_up_dedicated_compilation_thread(settings: Vec<PipelineCreateSetting
                     compile_pipelines(&settings, &compiler, false)
                 };
 
-                if let Some(pipelines) = result {
-                    tx_res.send(pipelines).unwrap();
-                }
+                tx_res.send(result).unwrap();
             }
         }
     });
@@ -546,6 +558,7 @@ pub fn spool_up_dedicated_compilation_thread(settings: Vec<PipelineCreateSetting
         result_channel: rx_res,
         recompiling: false,
         last_time_taken: 0f32,
+        errored: false,
     }
 }
 
