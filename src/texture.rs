@@ -26,7 +26,7 @@ pub enum TextureType {
 }
 
 pub unsafe fn create_texture(
-    ctx: &mut GraphicsContext,
+    ctx: &GraphicsContext,
     bytes: Option<&[u8]>,
     size: u32,
     texture_type: TextureType,
@@ -40,6 +40,8 @@ pub unsafe fn create_texture(
         debug_marker,
         ..
     } = ctx;
+
+    let mut allocator = allocator.lock().unwrap();
 
     let queue_family_indices = [*queue_family_index];
 

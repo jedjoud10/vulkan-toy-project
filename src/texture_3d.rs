@@ -11,7 +11,7 @@ use crate::{renderer::GraphicsContext, utils::{index_to_offset, offset_to_index}
 
 // from https://github.com/jedjoud10/vulkan-toy-project/blob/d3ae7315d94f54a213fa6a757dd69f45cb8eb8b2/src/voxel.rs
 pub unsafe fn create_texture_3d(
-    ctx: &mut GraphicsContext,
+    ctx: &GraphicsContext,
     size: vek::Extent3<u32>,
     format: vk::Format,
     mips: Option<u32>,
@@ -49,6 +49,7 @@ pub unsafe fn create_texture_3d(
     crate::debug::set_object_name(image, debug_marker, name);
 
     let requirements = device.get_image_memory_requirements(image);
+    let mut allocator = allocator.lock().unwrap();
     let allocation = allocator
         .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
             name: name,
@@ -373,7 +374,7 @@ pub unsafe fn write_image_data_host_image_copy(host_image_copy_device: &mut &ash
 }
 
 
-pub unsafe fn write_image_data_scratch_buffer(ctx: &mut GraphicsContext, cmd: vk::CommandBuffer, scratch_buffer: &mut crate::buffer::ScratchBuffer, bytes: &[u8], image: vk::Image, size: u32) {
+pub unsafe fn write_image_data_scratch_buffer(ctx: &GraphicsContext, cmd: vk::CommandBuffer, scratch_buffer: &mut crate::buffer::ScratchBuffer, bytes: &[u8], image: vk::Image, size: u32) {
     let image_subresource_layers = vk::ImageSubresourceLayers::default()
         .aspect_mask(vk::ImageAspectFlags::COLOR)
         .mip_level(0)

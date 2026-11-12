@@ -15,7 +15,7 @@ pub struct PerFrameData {
 
 impl PerFrameData {
     pub unsafe fn create_per_frame_data(
-        ctx: &mut GraphicsContext,
+        ctx: &GraphicsContext,
     ) -> Self {
         let present_complete_semaphore = ctx.device
             .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)

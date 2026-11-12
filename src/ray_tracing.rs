@@ -47,7 +47,7 @@ pub enum BlasGeometry {
 
 
 pub unsafe fn rebuild_blas(
-    ctx: &mut GraphicsContext,
+    ctx: &GraphicsContext,
     cmd: vk::CommandBuffer,
     geometry: BlasGeometry,
     blas: &AccelerationStructureData,
@@ -162,7 +162,7 @@ pub unsafe fn rebuild_blas(
 }
 
 pub unsafe fn create_blas(
-    ctx: &mut GraphicsContext,
+    ctx: &GraphicsContext,
     cmd: vk::CommandBuffer,
     geometry: BlasGeometry,
 ) -> AccelerationStructureData {
@@ -283,7 +283,7 @@ impl TopLevelAccelerationStructure {
 pub const TLAS_MAX_INSTANCES: u32 = 50_000;
 
 pub unsafe fn pre_create_tlas(
-    ctx: &mut GraphicsContext,
+    ctx: &GraphicsContext,
 ) -> TopLevelAccelerationStructure {
     log::trace!("precreating TLAS");
     let instances = vk::AccelerationStructureGeometryInstancesDataKHR::default()
@@ -324,7 +324,7 @@ pub unsafe fn pre_create_tlas(
 pub unsafe fn rebuild_tlas(
     instances: impl Iterator<Item = vk::AccelerationStructureInstanceKHR>,
     tlas: &TopLevelAccelerationStructure,
-    ctx: &mut GraphicsContext,
+    ctx: &GraphicsContext,
     cmd: vk::CommandBuffer,
     per_frame_scratch_buffer: &mut crate::buffer::ScratchBuffer,
 ) {

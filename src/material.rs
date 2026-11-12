@@ -26,7 +26,7 @@ const RESIZE_IMAGE_FILTER: image::imageops::FilterType = image::imageops::Filter
 
 
 unsafe fn load_image_and_create_texture(
-    ctx: &mut GraphicsContext,
+    ctx: &GraphicsContext,
     image_file_bytes: &[u8],
     size: u32,
     texture_type: crate::texture::TextureType,
@@ -93,7 +93,7 @@ fn fun_name<R: std::io::Seek + std::io::Read>(material_name: &str, map_names: &[
 
 impl Material {
     pub unsafe fn new_packed_zip(
-        ctx: &mut GraphicsContext,
+        ctx: &GraphicsContext,
         name: &str,
     ) -> Self {
         let zipped = others::load_material_texture(&format!("{name}_1k.zip")).unwrap();
@@ -120,7 +120,7 @@ impl Material {
     }
 
     pub unsafe fn new(
-        ctx: &mut GraphicsContext,
+        ctx: &GraphicsContext,
         name: &str,
     ) -> Self {
         let load_file = |thing_in_middle: &str| -> Option<Cow<'static, [u8]>> {

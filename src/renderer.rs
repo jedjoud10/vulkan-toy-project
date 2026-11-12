@@ -34,6 +34,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ops::ControlFlow;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
 use std::fmt::Write;
@@ -83,9 +84,8 @@ pub struct GraphicsContext<'a> {
     pub extended_dynamic_state3_device: &'a ash::ext::extended_dynamic_state3::Device,
     pub acceleration_structure_device: &'a ash::khr::acceleration_structure::Device,
     pub host_image_copy_device: &'a ash::ext::host_image_copy::Device,
-
-    // TODO: hide this behind mutex or rwlock so that we can share GraphicsContext across threads safely
-    pub allocator: &'a mut gpu_allocator::vulkan::Allocator,
+    
+    pub allocator: &'a Mutex<gpu_allocator::vulkan::Allocator>,
     pub debug_marker: &'a debug::DebugMarker,
     pub main_descriptor_set_layout: vk::DescriptorSetLayout,
     pub main_pipeline_layout: vk::PipelineLayout,
@@ -150,7 +150,7 @@ pub struct InternalApp {
     render_targets_data: RenderTargetsData,
             
     // important too
-    allocator: gpu_allocator::vulkan::Allocator,
+    allocator: Mutex<gpu_allocator::vulkan::Allocator>,
     
 
     materials: Vec<Material>,
@@ -334,6 +334,7 @@ impl InternalApp {
         let samplers = samplers::Samplers::create_samplers(&device);
         log::info!("created samplers");        
 
+        let allocator = Mutex::new(allocator);
         let mut ctx = GraphicsContext {
             device: &device,
             pool,
@@ -343,7 +344,7 @@ impl InternalApp {
             extended_dynamic_state3_device: &extended_dynamic_state3_device,
             acceleration_structure_device: &acceleration_structure_device,
             host_image_copy_device: &host_image_copy_device,
-            allocator: &mut allocator,
+            allocator: &allocator,
             debug_marker: &debug_marker,
             main_descriptor_set_layout,
             main_pipeline_layout,
@@ -532,9 +533,11 @@ impl InternalApp {
         self.swapchain_image_views = swapchain_image_views;
         self.swapchain = swapchain;
 
-        self.render_targets_data.destroy_rt_images_and_image_views(&self.device, &mut self.allocator);
+        let mut tmp = self.allocator.lock().unwrap();
+        self.render_targets_data.destroy_rt_images_and_image_views(&self.device, &mut tmp);
+        drop(tmp);
 
-        let mut ctx = GraphicsContext {
+        let mut ctx: GraphicsContext<'_> = GraphicsContext {
             device: &self.device,
             pool: self.pool,
             queue: self.queue,
@@ -543,7 +546,7 @@ impl InternalApp {
             extended_dynamic_state3_device: &self.extended_dynamic_state3_device,
             acceleration_structure_device: &self.acceleration_structure_device,
             host_image_copy_device: &self.host_image_copy_device,
-            allocator: &mut self.allocator,
+            allocator: &self.allocator,
             debug_marker: &self.debug_marker,
             main_descriptor_set_layout: self.main_descriptor_set_layout,
             descriptor_pool: self.descriptor_pool,
@@ -617,8 +620,8 @@ impl InternalApp {
 
 
         if self.input.get_button(Button::Keyboard(KeyCode::KeyJ)).pressed() {
-            let report = self.allocator.generate_report();
-            log::debug!("{:?}", report);
+            // let report = self.allocator.generate_report();
+            // log::debug!("{:?}", report);
         }
         if self.input.get_button(Button::Mouse(MouseButton::Middle)).held() {
             self.sun = self.movement.forward();
@@ -911,7 +914,7 @@ impl InternalApp {
         dbgtext_writeln!(&mut self.debug_text, "wireframe: {}", self.wireframe);
         dbgtext_writeln!(&mut self.debug_text, "updating frustum: {}", self.movement.update_frustum);
 
-        let report = ctx.allocator.generate_report();
+        let report = ctx.allocator.lock().unwrap().generate_report();
         let reserved_bytes = ByteSize::b(report.total_reserved_bytes).display().iec();
         let allocated_bytes = ByteSize::b(report.total_reserved_bytes).display().iec();
         dbgtext_writeln!(&mut self.debug_text, "reserved bytes: {}", reserved_bytes);
@@ -1936,17 +1939,19 @@ impl InternalApp {
     pub unsafe fn destroy(mut self) {
         self.device.device_wait_idle().unwrap();
 
+        let mut allocator = self.allocator.lock().unwrap();
+
         // self.scene.destroy(&self.device, &self.acceleration_structure_device, &mut self.allocator);
-        self.multiple_chunks.destroy(&self.acceleration_structure_device, &self.device, &mut self.allocator);
+        self.multiple_chunks.destroy(&self.acceleration_structure_device, &self.device, &mut allocator);
         log::info!("destroyed scene");
 
-        self.materials_buffer.destroy(&self.device, &mut self.allocator);
+        self.materials_buffer.destroy(&self.device, &mut allocator);
         for material in self.materials {
-            material.destroy(&self.device, &mut self.allocator);
+            material.destroy(&self.device, &mut allocator);
         }
         
         for model in self.models {
-            model.destroy(&self.acceleration_structure_device, &self.device, &mut self.allocator);
+            model.destroy(&self.acceleration_structure_device, &self.device, &mut allocator);
         }
         
         
@@ -1960,17 +1965,17 @@ impl InternalApp {
         }
         log::info!("destroyed compute pipelines");
                 
-        self.skybox.destroy(&self.device, &mut self.allocator);
+        self.skybox.destroy(&self.device, &mut allocator);
         log::info!("destroyed skybox");
 
-        self.uniform_buffer.destroy(&self.device, &mut self.allocator);
+        self.uniform_buffer.destroy(&self.device, &mut allocator);
         log::info!("destroyed per frame uniform buffer");    
         
-        self.debug_text.destroy(&self.device, &mut self.allocator);
+        self.debug_text.destroy(&self.device, &mut allocator);
         log::info!("destroyed debug text buffer");
 
         
-        self.counters_of_various_types.destroy(&self.device, &mut self.allocator);
+        self.counters_of_various_types.destroy(&self.device, &mut allocator);
         log::info!("destroyed various counters");
 
 
@@ -1980,13 +1985,13 @@ impl InternalApp {
             .wait_for_fences(&fences, true, u64::MAX)
             .unwrap();
         for frame in self.frames_in_flight.into_iter() {
-            frame.destroy_everything(&self.device, self.pool, &mut self.allocator);
+            frame.destroy_everything(&self.device, self.pool, &mut allocator);
         }
         for sem in self.render_finished_semaphores {
             self.device.destroy_semaphore(sem, None);
         }
 
-        self.render_targets_data.destroy_rt_images_and_image_views(&self.device, &mut self.allocator);
+        self.render_targets_data.destroy_rt_images_and_image_views(&self.device, &mut allocator);
         log::info!("destroyed const descriptor sets");
 
         for swapchain_image_view in self.swapchain_image_views {
@@ -1996,7 +2001,7 @@ impl InternalApp {
             .destroy_swapchain(self.swapchain, None);
         log::info!("destroyed swapchain");
 
-        self.tlas.destroy(&self.acceleration_structure_device, &self.device, &mut self.allocator);
+        self.tlas.destroy(&self.acceleration_structure_device, &self.device, &mut allocator);
         log::info!("destroyed TLAS");
 
         self.surface_loader.destroy_surface(self.surface_khr, None);
@@ -2016,9 +2021,11 @@ impl InternalApp {
 
         self.device.destroy_pipeline_layout(self.main_pipeline_layout, None);
         log::info!("destroyed bindless pipeline layout");
-        
 
-        drop(self.allocator);
+        drop(allocator);
+        let allocator = self.allocator.into_inner().unwrap();
+        drop(allocator);
+
         self.device.destroy_device(None);
         log::info!("destroyed device");
 

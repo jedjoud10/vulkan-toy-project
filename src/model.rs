@@ -29,7 +29,7 @@ pub struct Model {
 }
 
 impl Model {
-    pub unsafe fn new(position: vek::Vec3<f32>, name: &str, ctx: &mut GraphicsContext, material_index: u32, cmd: vk::CommandBuffer, mut writer: &mut buffer::ScratchBuffer) -> Self {
+    pub unsafe fn new(position: vek::Vec3<f32>, name: &str, ctx: &GraphicsContext, material_index: u32, cmd: vk::CommandBuffer, mut writer: &mut buffer::ScratchBuffer) -> Self {
         let obj_model_bytes = others::load_model(name).unwrap();
         let obj = obj::load_obj::<obj::TexturedVertex, &[u8], u32>(&obj_model_bytes).unwrap();
 

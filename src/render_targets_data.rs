@@ -45,7 +45,7 @@ impl RenderTargetsData {
     
     pub unsafe fn recreate_rt_images_and_image_views_and_update_descriptor_sets(
         &mut self,
-        ctx: &mut GraphicsContext,
+        ctx: &GraphicsContext,
         extent: vk::Extent2D,
         scaling_factor: u32,
     ) {
@@ -56,6 +56,8 @@ impl RenderTargetsData {
             debug_marker,
             ..
         } = ctx;
+        let mut allocator_guard = allocator.lock().unwrap();
+        let allocator = &mut *allocator_guard;
 
         let queue_family_index = *queue_family_index;
 

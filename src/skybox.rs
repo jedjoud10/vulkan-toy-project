@@ -48,17 +48,18 @@ const FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
 
 
 pub unsafe fn create_skybox(
-    ctx: &mut GraphicsContext,
+    ctx: &GraphicsContext,
 ) -> Skybox {
     let GraphicsContext {
         device,
         queue_family_index,
         host_image_copy_device,
-        ref mut allocator,
+        allocator,
         debug_marker,
         ..
     } = *ctx;
 
+    let mut allocator = allocator.lock().unwrap();
     let queue_family_indices = [queue_family_index];
     
     let skybox_image_create_info = vk::ImageCreateInfo::default()

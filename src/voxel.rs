@@ -41,7 +41,7 @@ pub struct MultipleChunks {
 
 impl MultipleChunks {
     pub unsafe fn create(
-        ctx: &mut GraphicsContext,
+        ctx: &GraphicsContext,
     ) -> Self {
         let (result_tx, result_rx) = std::sync::mpsc::channel::<GeneratedChunk>();
         let (request_tx, request_rx) = crossbeam::channel::unbounded::<Node>();
@@ -169,10 +169,12 @@ impl MultipleChunks {
         }
     }
 
-    pub unsafe fn frame(&mut self, ctx: &mut GraphicsContext, scratchy: &mut buffer::ScratchBuffer, cmd: vk::CommandBuffer) {
+    pub unsafe fn frame(&mut self, ctx: &GraphicsContext, scratchy: &mut buffer::ScratchBuffer, cmd: vk::CommandBuffer) {
+        let mut allocator = ctx.allocator.lock().unwrap();
         for chunk in self.destruction.drain(..) {
-            chunk.destroy(ctx.acceleration_structure_device, ctx.device, ctx.allocator);
+            chunk.destroy(ctx.acceleration_structure_device, ctx.device, &mut allocator);
         }
+        drop(allocator);
 
         for GeneratedChunk { node, mesh } in self.result_rx.try_iter() {
             self.chunks_requested -= 1;
@@ -244,7 +246,7 @@ impl MultipleChunks {
         }
     }
     
-    pub unsafe fn render_all_chunks(&self, ctx: &mut GraphicsContext, cmd: vk::CommandBuffer, materials: &[crate::material::Material]) {
+    pub unsafe fn render_all_chunks(&self, ctx: &GraphicsContext, cmd: vk::CommandBuffer, materials: &[crate::material::Material]) {
         let material_base_index = materials[1].base_index;
         
         #[derive(Clone, Copy, Pod, Zeroable)]
@@ -339,7 +341,7 @@ pub struct DrawIndexedIndirectCommand {
 
 impl MultipleChunks {
     pub unsafe fn create(
-        ctx: &mut GraphicsContext,
+        ctx: &GraphicsContext,
         total_num_chunks: usize,
     ) -> Self {
         
@@ -523,7 +525,7 @@ impl MultipleChunks {
 
     pub unsafe fn create_blas(
         &mut self,
-        ctx: &mut GraphicsContext,
+        ctx: &GraphicsContext,
         chunk_index: usize,
         cmd: vk::CommandBuffer,
     ) -> (ray_tracing::AccelerationStructureData, vk::AccelerationStructureInstanceKHR) {
@@ -584,7 +586,7 @@ impl VoxelTexture3D {
 }
 
 pub unsafe fn create_voxel_texture(
-    ctx: &mut GraphicsContext,
+    ctx: &GraphicsContext,
 ) -> VoxelTexture3D {
     let GraphicsContext {
         device,

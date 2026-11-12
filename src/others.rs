@@ -142,7 +142,7 @@ pub unsafe fn create_surface(
     (surface_loader, surface)
 }
 
-pub unsafe fn begin_recording(ctx: &mut GraphicsContext) -> vk::CommandBuffer {
+pub unsafe fn begin_recording(ctx: &GraphicsContext) -> vk::CommandBuffer {
     let cmd_buffer_create_info = vk::CommandBufferAllocateInfo::default()
         .command_buffer_count(1)
         .level(vk::CommandBufferLevel::PRIMARY)
@@ -155,7 +155,7 @@ pub unsafe fn begin_recording(ctx: &mut GraphicsContext) -> vk::CommandBuffer {
     cmd
 }
 
-pub unsafe fn end_recording_and_submit(ctx: &mut GraphicsContext, cmd: vk::CommandBuffer) {
+pub unsafe fn end_recording_and_submit(ctx: &GraphicsContext, cmd: vk::CommandBuffer) {
     ctx.device.end_command_buffer(cmd).unwrap();
 
     let buffers = [cmd];

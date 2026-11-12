@@ -38,7 +38,7 @@ impl Buffer {
 }
 
 pub unsafe fn create_buffer_with_location(
-    ctx: &mut GraphicsContext,
+    ctx: &GraphicsContext,
     size: usize,
     name: &str,
     flags: vk::BufferUsageFlags,
@@ -58,7 +58,9 @@ pub unsafe fn create_buffer_with_location(
     let mut requirements = ctx.device.get_buffer_memory_requirements(buffer);
     requirements.alignment = requirements.alignment.max(MIN_BUFFER_ALIGNMENT); 
 
-    let allocation = ctx.allocator
+    let mut allocator = ctx.allocator.lock().unwrap();
+
+    let allocation = allocator
         .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
             name: &format!("{name} allocation"),
             requirements,
@@ -86,7 +88,7 @@ pub unsafe fn create_buffer_with_location(
 }
 
 pub unsafe fn create_buffer_default_flags(
-    ctx: &mut GraphicsContext,
+    ctx: &GraphicsContext,
     size: usize,
     name: &str,
 ) -> Buffer {
@@ -95,7 +97,7 @@ pub unsafe fn create_buffer_default_flags(
 
 
 pub unsafe fn create_buffer(
-    ctx: &mut GraphicsContext,
+    ctx: &GraphicsContext,
     size: usize,
     name: &str,
     flags: vk::BufferUsageFlags,
@@ -105,7 +107,7 @@ pub unsafe fn create_buffer(
 
 
 pub unsafe fn create_buffer_with(
-    ctx: &mut GraphicsContext,
+    ctx: &GraphicsContext,
     bytes: &[u8],
     name: &str,
     flags: vk::BufferUsageFlags,
@@ -116,7 +118,7 @@ pub unsafe fn create_buffer_with(
 }
 
 pub unsafe fn create_buffer_write_with_scratch_buffer(
-    ctx: &mut GraphicsContext,
+    ctx: &GraphicsContext,
     cmd: vk::CommandBuffer,
     scratch_buffer: &mut ScratchBuffer,
     bytes: &[u8],
@@ -144,7 +146,7 @@ pub unsafe fn create_buffer_write_with_scratch_buffer(
 }
 
 pub unsafe fn write_with_scratch_buffer(
-    ctx: &mut GraphicsContext,
+    ctx: &GraphicsContext,
     cmd: vk::CommandBuffer,
     scratch_buffer: &mut ScratchBuffer,
     bytes: &[u8],
@@ -174,7 +176,7 @@ pub unsafe fn write_with_scratch_buffer(
 // this either creates a staging buffer write or writes to the buffer through cmd_update_buffer
 // switches between both impls depending on the amount of data to write
 pub unsafe fn write_to_buffer(
-    ctx: &mut GraphicsContext,
+    ctx: &GraphicsContext,
     dst_buffer: vk::Buffer,
     bytes: &[u8]
 ) {
@@ -182,7 +184,7 @@ pub unsafe fn write_to_buffer(
 }
 
 pub unsafe fn write_to_buffer_with_offset(
-    ctx: &mut GraphicsContext,
+    ctx: &GraphicsContext,
     dst_buffer: vk::Buffer,
     bytes: &[u8],
     dst_offset: u64,
@@ -194,7 +196,7 @@ pub unsafe fn write_to_buffer_with_offset(
     let device = ctx.device;
     let pool = ctx.pool;
     let queue = ctx.queue;
-    let allocator = &mut ctx.allocator;
+    let mut allocator = ctx.allocator.lock().unwrap();
 
     let start = std::time::Instant::now();
     let cmd_buffer_create_info = vk::CommandBufferAllocateInfo::default()
@@ -214,7 +216,7 @@ pub unsafe fn write_to_buffer_with_offset(
         None
     } else {
         log::info!("writing {} to buffer, using staging buffer path", bytes_formatted.display().si());
-        let (staging_buffer, allocation) = create_staging_buffer(device, *allocator, bytes);
+        let (staging_buffer, allocation) = create_staging_buffer(device, &mut allocator, bytes);
 
         let region = vk::BufferCopy2::default()
             .dst_offset(dst_offset)
@@ -284,18 +286,19 @@ pub unsafe fn create_staging_buffer(device: &ash::Device, allocator: &mut Alloca
 }
 
 pub unsafe fn create_counter_buffer(
-    ctx: &mut GraphicsContext,
+    ctx: &GraphicsContext,
     name: &str,
 ) -> Buffer {
     create_buffer(ctx, size_of::<u32>(), name, vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST)
 }
 
-pub unsafe fn begin_buffer_writer(ctx: &mut GraphicsContext) -> ScratchBuffer {
+pub unsafe fn begin_buffer_writer(ctx: &GraphicsContext) -> ScratchBuffer {
     ScratchBuffer::new(ctx)
 }
 
-pub unsafe fn end_buffer_writer(ctx: &mut GraphicsContext<'_>, writer: ScratchBuffer) {
-    writer.destroy(ctx.device, ctx.allocator);
+pub unsafe fn end_buffer_writer(ctx: &GraphicsContext<'_>, writer: ScratchBuffer) {
+    let mut lock = ctx.allocator.lock().unwrap();
+    writer.destroy(ctx.device, &mut lock);
 }
 
 // TODO: scratch buffer writes don't necessarily need to take in &[u8], they could take in iterators as well
@@ -307,7 +310,7 @@ pub struct ScratchBuffer {
 }
 
 impl ScratchBuffer {
-    pub unsafe fn new(ctx: &mut GraphicsContext) -> Self {
+    pub unsafe fn new(ctx: &GraphicsContext) -> Self {
         let usage = vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
         let buffer_create_info = vk::BufferCreateInfo::default()
             .usage(usage)
@@ -320,7 +323,8 @@ impl ScratchBuffer {
         let mut requirements = ctx.device.get_buffer_memory_requirements(buffer);
         requirements.alignment = requirements.alignment.max(MIN_BUFFER_ALIGNMENT); 
 
-        let allocation = ctx.allocator
+        let mut lock = ctx.allocator.lock().unwrap();
+        let allocation = lock
             .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
                 name: "scratch buffer allocation",
                 requirements,

@@ -186,7 +186,7 @@ pub struct Scene {
 }
 
 impl Scene {
-    pub unsafe fn new(mut ctx: &mut GraphicsContext) -> Self {  
+    pub unsafe fn new(mut ctx: &GraphicsContext) -> Self {  
         let texture = texture_3d::create_texture_3d(ctx, vek::Extent3::broadcast(256), vk::Format::R16_SFLOAT, None, "");
         let texture2 = texture_3d::create_texture_3d(ctx, vek::Extent3::broadcast(64), vk::Format::R16G16_SFLOAT, None, "");
 
@@ -414,7 +414,7 @@ impl Scene {
     }
 }
 
-pub unsafe fn rebuild_gpu_scene(scene: &mut Scene, cmd: vk::CommandBuffer, scratch_buffer: &mut buffer::ScratchBuffer, mut ctx: &mut GraphicsContext<'_>, camera: vek::Vec3<f32>) {
+pub unsafe fn rebuild_gpu_scene(scene: &mut Scene, cmd: vk::CommandBuffer, scratch_buffer: &mut buffer::ScratchBuffer, mut ctx: &GraphicsContext<'_>, camera: vek::Vec3<f32>) {
     let chunk_sampled_images = scene.chunks.iter().map(|chunk| chunk.start_texture_sampled_binding).collect::<Vec<_>>();
 
     assert!(scene.primitive_flat_list.len() < MAX_PRIMITIVES);

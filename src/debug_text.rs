@@ -12,7 +12,7 @@ pub struct DebugText {
 }
 
 impl DebugText {
-    pub unsafe fn new(ctx: &mut GraphicsContext) -> Self {
+    pub unsafe fn new(ctx: &GraphicsContext) -> Self {
         Self {
             buffer: buffer::create_buffer(ctx, DEBUG_TEXT_BUFFER_SIZE_BYTES, "debug text", vk::BufferUsageFlags::STORAGE_BUFFER),
             text: String::new()
