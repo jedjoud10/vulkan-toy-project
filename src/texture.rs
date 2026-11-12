@@ -12,6 +12,14 @@ pub struct Texture {
 }
 
 impl Texture {
+    pub unsafe fn null() -> Self {
+        Self {
+            image: vk::Image::null(),
+            image_view: vk::ImageView::null(),
+            allocation: Allocation::default(),
+        }
+    }
+
     pub unsafe fn destroy(self, device: &ash::Device, allocator: &mut Allocator) {
         device.destroy_image_view(self.image_view, None);
         device.destroy_image(self.image, None);

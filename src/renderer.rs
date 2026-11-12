@@ -7,6 +7,7 @@ use bytesize::ByteSize;
 use rand::RngExt;
 use rand::SeedableRng;
 use rayon::iter::IntoParallelIterator;
+use rayon::iter::ParallelExtend;
 use rayon::iter::ParallelIterator;
 use smallvec::SmallVec;
 use crate::material::GpuMaterialInfo;
@@ -415,17 +416,12 @@ impl InternalApp {
             log::warn!("cursor grab error: {err}");
         }
 
+        let material_names = vec!["metal/metal_0077", "ground/ground_0029", "metal_2/metal_0066", "ground_2/ground_0019"];
+        let zipped_material_names = vec!["rocks_ground_02", "rocks_ground_06", "rocky_trail_02"];
 
-        let materials = vec![
-            Material::new(&mut ctx, "metal/metal_0077"),
-            Material::new(&mut ctx, "ground/ground_0029"),
-            Material::new(&mut ctx, "metal_2/metal_0066"),
-            Material::new(&mut ctx, "ground_2/ground_0019"),
-
-            Material::new_packed_zip(&mut ctx, "rocks_ground_02"),
-            Material::new_packed_zip(&mut ctx, "rocks_ground_06"),
-            Material::new_packed_zip(&mut ctx, "rocky_trail_02"),
-        ];
+        let mut materials = Vec::<Material>::new();
+        materials.par_extend(material_names.into_par_iter().map(|name| Material::new(&ctx, name)));
+        materials.par_extend(zipped_material_names.into_par_iter().map(|name| Material::new_packed_zip(&ctx, name)));
 
         let materials_buffer = buffer::create_buffer(&mut ctx, materials.len() * size_of::<GpuMaterialInfo>(), "gpu materials buffer", vk::BufferUsageFlags::TRANSFER_DST);
         let debug_text = debug_text::DebugText::new(&mut ctx);

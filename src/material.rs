@@ -105,11 +105,15 @@ impl Material {
         let normal_data = fun_name(name, &["nor_gl"], &mut stream).expect("could not read normal map");
         let arm_data = fun_name(name, &["arm"], &mut stream).expect("could not read arm map");
         
-
         let size = CONST_TEXTURE_RESOLUTION;
-        let albedo_texture = load_image_and_create_texture(ctx, &albedo_data, size, texture::TextureType::Albedo);
-        let normal_texture = load_image_and_create_texture(ctx, &normal_data, size, texture::TextureType::NormalMap);
-        let arm_texture = load_image_and_create_texture(ctx, &arm_data, size, texture::TextureType::Arm);
+        let mut albedo_texture: Texture = Texture::null();
+        let mut normal_texture: Texture = Texture::null();
+        let mut arm_texture: Texture = Texture::null();
+        rayon::scope(|scope| {
+            scope.spawn(|_| albedo_texture = load_image_and_create_texture(ctx, &albedo_data, size, texture::TextureType::Albedo));
+            scope.spawn(|_| normal_texture = load_image_and_create_texture(ctx, &normal_data, size, texture::TextureType::NormalMap));
+            scope.spawn(|_| arm_texture = load_image_and_create_texture(ctx, &arm_data, size, texture::TextureType::Arm));
+        });
         
         Self {
             albedo_texture,
