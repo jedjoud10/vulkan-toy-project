@@ -167,6 +167,36 @@ impl Model {
         device.cmd_draw_indexed(cmd, self.index_count as u32, 1, 0, 0, 0);
     }
 
+    pub unsafe fn render_instanced(&self, cmd: vk::CommandBuffer, device: &ash::Device, pipeline_layout: vk::PipelineLayout, materials: &[Material], instances: &[vek::Vec3<f32>], scratchy: &mut buffer::ScratchBuffer) {
+        #[derive(Clone, Copy, Pod, Zeroable)]
+        #[repr(C)]
+        struct PushConstant {
+            object_to_world: vek::Mat4<f32>,
+            albedo_sampled_image_index: u32,
+            _padding: u32,
+
+            vertex_buffer_address: vk::DeviceAddress,
+            normal_buffer_address: vk::DeviceAddress,
+            uv_buffer_address: vk::DeviceAddress,
+            instance_buffer_address: vk::DeviceAddress,
+        }
+
+        let pc = PushConstant {
+            object_to_world: vek::Mat4::identity(),
+            albedo_sampled_image_index: materials[self.material_index as usize].base_index,
+            vertex_buffer_address: self.vertex_positions_buffer.address,
+            normal_buffer_address: self.vertex_normals_buffer.address,
+            uv_buffer_address: self.vertex_uvs_buffer.address,
+            instance_buffer_address: scratchy.write_bytes(cast_slice(&instances)).buffer_device_address_start,
+            _padding: 0,            
+        };
+
+        // device.cmd_bind_vertex_buffers(cmd, 0, &[self.vertex_positions_buffer.buffer, self.vertex_normals_buffer.buffer, self.vertex_uvs_buffer.buffer], &[0, 0, 0]);
+        device.cmd_bind_index_buffer(cmd, self.index_buffer.buffer, 0, vk::IndexType::UINT32);
+        device.cmd_push_constants(cmd, pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytes_of(&pc));
+        device.cmd_draw_indexed(cmd, self.index_count as u32, instances.len() as u32, 0, 0, 0);
+    }
+
     pub unsafe fn destroy(self, acceleration_structure_device: &ash::khr::acceleration_structure::Device, device: &ash::Device, allocator: &mut Allocator) {
         self.index_buffer.destroy(device, allocator);
         self.vertex_positions_buffer.destroy(device, allocator);

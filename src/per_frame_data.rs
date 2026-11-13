@@ -1,6 +1,6 @@
 use ash::vk;
 use gpu_allocator::vulkan::{Allocation, Allocator};
-use crate::{buffer, others, pipeline::{self, PerFrameUniformData}, query_pool_statistics, renderer::GraphicsContext};
+use crate::{buffer, others, pipeline::{self, PerFrameUniformData}, query_pool_statistics, renderer::GraphicsContext, texture, texture_3d};
 
 pub struct PerFrameData {
     pub main_descriptor_set: vk::DescriptorSet,
@@ -11,6 +11,7 @@ pub struct PerFrameData {
     pub pipeline_statistics_query_pool: vk::QueryPool,
     pub scratch_buffer: buffer::ScratchBuffer,
     pub readback_buffer: buffer::Buffer,
+    pub chunk_generation: crate::voxel::PerFrameChunkGenerationData,
 }
 
 impl PerFrameData {
@@ -46,8 +47,8 @@ impl PerFrameData {
 
         let readback_buffer = buffer::create_buffer_with_location(ctx, size_of::<u32>() * 10, "debug readback buffer", vk::BufferUsageFlags::STORAGE_BUFFER, gpu_allocator::MemoryLocation::GpuToCpu);
 
-        
         Self {
+            chunk_generation: crate::voxel::PerFrameChunkGenerationData::create(ctx),
             present_complete_semaphore,
             end_fence,
             cmd,

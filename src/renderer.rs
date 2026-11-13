@@ -68,9 +68,11 @@ const COMPUTE_FULLSCREEN: &str = "fullscreen";
 
 const COMPUTE_SDF: &'static str = "compute_sdf";
 const COMPUTE_LIGHTPROBES: &'static str = "compute_lightprobes";
+pub const COMPUTE_VOXELS: &'static str = "compute_voxels";
 const COMPUTE_VXGI: &'static str = "compute_vxgi";
 const RASTERIZED_SKY: &str = "rasterized_background";
 const RASTERIZED: &str = "rasterized";
+const RASTERIZED_INSTANCED: &str = "rasterized_instanced";
 const RASTERIZED_CHUNKS: &str = "rasterized_chunk";
 const RASTERIZED_MS_CHUNKS: &str = "rasterized_ms_chunk";
 const RASTERIZED_MS_GENERATED_GRASS_SPV: &str = "rasterized_ms_generated_grass";
@@ -99,6 +101,9 @@ macro_rules! dbgtext_writeln {
     };
 }
 
+
+pub type GraphicsPipelines = HashMap<&'static str, pipeline::GenericGraphicsPipeline>;
+pub type ComputePipelines = HashMap<&'static str, pipeline::GenericComputePipeline>;
 
 pub struct InternalApp {
     // entry, physical device, logical device
@@ -131,8 +136,8 @@ pub struct InternalApp {
     pool: vk::CommandPool,
     
     // pipelines
-    graphics_pipelines: HashMap<&'static str, pipeline::GenericGraphicsPipeline>,
-    compute_pipelines: HashMap<&'static str, pipeline::GenericComputePipeline>,
+    graphics_pipelines: GraphicsPipelines,
+    compute_pipelines: ComputePipelines,
     recompiler: pipeline::DedicatedPipelineRecompiler,
 
     // extra devices
@@ -641,7 +646,7 @@ impl InternalApp {
             pipeline_statistics_query_pool,
             ref mut scratch_buffer,
             ref mut readback_buffer,
-            ..
+            ref mut chunk_generation,
         } = &mut self.frames_in_flight[frame_in_flight_index as usize];
 
 
@@ -692,7 +697,8 @@ impl InternalApp {
         storage_images_allocator.push(self.skybox.skybox_array_image_view);
         storage_images_allocator.push(self.skybox.ambient_skybox_array_image_view);
         storage_images_allocator.push(self.skybox.clouds_image_view);
-        
+        storage_images_allocator.push(chunk_generation.readback_voxel_image.image_view);
+                
         // add bloom storage image views
         let bloom_storage_images_start_index = storage_images_allocator.current();
         for bloom_storage_image_view in render_targets.bloom_mip_image_views.iter() {
@@ -845,8 +851,6 @@ impl InternalApp {
             descriptor_pool: self.descriptor_pool,
         };
 
-        self.multiple_chunks.stuff(self.movement.position);
-        self.multiple_chunks.frame(&mut ctx, scratch_buffer, cmd);
         let mut dynamic_instances = Vec::<vk::AccelerationStructureInstanceKHR>::new();
 
         // update dynamic instances for TLAS
@@ -927,7 +931,8 @@ impl InternalApp {
         dbgtext_writeln!(&mut self.debug_text, "total BVH nodes: {}", self.scene.bvh.nodes.len());
         dbgtext_writeln!(&mut self.debug_text, "max BVH depth: {}", if self.scene.bvh.nodes.is_empty() { 0 } else { self.scene.bvh.depth(0) });
         */
-        
+
+
         /*
         if self.args.readback_performance_queries {
             let readback_buffer_readback_barrier = vk::BufferMemoryBarrier2::default()
@@ -1130,6 +1135,15 @@ impl InternalApp {
             .dst_queue_family_index(self.queue_family_index)
             .size(vk::WHOLE_SIZE);
         */
+        let voxel_readback_buffer_barrier = vk::BufferMemoryBarrier2::default()
+            .buffer(chunk_generation.readback_voxel_buffer.buffer)
+            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
+            .dst_access_mask(vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::MEMORY_WRITE)
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+            .src_queue_family_index(self.queue_family_index)
+            .dst_queue_family_index(self.queue_family_index)
+            .size(vk::WHOLE_SIZE);
         let counters_of_various_types_buffer_barrier = vk::BufferMemoryBarrier2::default()
             .buffer(self.counters_of_various_types.buffer)
             .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
@@ -1143,7 +1157,8 @@ impl InternalApp {
             uniform_buffer_barrier,
             debug_text_buffer_barrier,
             materials_gpu_buffer_barrier,
-            counters_of_various_types_buffer_barrier
+            counters_of_various_types_buffer_barrier,
+            voxel_readback_buffer_barrier
             /*
             gpu_packed_aabbs_buffer,
             bvh_buffer_barrier,
@@ -1160,8 +1175,7 @@ impl InternalApp {
             .level_count(1)
             .layer_count(1);
 
-        /*
-        let chunk_lookup_image_barrier = vk::ImageMemoryBarrier2::default()
+        let voxel_readback_image_barrier = vk::ImageMemoryBarrier2::default()
             .old_layout(vk::ImageLayout::GENERAL)
             .new_layout(vk::ImageLayout::GENERAL)
             .src_access_mask(vk::AccessFlags2::SHADER_WRITE | vk::AccessFlags2::SHADER_READ)
@@ -1170,15 +1184,16 @@ impl InternalApp {
             .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
             .src_queue_family_index(self.queue_family_index)
             .dst_queue_family_index(self.queue_family_index)
-            .image(self.scene.chunk_lookup_texture.image)
+            .image(chunk_generation.readback_voxel_image.image)
             .subresource_range(full_subresource_range);
-        let image_memory_barriers = [chunk_lookup_image_barrier];
-        
-        */
-        
-        let image_memory_barriers = [];
+        let image_memory_barriers = [voxel_readback_image_barrier];
+
         let dep = vk::DependencyInfo::default().buffer_memory_barriers(&buffer_memory_barriers).image_memory_barriers(&image_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
+
+        
+        self.multiple_chunks.stuff(self.movement.position);
+        self.multiple_chunks.frame(&mut ctx, scratch_buffer, cmd, chunk_generation, &self.compute_pipelines);
 
         // self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, query_pool_statistics::ENTIRE_FRAME_QUERY_START);
         
@@ -1648,17 +1663,32 @@ impl InternalApp {
             model.compute_matrices();
         }
 
+        
+        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, polygon_mode);
+
         // render models
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED]);
         for (_, model) in self.models.iter().enumerate() {
-            self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, polygon_mode);
             model.render(cmd, &self.device, self.main_pipeline_layout, &self.materials);
-        }        
+        }
         
+        self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_INSTANCED]);
+        let model = self.models.last().unwrap();
+        
+        let mut instances: Vec<vek::Vec3<f32>> = vec![];
+
+        for x in 0..64 {
+            for y in 0..64 {
+                instances.push(vek::Vec3::new(x as f32 * -2f32, 15f32, -y as f32 * 2f32));
+            }
+        } 
+        model.render_instanced(cmd, &self.device, self.main_pipeline_layout, &self.materials, &instances, scratch_buffer);
+        
+
         // render chunks
         // self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_CHUNKS]);
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_CHUNKS]);
-        self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, polygon_mode);
+        // self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, polygon_mode);
         self.multiple_chunks.render_all_chunks(&mut ctx, cmd, &self.materials);
     
         self.device.cmd_end_rendering(cmd);
@@ -2064,6 +2094,11 @@ fn create_pipeline_create_settings(args: &crate::Args) -> Vec<pipeline::Pipeline
         spec_constants: Some(spec_constants.clone()),
         file_name_without_extension: COMPUTE_FULLSCREEN,
     }, pipeline::PipelineCreateSettings {
+        pipeline_debug_name: "compute voxels",
+        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["main"] },
+        spec_constants: Some(spec_constants.clone()),
+        file_name_without_extension: COMPUTE_VOXELS,
+    }, pipeline::PipelineCreateSettings {
         pipeline_debug_name: "compute SDF shader",
         wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Compute { entry_points: &["main", "main2", "compute_chunk_sdf"] },
         spec_constants: Some(spec_constants.clone()),
@@ -2078,6 +2113,11 @@ fn create_pipeline_create_settings(args: &crate::Args) -> Vec<pipeline::Pipeline
         wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Graphics { face_culling: true },
         spec_constants: Some(spec_constants.clone()),
         file_name_without_extension: RASTERIZED,
+    }, pipeline::PipelineCreateSettings {
+        pipeline_debug_name: "rasterized models instanced",
+        wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Graphics { face_culling: true },
+        spec_constants: Some(spec_constants.clone()),
+        file_name_without_extension: RASTERIZED_INSTANCED,
     }, pipeline::PipelineCreateSettings {
         pipeline_debug_name: "rasterized chunks",
         wtf_kind_of_pipeline_is_this: pipeline::PipelineCreateType::Graphics { face_culling: true },

@@ -1,7 +1,7 @@
-use std::{collections::{HashMap, HashSet}, sync::{Arc, Mutex, RwLock, atomic::AtomicBool, mpsc::Receiver}, thread::JoinHandle};
+use std::{collections::{HashMap, HashSet, VecDeque}, sync::{Arc, Mutex, RwLock, atomic::AtomicBool, mpsc::Receiver}, thread::JoinHandle};
 
 use ash::{util::Align, vk};
-use bytemuck::{Pod, Zeroable, cast_slice};
+use bytemuck::{Pod, Zeroable, bytes_of, cast_slice};
 use gpu_allocator::vulkan::{Allocation, Allocator};
 use noise::NoiseFn;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -17,6 +17,35 @@ pub const CHUNK_VOLUME: usize = CHUNK_SIZE_WITH_PADDING*CHUNK_SIZE_WITH_PADDING*
 
 pub const ENABLED: bool = true;
 
+pub struct PerFrameChunkGenerationData {
+    pub readback_voxel_image: crate::texture_3d::Texture3D,
+    pub readback_voxel_buffer: buffer::Buffer,
+    pub pending_chunk_node_request: Option<crate::octree::Node>,
+}
+
+impl PerFrameChunkGenerationData {
+    pub unsafe fn create(ctx: &GraphicsContext) -> Self {
+        let extent = vek::Extent3::<u32> {
+            w: crate::voxel::CHUNK_SIZE_WITH_PADDING as u32,
+            h: crate::voxel::CHUNK_SIZE_WITH_PADDING as u32,
+            d: crate::voxel::CHUNK_SIZE_WITH_PADDING as u32,
+        };
+
+        let readback_voxel_image = crate::texture_3d::create_texture_3d(ctx, extent, vk::Format::R32_SFLOAT, None, "");
+        let readback_voxel_buffer = crate::buffer::create_buffer_with_location(ctx, size_of::<f32>() * (extent.w * extent.h * extent.d) as usize, "", vk::BufferUsageFlags::STORAGE_BUFFER, gpu_allocator::MemoryLocation::GpuToCpu);
+
+        Self {
+            readback_voxel_image,
+            readback_voxel_buffer,
+            pending_chunk_node_request: None,
+        }
+    }
+
+    pub unsafe fn destroy(self, device: &ash::Device, cmd_pool: vk::CommandPool, allocator: &mut Allocator) {
+        self.readback_voxel_image.destroy(device, allocator);
+        self.readback_voxel_buffer.destroy(device, allocator);
+    }
+}
 
 struct GeneratedChunk {
     node: Node,
@@ -35,6 +64,7 @@ pub struct MultipleChunks {
     request_tx: crossbeam::channel::Sender<Node>,
     shared: Arc<Shared>,
     result_rx: Receiver<GeneratedChunk>,
+    temp_queue: VecDeque<Node>,
     pub chunks_requested: usize,
     pub chunks_to_remove: Vec<Node>,
 }
@@ -105,7 +135,7 @@ impl MultipleChunks {
                         if positive == negative {
                             log::trace!("TID: {thread_id}. generating mesh for chunk");
                     
-                            let mesh = crate::mesher::mesh_chunk(densities, chunk_position, chunk_scale);
+                            let mesh = crate::mesher::mesh_chunk(&densities, chunk_position, chunk_scale);
                             log::trace!("TID: {thread_id}. vert count: {}. index count: {}", mesh.vertices.len(), mesh.indices.len());
 
                             if !mesh.vertices.is_empty() && !mesh.indices.is_empty() {
@@ -128,6 +158,7 @@ impl MultipleChunks {
             chunks_requested: 0,
             request_tx,
             shared,
+            temp_queue: VecDeque::new(),
             result_rx,
             chunks: Default::default(),
             destruction: Default::default(),
@@ -162,25 +193,121 @@ impl MultipleChunks {
         
         for added in added {
             if added.leaf() {
-                self.request_tx.send(added).unwrap();
+                // self.request_tx.send(added).unwrap();
+                self.temp_queue.push_back(added);
                 self.chunks.insert(added, None);
                 self.chunks_requested += 1;
             }
         }
     }
 
-    pub unsafe fn frame(&mut self, ctx: &GraphicsContext, scratchy: &mut buffer::ScratchBuffer, cmd: vk::CommandBuffer) {
+    pub unsafe fn frame(&mut self, ctx: &GraphicsContext, scratchy: &mut buffer::ScratchBuffer, cmd: vk::CommandBuffer, data: &mut PerFrameChunkGenerationData, compute_pipelines: &crate::renderer::ComputePipelines) {
         let mut allocator = ctx.allocator.lock().unwrap();
         for chunk in self.destruction.drain(..) {
             chunk.destroy(ctx.acceleration_structure_device, ctx.device, &mut allocator);
         }
         drop(allocator);
 
-        for GeneratedChunk { node, mesh } in self.result_rx.try_iter() {
+        let generated_chunk = if let Some(node) = data.pending_chunk_node_request.take() {
+            // fetch data from buffer which was copied into last time
+            // by now, the compute and copy should have finished
+            let bytes = data.readback_voxel_buffer.allocation.mapped_slice().unwrap();
+            let densities = cast_slice::<u8, f32>(bytes);
+
+            assert_eq!(densities.len(), CHUNK_VOLUME as usize); 
+
+            let chunk_position = node.position();
+            let chunk_size = node.size();
+            let chunk_scale = (chunk_size as f32 / CHUNK_SIZE as f32);
+                
+
+            let mut positive = false;
+            let mut negative = false;
+            for index in 0..CHUNK_VOLUME  {
+                positive |= densities[index] >= 0f32;
+                negative |= densities[index] < 0f32;
+            }
+
+            let mut chunk = GeneratedChunk {
+                mesh: None,
+                node,
+            };
+        
+            if positive == negative {
+                let mesh = crate::mesher::mesh_chunk(densities, chunk_position, chunk_scale);
+                if !mesh.vertices.is_empty() && !mesh.indices.is_empty() {
+                    chunk.mesh = Some(mesh);
+                }
+            }
+
+            Some(chunk)            
+        } else {
+            None
+        };
+        
+        
+        if let Some(new_node) = self.temp_queue.pop_front() {
+            // execute compute shader and do image->buffer copy
+            ctx.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, compute_pipelines[crate::renderer::COMPUTE_VOXELS].entry_points["main"].pipeline);
+
+            let chunk_position = new_node.position().as_::<f32>();
+            let chunk_size = new_node.size();
+            let chunk_scale = (chunk_size as f32 / CHUNK_SIZE as f32);
+            let chunk_position_and_scale = chunk_position.with_w(chunk_scale); 
+
+            ctx.device.cmd_push_constants(cmd, ctx.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytes_of(&chunk_position_and_scale));
+            let group_count = CHUNK_SIZE_WITH_PADDING.div_ceil(4) as u32;
+            ctx.device.cmd_dispatch(cmd, group_count, group_count, group_count);
+
+            let subresource_layers = vk::ImageSubresourceLayers::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .base_array_layer(0)
+                .mip_level(0)
+                .layer_count(1);
+            let subresource_range = vk::ImageSubresourceRange::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .base_array_layer(0)
+                .level_count(1)
+                .layer_count(1);
+            let region = vk::BufferImageCopy2::default()
+                .buffer_offset(0)
+                .buffer_row_length(0)
+                .image_offset(vk::Offset3D::default())
+                .image_extent(vk::Extent3D::default().depth(CHUNK_SIZE_WITH_PADDING as u32).width(CHUNK_SIZE_WITH_PADDING as u32).height(CHUNK_SIZE_WITH_PADDING as u32))
+                .image_subresource(subresource_layers);
+
+            let image_barrier = vk::ImageMemoryBarrier2::default()
+                .old_layout(vk::ImageLayout::GENERAL)
+                .new_layout(vk::ImageLayout::GENERAL)
+                .src_access_mask(vk::AccessFlags2::SHADER_WRITE)
+                .dst_access_mask(vk::AccessFlags2::TRANSFER_READ)
+                .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+                .dst_stage_mask(vk::PipelineStageFlags2::ALL_TRANSFER)
+                .src_queue_family_index(ctx.queue_family_index)
+                .dst_queue_family_index(ctx.queue_family_index)
+                .image(data.readback_voxel_image.image)
+                .subresource_range(subresource_range);
+            let image_memory_barriers = [image_barrier];
+            let dep = vk::DependencyInfo::default().image_memory_barriers(&image_memory_barriers);
+            ctx.device.cmd_pipeline_barrier2(cmd, &dep);
+            
+            let regions = [region];
+            let copy = vk::CopyImageToBufferInfo2::default()
+                .dst_buffer(data.readback_voxel_buffer.buffer)
+                .src_image(data.readback_voxel_image.image)
+                .src_image_layout(vk::ImageLayout::GENERAL)
+                .regions(&regions);
+            ctx.device.cmd_copy_image_to_buffer2(cmd, &copy);
+
+            data.pending_chunk_node_request = Some(new_node);
+        }
+
+        // for GeneratedChunk { node, mesh } in self.result_rx.try_iter() {
+        if let Some(GeneratedChunk { node, mesh }) = generated_chunk {
             self.chunks_requested -= 1;
             
             if !self.chunks.contains_key(&node) {
-                continue;
+                // continue;
             }
 
             if let Some(crate::mesher::MeshedChunk { vertices, normals, indices }) = mesh {
@@ -201,9 +328,9 @@ impl MultipleChunks {
                 let index_buffer_barrier = vk::BufferMemoryBarrier2::default()
                     .buffer(index_buffer.buffer)
                     .src_stage_mask(vk::PipelineStageFlags2::COPY)
-                    .dst_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR | vk::PipelineStageFlags2::VERTEX_SHADER)
+                    .dst_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR | vk::PipelineStageFlags2::VERTEX_SHADER | vk::PipelineStageFlags2::INDEX_INPUT)
                     .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-                    .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR | vk::AccessFlags2::SHADER_READ)
+                    .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR | vk::AccessFlags2::INDEX_READ | vk::AccessFlags2::SHADER_READ)
                     .size(index_buffer.size as u64)
                     .offset(0)
                     .src_queue_family_index(ctx.queue_family_index)

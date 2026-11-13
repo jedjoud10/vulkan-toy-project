@@ -3,7 +3,7 @@ use super::*;
 use super::utils;
 
 
-pub fn compute_normals(densities: &Vec<f32>, normals_lookup: &mut [vek::Vec3<f32>]) {
+pub fn compute_normals(densities: &[f32], normals_lookup: &mut [vek::Vec3<f32>]) {
     for x in 0..(CHUNK_SIZE_WITH_PADDING-1) {
         for y in 0..(CHUNK_SIZE_WITH_PADDING-1) {
             for z in 0..(CHUNK_SIZE_WITH_PADDING-1) {
@@ -27,7 +27,7 @@ pub fn compute_normals(densities: &Vec<f32>, normals_lookup: &mut [vek::Vec3<f32
     }
 }
 
-pub fn core_quads(densities: &Vec<f32>, indices: &mut Vec<u32>, lookup: &Vec<u32>) {
+pub fn core_quads(densities: &[f32], indices: &mut Vec<u32>, lookup: &Vec<u32>) {
     for x in 1..(CHUNK_SIZE_WITH_PADDING-2) {
         for y in 1..(CHUNK_SIZE_WITH_PADDING-2) {
             for z in 1..(CHUNK_SIZE_WITH_PADDING-2) {
@@ -74,7 +74,7 @@ pub fn core_quads(densities: &Vec<f32>, indices: &mut Vec<u32>, lookup: &Vec<u32
     }
 }
 
-pub fn core_vertices(densities: &Vec<f32>, chunk_position: vek::Vec3<i32>, chunk_scale: f32, vertices: &mut Vec<vek::Vec3<f32>>, normals: &mut Vec<vek::Vec3<f32>>, normals_lookup: &[vek::Vec3<f32>], lookup: &mut Vec<u32>) {
+pub fn core_vertices(densities: &[f32], chunk_position: vek::Vec3<i32>, chunk_scale: f32, vertices: &mut Vec<vek::Vec3<f32>>, normals: &mut Vec<vek::Vec3<f32>>, normals_lookup: &[vek::Vec3<f32>], lookup: &mut Vec<u32>) {
     for x in 0..(CHUNK_SIZE_WITH_PADDING-2) {
         for y in 0..(CHUNK_SIZE_WITH_PADDING-2) {
             for z in 0..(CHUNK_SIZE_WITH_PADDING-2) {

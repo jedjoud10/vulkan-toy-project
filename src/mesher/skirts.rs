@@ -228,7 +228,7 @@ pub fn skirt_vertices(densities: &[f32], normal_lookup: &[vek::Vec3<f32>], chunk
 
 
 
-pub fn skirt_quads(densities: &Vec<f32>, indices: &mut Vec<u32>, lookup: &[u32], face: u32, skirt_lookup: Vec<u32>, direction: u32) {
+pub fn skirt_quads(densities: &[f32], indices: &mut Vec<u32>, lookup: &[u32], face: u32, skirt_lookup: Vec<u32>, direction: u32) {
 
     let missing = if face < 3 { 0 } else { SKIRT_SIZE - 2 }; 
     for rx in 0..(SKIRT_SIZE-1) {
@@ -250,7 +250,7 @@ pub fn skirt_quads(densities: &Vec<f32>, indices: &mut Vec<u32>, lookup: &[u32],
 }
 
 // https://github.com/jedjoud10/VoxelTerrain/blob/e949784031a0b32104f467e3c3d2138f54286dd4/Runtime/Mesher/Skirts/SkirtQuadJob.cs#L58-L114
-fn check_edge(densities: &Vec<f32>, indices: &mut Vec<u32>, lookup: &[u32], face: u32, skirt_lookup: &[u32], pos: vek::Vec3<usize>, is_set: bool, axis: i32) {
+fn check_edge(densities: &[f32], indices: &mut Vec<u32>, lookup: &[u32], face: u32, skirt_lookup: &[u32], pos: vek::Vec3<usize>, is_set: bool, axis: i32) {
     // next cell is the cell "forward" to the current cell based on axiss
     let mut next_cell = pos;
     next_cell[axis as usize] += 1;

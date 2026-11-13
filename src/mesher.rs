@@ -19,7 +19,9 @@ pub struct MeshedChunk {
 }
 
 // stupid and unoptimized but works for now ig
-pub fn mesh_chunk(densities: Vec<f32>, chunk_position: vek::Vec3<i32>, chunk_scale: f32) -> MeshedChunk {
+pub fn mesh_chunk(densities: &[f32], chunk_position: vek::Vec3<i32>, chunk_scale: f32) -> MeshedChunk {
+    assert_eq!(densities.len(), CHUNK_VOLUME);
+    
     let mut vertices = Vec::<vek::Vec3<f32>>::new();
     let mut normals = Vec::<vek::Vec3<f32>>::new();
     

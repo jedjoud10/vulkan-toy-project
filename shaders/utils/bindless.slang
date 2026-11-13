@@ -39,6 +39,8 @@ const static uint RENDERED_STORAGE_IMAGE_IDX = 1;
 const static uint SKYBOX_STORAGE_IMAGE_IDX = 2;
 const static uint AMBIENT_SKYBOX_STORAGE_IMAGE_IDX = 3;
 const static uint CLOUDS_STORAGE_IMAGE_IDX = 4;
+const static uint VOXEL_DENSITY_STORAGE_IMAGE_IDX = 5;
+
 const static uint SDF_TEXTURE_STORAGE_IMAGE_IDX = 5;
 const static uint SDF_TEXTURE2_STORAGE_IMAGE_IDX = 6;
 const static uint VXGI_STORAGE_IMAGE_IDX = 7;
@@ -70,6 +72,7 @@ const static uint SDF_TEXTURE_SAMPLED_IMAGE_IDX = 4;
 const static uint SDF_TEXTURE2_SAMPLED_IMAGE_IDX = 5;
 const static uint VXGI_SAMPLED_IMAGE_IDX = 6;
 const static uint SDF_TEXTURE4_SAMPLED_IMAGE_IDX = 7;
+
 
 const static uint NEAREST_SAMPLER_IDX = 0;
 const static uint LINEAR_UNCAMPLED_SAMPLER_IDX = 1;

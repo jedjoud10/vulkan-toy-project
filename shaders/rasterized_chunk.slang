@@ -25,6 +25,7 @@ VertexOutput vert_main(uint index: SV_VertexID, uniform PushConstants pc) {
     VertexOutput output;
 
     float3 world = pc.vertex_buffer_address[index];
+    float3 normal = pc.normal_buffer_address[index];
 
     let uniforms = load_per_frame_uniforms();
 
@@ -37,7 +38,7 @@ VertexOutput vert_main(uint index: SV_VertexID, uniform PushConstants pc) {
     output.sv_position = t;
     output.world_pos = world_position.xyz;
     output.colour = (snoise(world_position.xyz * 0.1) * 0.5 + 0.5);
-    output.normal = pc.normal_buffer_address[index];
+    output.normal = normal;
     return output;
 }
 
@@ -70,7 +71,7 @@ float4 frag_main(VertexOutput in_vert, uniform PushConstants pc) : SV_Target {
 
     // combine bottom and top with normal
     let combined = add_layer(with_rock, with_puddles, smoothstep(0.6, 0.96, normal.y));
-    Layer res = smush(combined, world, normal);
+    Layer res = smush(combined, world*3, normal);
 
     // construct PBR data
     PbrSurfaceData pbr_surface_data = PbrSurfaceData(world, res.diffuse, res.normal, AoRoughnessMetallic(res.arm));
