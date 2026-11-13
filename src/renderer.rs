@@ -615,9 +615,11 @@ impl InternalApp {
 
         if self.input.get_button(Button::Keyboard(KeyCode::KeyR)).pressed() {
             self.recompiler.request();
-            // compile_all_shaders(&self.args, &self.device, &self.debug_marker, self.main_pipeline_layout, &mut self.graphics_pipelines, &mut self.compute_pipelines, false);
         }
 
+        if self.input.get_button(Button::Keyboard(KeyCode::KeyK)).pressed() {
+            self.multiple_chunks.force_recompute();
+        }
 
 
         if self.input.get_button(Button::Keyboard(KeyCode::KeyJ)).pressed() {

@@ -163,6 +163,11 @@ impl Octree {
     pub fn nodes(&self) -> &[Node] {
         &self.nodes
     }
+    
+    pub(crate) fn clear(&mut self) {
+        self.nodes.clear();
+        self.old_nodes.clear();
+    }
 }
 
 // Octree deltas contain the added / removed chunk nodes
