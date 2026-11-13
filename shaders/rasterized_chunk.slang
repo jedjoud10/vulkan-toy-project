@@ -67,12 +67,11 @@ float4 frag_main(VertexOutput in_vert, uniform PushConstants pc) : SV_Target {
     // top layer
     let top_layer = BaseEmptyLayer();
     let with_sand = add_layer(top_layer, Material.load(6), 1.0);
-    let with_puddles = add_layer(with_sand, Material.load(3), smoothstep(0.0, 0.3, snoise(world * 0.01)));
+    let with_puddles = add_layer(with_sand, Material.load(3), smoothstep(0.0, 0.01, snoise(world * 0.01)));
 
     // combine bottom and top with normal
     let combined = add_layer(with_rock, with_puddles, smoothstep(0.6, 0.96, normal.y));
     Layer res = smush(combined, world*3, normal);
-
     // construct PBR data
     PbrSurfaceData pbr_surface_data = PbrSurfaceData(world, res.diffuse, res.normal, AoRoughnessMetallic(res.arm));
     CameraData camera_data = CameraData(view);

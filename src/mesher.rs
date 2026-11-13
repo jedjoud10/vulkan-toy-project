@@ -1,6 +1,6 @@
 
-pub const CHUNK_SIZE: usize = 32;
-pub const CHUNK_SIZE_WITH_PADDING: usize = 34;
+pub const CHUNK_SIZE: usize = 32; // physical chunk size
+pub const CHUNK_SIZE_WITH_PADDING: usize = CHUNK_SIZE + 2; // logical chunk size
 pub const CHUNK_VOLUME: usize = CHUNK_SIZE_WITH_PADDING*CHUNK_SIZE_WITH_PADDING*CHUNK_SIZE_WITH_PADDING;
 pub const SMOOTH: bool = true;
 

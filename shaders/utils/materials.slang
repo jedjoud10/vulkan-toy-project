@@ -42,13 +42,15 @@ struct Layered<T : Layerable, T2 : Layerable> : Layerable {
 
     Layer apply(float3 world, float3 normal) {
         // skip evaluating the bottom layer if we know this layer will be on top
-        if (weight == 1.0) {
+        // must make sure the the ENTIRE wave agrees on this decision, otherwise we get 2x2 artifacts
+        // this totally saves frame time, I just profiled. 23ms -> 16ms (CPU time) with both of these branches. nice
+        if (WaveActiveAllTrue(weight == 1.0)) {
             return other_layer.apply(world, normal);
         }
 
-        
         // skip evaluating the top layer if we know it will not influence the result
-        if (weight == 0.0) {
+        // must make sure the the ENTIRE wave agrees on this decision, otherwise we get 2x2 artifacts
+        if (WaveActiveAllTrue(weight == 0.0)) {
             return previous_layers.apply(world, normal);
         }
 
