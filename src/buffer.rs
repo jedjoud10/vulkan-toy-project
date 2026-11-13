@@ -12,7 +12,7 @@ pub const MIN_BUFFER_ALIGNMENT: u64 = 256;
 // `write_to_buffer` calls that update more than these amount of bytes will revert to using the staging buffer implementation
 pub const BUFFER_WRITE_INLINE_MAX_BYTES_THRESHOLD: usize = 65536; // vulkan spec states that data size must be less than this 
 
-pub const SCRATCH_BUFFER_SIZE: usize = 1024*1024*128; // ~128mB
+pub const SCRATCH_BUFFER_SIZE: usize = 1024*1024*256; // ~256mB
 
 pub struct Buffer {
     pub buffer: vk::Buffer,

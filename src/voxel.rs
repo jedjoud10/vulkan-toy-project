@@ -15,35 +15,46 @@ pub const CHUNK_SIZE: usize = crate::mesher::CHUNK_SIZE;
 pub const CHUNK_SIZE_WITH_PADDING: usize = crate::mesher::CHUNK_SIZE_WITH_PADDING;
 pub const CHUNK_VOLUME: usize = CHUNK_SIZE_WITH_PADDING*CHUNK_SIZE_WITH_PADDING*CHUNK_SIZE_WITH_PADDING;
 
+pub const MULTI_CHUNK_TEXTURE_SIZE: usize = CHUNK_SIZE_WITH_PADDING * 4;
+pub const MULTI_CHUNK_TEXTURE_VOLUME: usize = MULTI_CHUNK_TEXTURE_SIZE*MULTI_CHUNK_TEXTURE_SIZE*MULTI_CHUNK_TEXTURE_SIZE;
+pub const NUM_MULTI_CHUNKS: usize = 64;
+
+
 pub const ENABLED: bool = true;
 
+// contains an 4x4x4 volume of chunks
+// indexed using utils::offset_to_index(offset, 4)
 pub struct PerFrameChunkGenerationData {
     pub readback_voxel_image: crate::texture_3d::Texture3D,
     pub readback_voxel_buffer: buffer::Buffer,
-    pub pending_chunk_node_request: Option<crate::octree::Node>,
+    pub multi_chunk_buffer: buffer::Buffer,
+    pub pending_chunk_node_requests: Option<Vec<crate::octree::Node>>,
 }
 
 impl PerFrameChunkGenerationData {
-    pub unsafe fn create(ctx: &GraphicsContext) -> Self {
+    pub unsafe fn create(ctx: &GraphicsContext) -> Self {        
         let extent = vek::Extent3::<u32> {
-            w: crate::voxel::CHUNK_SIZE_WITH_PADDING as u32,
-            h: crate::voxel::CHUNK_SIZE_WITH_PADDING as u32,
-            d: crate::voxel::CHUNK_SIZE_WITH_PADDING as u32,
+            w: MULTI_CHUNK_TEXTURE_SIZE as u32,
+            h: MULTI_CHUNK_TEXTURE_SIZE as u32,
+            d: MULTI_CHUNK_TEXTURE_SIZE as u32,
         };
 
         let readback_voxel_image = crate::texture_3d::create_texture_3d(ctx, extent, vk::Format::R32_SFLOAT, None, "");
-        let readback_voxel_buffer = crate::buffer::create_buffer_with_location(ctx, size_of::<f32>() * (extent.w * extent.h * extent.d) as usize, "", vk::BufferUsageFlags::STORAGE_BUFFER, gpu_allocator::MemoryLocation::GpuToCpu);
+        let readback_voxel_buffer = crate::buffer::create_buffer_with_location(ctx, size_of::<f32>() * MULTI_CHUNK_TEXTURE_VOLUME as usize, "", vk::BufferUsageFlags::STORAGE_BUFFER, gpu_allocator::MemoryLocation::GpuToCpu);
+        let multi_chunk_buffer = crate::buffer::create_buffer_default_flags(ctx, size_of::<f32>() * 4 * NUM_MULTI_CHUNKS, "");
 
         Self {
             readback_voxel_image,
             readback_voxel_buffer,
-            pending_chunk_node_request: None,
+            multi_chunk_buffer,
+            pending_chunk_node_requests: None,
         }
     }
 
     pub unsafe fn destroy(self, device: &ash::Device, cmd_pool: vk::CommandPool, allocator: &mut Allocator) {
         self.readback_voxel_image.destroy(device, allocator);
         self.readback_voxel_buffer.destroy(device, allocator);
+        self.multi_chunk_buffer.destroy(device, allocator);
     }
 }
 
@@ -180,30 +191,73 @@ impl MultipleChunks {
         }
         drop(allocator);
 
-        if let Some(node) = data.pending_chunk_node_request.take() {
+        if let Some(nodes) = data.pending_chunk_node_requests.take() {
             // fetch data from buffer which was copied into last time
             // by now, the compute and copy should have finished
             let bytes = data.readback_voxel_buffer.allocation.mapped_slice().unwrap();
-            let densities = cast_slice::<u8, f32>(bytes);
+            let multi_chunk_densities = cast_slice::<u8, f32>(bytes);
+            assert_eq!(multi_chunk_densities.len(), MULTI_CHUNK_TEXTURE_VOLUME as usize); 
 
-            assert_eq!(densities.len(), CHUNK_VOLUME as usize); 
+            let i = std::time::Instant::now();
 
-            
-            self.meshing_request_tx.send(MeshingRequest { node, data: densities.to_vec() }).unwrap();
+            for (i, node) in nodes.into_iter().enumerate() {
+                let multi_chunk_chunk_offset = crate::utils::index_to_offset(i, 4);
+                let multi_chunk_texture_page_start = multi_chunk_chunk_offset * CHUNK_SIZE_WITH_PADDING;
+
+                // the data in multi_chunk_densities is not chunk contiguous, we must remap and copy it ourselves
+                let mut densities = vec![0f32; CHUNK_VOLUME];
+                for j in 0..CHUNK_VOLUME {
+                    let voxel_position = crate::utils::index_to_offset(j, CHUNK_SIZE_WITH_PADDING);
+                    let multi_chunk_buffer_index = crate::utils::offset_to_index(multi_chunk_texture_page_start+voxel_position, MULTI_CHUNK_TEXTURE_SIZE);
+                    densities[j] = multi_chunk_densities[multi_chunk_buffer_index];
+                }
+                
+                self.meshing_request_tx.send(MeshingRequest { node, data: densities }).unwrap();
+            }
+
+            let a = std::time::Instant::now();
+            // log::warn!("{}", (a-i).as_millis());            
         }
-        
-        
-        if let Some(new_node) = self.generate_data_chunks_queue.pop_front() {
+
+        let popped = (0..NUM_MULTI_CHUNKS).into_iter().map(|_| self.generate_data_chunks_queue.pop_front()).flat_map(|x| x).collect::<Vec<_>>();
+        // let popped = if let Some(p) = self.generate_data_chunks_queue.pop_back() { vec![p] } else { Vec::new() };
+
+        if !popped.is_empty() {
             // execute compute shader and do image->buffer copy
             ctx.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, compute_pipelines[crate::renderer::COMPUTE_VOXELS].entry_points["main"].pipeline);
+        
+            let chunk_positions_and_scales = popped.iter().map(|node| {
+                let chunk_position = node.position().as_::<f32>();
+                let chunk_size = node.size();
+                let chunk_scale = (chunk_size as f32 / CHUNK_SIZE as f32);
+                let chunk_position_and_scale = chunk_position.with_w(chunk_scale);
+                chunk_position_and_scale 
+            }).collect::<Vec<_>>();
 
-            let chunk_position = new_node.position().as_::<f32>();
-            let chunk_size = new_node.size();
-            let chunk_scale = (chunk_size as f32 / CHUNK_SIZE as f32);
-            let chunk_position_and_scale = chunk_position.with_w(chunk_scale); 
+            let bytes = cast_slice(&chunk_positions_and_scales);
+            buffer::write_with_scratch_buffer(ctx, cmd, scratchy, bytes, data.multi_chunk_buffer.buffer, 0);
+            
+            #[derive(Clone, Copy, Pod, Zeroable)]
+            #[repr(C)]
+            struct DispatchPushConstants {
+                chunk_positions_and_scales_buffer_address: vk::DeviceAddress,
+                num_chunks: u32,
+                _padding: u32
+            }
 
-            ctx.device.cmd_push_constants(cmd, ctx.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytes_of(&chunk_position_and_scale));
-            let group_count = CHUNK_SIZE_WITH_PADDING.div_ceil(4) as u32;
+            let pc = DispatchPushConstants {
+                chunk_positions_and_scales_buffer_address: data.multi_chunk_buffer.address,
+                num_chunks: popped.len() as u32,
+                _padding: 0,
+            };
+
+            ctx.device.cmd_push_constants(cmd, ctx.main_pipeline_layout, vk::ShaderStageFlags::ALL, 0, bytes_of(&pc));
+            
+            // TODO: we can be smart here and only dispatch the number of groups that we ACTUALLY need in the shader
+            // improves the case where we only have a few chunks, we don't need to dispatch ALL groups of the compute shader for a single chunk        
+            // we must compute some sort of AABB/bounds for the number of chunks dispatched (chunk_positions_and_scales.len())
+            let group_count = MULTI_CHUNK_TEXTURE_SIZE.div_ceil(4) as u32;
+
             ctx.device.cmd_dispatch(cmd, group_count, group_count, group_count);
 
             let subresource_layers = vk::ImageSubresourceLayers::default()
@@ -220,7 +274,7 @@ impl MultipleChunks {
                 .buffer_offset(0)
                 .buffer_row_length(0)
                 .image_offset(vk::Offset3D::default())
-                .image_extent(vk::Extent3D::default().depth(CHUNK_SIZE_WITH_PADDING as u32).width(CHUNK_SIZE_WITH_PADDING as u32).height(CHUNK_SIZE_WITH_PADDING as u32))
+                .image_extent(vk::Extent3D::default().depth(MULTI_CHUNK_TEXTURE_SIZE as u32).width(MULTI_CHUNK_TEXTURE_SIZE as u32).height(MULTI_CHUNK_TEXTURE_SIZE as u32))
                 .image_subresource(subresource_layers);
 
             let image_barrier = vk::ImageMemoryBarrier2::default()
@@ -246,7 +300,7 @@ impl MultipleChunks {
                 .regions(&regions);
             ctx.device.cmd_copy_image_to_buffer2(cmd, &copy);
 
-            data.pending_chunk_node_request = Some(new_node);
+            data.pending_chunk_node_requests = Some(popped);
         }
 
         for GeneratedChunk { node, mesh } in self.meshing_result_rx.try_iter() {
