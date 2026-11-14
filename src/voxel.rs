@@ -371,6 +371,10 @@ impl MultipleChunks {
         for chunk in self.chunks.into_iter().filter_map(|(_, b)| b) {
             chunk.destroy(acceleration_structure_device, device, allocator);
         }
+
+        for chunk in self.destruction {
+            chunk.destroy(acceleration_structure_device, device, allocator);
+        }
     }
     
     pub unsafe fn render_all_chunks(&self, ctx: &GraphicsContext, cmd: vk::CommandBuffer, materials: &[crate::material::Material]) {

@@ -74,6 +74,7 @@ impl PerFrameData {
 
         self.scratch_buffer.destroy(device, allocator);
         self.readback_buffer.destroy(device, allocator);
+        self.chunk_generation.destroy(device, cmd_pool, allocator);
     }
 }
 
