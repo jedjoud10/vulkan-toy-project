@@ -1137,15 +1137,7 @@ impl InternalApp {
             .dst_queue_family_index(self.queue_family_index)
             .size(vk::WHOLE_SIZE);
         */
-        let voxel_readback_buffer_barrier = vk::BufferMemoryBarrier2::default()
-            .buffer(chunk_generation.readback_voxel_buffer.buffer)
-            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
-            .dst_access_mask(vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::MEMORY_WRITE)
-            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(self.queue_family_index)
-            .size(vk::WHOLE_SIZE);
+
         let counters_of_various_types_buffer_barrier = vk::BufferMemoryBarrier2::default()
             .buffer(self.counters_of_various_types.buffer)
             .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
@@ -1160,7 +1152,6 @@ impl InternalApp {
             debug_text_buffer_barrier,
             materials_gpu_buffer_barrier,
             counters_of_various_types_buffer_barrier,
-            voxel_readback_buffer_barrier
             /*
             gpu_packed_aabbs_buffer,
             bvh_buffer_barrier,
@@ -1172,24 +1163,7 @@ impl InternalApp {
         ];
 
 
-        let full_subresource_range = vk::ImageSubresourceRange::default()
-            .aspect_mask(vk::ImageAspectFlags::COLOR)
-            .level_count(1)
-            .layer_count(1);
-
-        let voxel_readback_image_barrier = vk::ImageMemoryBarrier2::default()
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .src_access_mask(vk::AccessFlags2::SHADER_WRITE | vk::AccessFlags2::SHADER_READ)
-            .dst_access_mask(vk::AccessFlags2::SHADER_WRITE | vk::AccessFlags2::SHADER_READ)
-            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-            .src_queue_family_index(self.queue_family_index)
-            .dst_queue_family_index(self.queue_family_index)
-            .image(chunk_generation.readback_voxel_image.image)
-            .subresource_range(full_subresource_range);
-        let image_memory_barriers = [voxel_readback_image_barrier];
-
+        let image_memory_barriers = [];
         let dep = vk::DependencyInfo::default().buffer_memory_barriers(&buffer_memory_barriers).image_memory_barriers(&image_memory_barriers);
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
