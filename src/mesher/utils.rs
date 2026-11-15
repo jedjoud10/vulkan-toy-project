@@ -179,7 +179,7 @@ pub enum QuadOrTri {
 pub fn add_quads_or_tris(quad_or_tri: QuadOrTri, flip: bool, indices: &mut Vec<u32>) {
     match quad_or_tri {
         QuadOrTri::Quad(v) => {
-            log::trace!("handle quad: {v}, flip: {flip}");
+            // log::trace!("handle quad: {v}, flip: {flip}");
 
             if flip {
                 add_cw_quad(v, indices);
@@ -193,7 +193,7 @@ pub fn add_quads_or_tris(quad_or_tri: QuadOrTri, flip: bool, indices: &mut Vec<u
         // very easy fix for this, just have to implement it :P
         // just handle this in `try_calculate_quads_or_tris`
         QuadOrTri::Tri(v) => {
-            log::trace!("handle tri: {v}, flip: {flip}");
+            // log::trace!("handle tri: {v}, flip: {flip}");
 
             if flip {
                 add_cw_tri(v, indices);

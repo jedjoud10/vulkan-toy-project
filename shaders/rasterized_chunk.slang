@@ -7,6 +7,43 @@
 struct PushConstants {
     float3 *vertex_buffer_address;
     float3 *normal_buffer_address;
+};
+
+struct VertexOutput {
+    float3 world_pos;
+    float3 normal;
+    float3 colour;
+    float4 sv_position : SV_Position;
+    uint draw_index;
+};
+
+[shader("vertex")]
+VertexOutput vert_main(uint index: SV_VertexID, uint draw_index: SV_DrawIndex, uniform PushConstants pc) {
+    VertexOutput output;
+
+    float3 world = pc.vertex_buffer_address[index];
+    float3 normal = pc.normal_buffer_address[index];
+
+    let uniforms = load_per_frame_uniforms();
+
+    float4 world_position = float4(world, 1.0);
+
+    float4 t = mul(world_position, uniforms.view_projection_matrix);
+    t.y = -t.y;
+    t.x = -t.x;
+
+    output.sv_position = t;
+    output.world_pos = world_position.xyz;
+    output.colour = (snoise(world_position.xyz * 0.1) * 0.5 + 0.5);
+    output.normal = normal;
+    output.draw_index = draw_index;
+    return output;
+}
+
+/*
+struct PushConstants {
+    float3 *vertex_buffer_address;
+    float3 *normal_buffer_address;
     uint *index_buffer_address;
 
     uint draw_index;
@@ -41,13 +78,14 @@ VertexOutput vert_main(uint index: SV_VertexID, uniform PushConstants pc) {
     output.normal = normal;
     return output;
 }
+*/
 
 [shader("fragment")]
 float4 frag_main(VertexOutput in_vert, uniform PushConstants pc) : SV_Target {
     let uniforms = load_per_frame_uniforms();
 
     if ((uniforms.toggles_bitmask & 8) == 8) {
-        return float4(hash31((float)pc.draw_index * 123.456), 1);
+        return float4(hash31((float)in_vert.draw_index * 123.456), 1);
     }
 
     /*

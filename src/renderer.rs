@@ -869,7 +869,7 @@ impl InternalApp {
         }
 
         for chunk in self.multiple_chunks.chunks.values().filter_map(|x| x.as_ref()) {
-            dynamic_instances.push(chunk.instance);
+            // dynamic_instances.push(chunk.instance);
             /*
             models_metadata_buffer_write.push(GpuModelMetadata {
                 material_base_index: self.materials[0].base_index,
@@ -1665,7 +1665,7 @@ impl InternalApp {
         // self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_CHUNKS]);
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_CHUNKS]);
         // self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, polygon_mode);
-        self.multiple_chunks.render_all_chunks(&mut ctx, cmd, &self.materials);
+        self.multiple_chunks.render_all_chunks(&mut ctx, cmd, scratch_buffer, &self.materials);
     
         self.device.cmd_end_rendering(cmd);
         // self.device.cmd_end_query(cmd, pipeline_statistics_query_pool, 0);

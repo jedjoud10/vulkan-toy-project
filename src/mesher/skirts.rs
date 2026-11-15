@@ -63,7 +63,7 @@ fn create_skirt_sn_1d(data: &VertexSpawningData) -> Option<VertexToSpawn> {
     // log::trace!("{} {} {} {}", p1_offsetted_index, p2_offsetted_index, d1, d2);
     
     if (d1 < 0f32) ^ (d2 < 0f32) {
-        log::trace!("adding edge vertex");
+        // log::trace!("adding edge vertex");
 
         let factor = if SMOOTH {
             utils::unlerp(0f32, d1, d2)
@@ -287,7 +287,7 @@ fn check_edge(densities: &[f32], indices: &mut Vec<u32>, lookup: &[u32], face: u
 
 // https://github.com/jedjoud10/VoxelTerrain/blob/e949784031a0b32104f467e3c3d2138f54286dd4/Runtime/Mesher/Skirts/SkirtQuadJob.cs#L32-L55
 fn fetch_skirt_or_base_index(target: vek::Vec3<i32>, face: u32, lookup: &[u32], skirt_lookup_for_face: &[u32]) -> Option<u32> {
-    log::trace!("fetch: {target}");
+    // log::trace!("fetch: {target}");
     
     let direction = face % 3;
     let face_relative = utils::flatten_to_face_relative(target, direction);
@@ -301,7 +301,7 @@ fn fetch_skirt_or_base_index(target: vek::Vec3<i32>, face: u32, lookup: &[u32], 
         let face_relative = face_relative.clamped(0, SKIRT_SIZE as i32 - 1);
         let flat_relative_index = utils::offset_to_index_flat(face_relative.as_::<usize>(), SKIRT_SIZE);
         
-        log::trace!("skirt index: {}", skirt_lookup_for_face[flat_relative_index]);
+        // log::trace!("skirt index: {}", skirt_lookup_for_face[flat_relative_index]);
         return Some(skirt_lookup_for_face[flat_relative_index])
     } else {
         let mut target = target;
@@ -310,7 +310,7 @@ fn fetch_skirt_or_base_index(target: vek::Vec3<i32>, face: u32, lookup: &[u32], 
         target[direction as usize] = if (face < 3) { 0 } else { CHUNK_SIZE_WITH_PADDING as i32 - 3 };
 
         let other = utils::try_offset_to_index(target.as_::<usize>(), CHUNK_SIZE_WITH_PADDING).map(|x| lookup[x]);
-        log::trace!("base index: {:?}", &other);
+        // log::trace!("base index: {:?}", &other);
         
 
         other
@@ -338,7 +338,7 @@ const IGNORE_SPECIFIC_VALUE_TRI: [vek::Vec3<i32>;4] = [
 // We NEED to have triangle fallback to handle the literal "edge" case (since there are only 3 vertices there)
 // https://github.com/jedjoud10/VoxelTerrain/blob/e949784031a0b32104f467e3c3d2138f54286dd4/Runtime/Mesher/Skirts/SkirtQuadJob.cs#L161-L225
 fn try_calculate_quads_or_tris(v: vek::Vec4::<u32>) -> Option<utils::QuadOrTri> {
-    log::trace!("v = {v}");
+    // log::trace!("v = {v}");
 
     // this checks which vertices are duplicate to which, and stores it in a bitmask
     // the trailing zeros of this bitmask are used to index into DEDUPE_TRIS_THING were we ignore one of the duplicate indices
@@ -367,7 +367,7 @@ fn try_calculate_quads_or_tris(v: vek::Vec4::<u32>) -> Option<utils::QuadOrTri> 
 
     // if there's only a SINGLE invalid index, then consider it as an extra duplicate one (and create a triangle for the valid ones instead of a quad)
     if bitmask.count_ones() == 1 {
-        log::trace!("invalid index, fallbacking to try");
+        // log::trace!("invalid index, fallbacking to try");
         let remapper = IGNORE_SPECIFIC_VALUE_TRI[bitmask.trailing_zeros() as usize].as_::<usize>();
         let uniques = vek::Vec3::new(v[remapper[0]], v[remapper[1]], v[remapper[2]]);
 
@@ -377,7 +377,7 @@ fn try_calculate_quads_or_tris(v: vek::Vec4::<u32>) -> Option<utils::QuadOrTri> 
     }
 
     if dupe_type == 0 {
-        log::trace!("no duplicate verts, quad");
+        // log::trace!("no duplicate verts, quad");
         if v.reduce_max() == u32::MAX {
             return None;
         }
@@ -386,7 +386,7 @@ fn try_calculate_quads_or_tris(v: vek::Vec4::<u32>) -> Option<utils::QuadOrTri> 
             utils::QuadOrTri::Quad(v)
         );
     } else {
-        log::trace!("duplicate verts, triangle");
+        // log::trace!("duplicate verts, triangle");
 
         let remapper = DEDUPE_TRIS_THING[dupe_type.trailing_zeros() as usize].as_::<usize>();
         let uniques = vek::Vec3::new(v[remapper[0]], v[remapper[1]], v[remapper[2]]);
