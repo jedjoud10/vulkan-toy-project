@@ -355,8 +355,8 @@ impl MultipleChunks {
             .size(vk::WHOLE_SIZE)
             .src_stage_mask(vk::PipelineStageFlags2::COPY)
             .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-            .dst_stage_mask(vk::PipelineStageFlags2::DRAW_INDIRECT)
-            .dst_access_mask(vk::AccessFlags2::INDIRECT_COMMAND_READ)
+            .dst_stage_mask(vk::PipelineStageFlags2::DRAW_INDIRECT | vk::PipelineStageFlags2::COPY)
+            .dst_access_mask(vk::AccessFlags2::INDIRECT_COMMAND_READ | vk::AccessFlags2::TRANSFER_WRITE)
             .src_queue_family_index(ctx.queue_family_index)
             .dst_queue_family_index(ctx.queue_family_index);
         
@@ -653,10 +653,13 @@ struct AAllocation {
 
 impl SubBufferAllocator {
     fn new(total_buffer_size: usize, page_size: usize) -> Self {
-        let num_contiguous_pages_required = total_buffer_size.div_ceil(page_size);
+        log::debug!("creating sub buffer allocator for {} and page size {}", bytesize::ByteSize::b(total_buffer_size as u64), bytesize::ByteSize::b(page_size as u64));
+        let num_pages = total_buffer_size.div_ceil(page_size);
+        log::debug!("number of pages: {}", num_pages);
+        
         
         Self {
-            pages: (0..num_contiguous_pages_required).into_iter().map(|_| Page { in_use: false }).collect(),
+            pages: (0..num_pages).into_iter().map(|_| Page { in_use: false }).collect(),
             page_size,
         }
     }
@@ -667,7 +670,12 @@ impl SubBufferAllocator {
 
         // n search yep
         for start_page in 0..num_pages {
-            let end = (start_page+num_contiguous_pages_required).min(num_pages);
+            let end = (start_page+num_contiguous_pages_required);
+
+            if end > num_pages {
+                break;
+            }
+
             let slice = &mut self.pages[start_page..end]; 
             let all_free = slice.iter().all(|x| !x.in_use);
             let start_byte_offset = start_page * self.page_size; 
@@ -695,6 +703,77 @@ impl SubBufferAllocator {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    pub use super::*;
+
+    #[test]
+    fn test_allocator_internal_fragmentation() {
+        let mut allocator = SubBufferAllocator::new(1024, 32);
+        let a1 = allocator.allocate(4).unwrap();
+        assert_eq!(a1.page_count, 1);
+        assert_eq!(a1.start_page, 0);
+
+        let a2 = allocator.allocate(4).unwrap();
+        assert_eq!(a2.page_count, 1);
+        assert_eq!(a2.start_page, 1);
+
+        let a3 = allocator.allocate(4).unwrap();
+        assert_eq!(a3.page_count, 1);
+        assert_eq!(a3.start_page, 2);
+
+        assert!(a3.start_byte_offset != a2.start_byte_offset);
+        assert!(a3.start_byte_offset != a1.start_byte_offset);
+        assert!(a1.start_byte_offset != a3.start_byte_offset);
+    }
+
+    #[test]
+    fn test_allocator_one_page() {
+        let mut allocator = SubBufferAllocator::new(1024, 32);
+        let a1 = allocator.allocate(32).unwrap();
+        assert_eq!(a1.page_count, 1);
+
+        let a2 = allocator.allocate(32).unwrap();
+        assert_eq!(a2.page_count, 1);
+
+        let a3 = allocator.allocate(32).unwrap();
+        assert_eq!(a3.page_count, 1);
+
+        assert!(a3.start_byte_offset != a2.start_byte_offset);
+        assert!(a3.start_byte_offset != a1.start_byte_offset);
+        assert!(a1.start_byte_offset != a3.start_byte_offset);
+    }
+
+    #[test]
+    fn test_allocator_multiple_pages() {
+        let mut allocator = SubBufferAllocator::new(1024, 32);
+        let a1 = allocator.allocate(34).unwrap();
+        assert_eq!(a1.page_count, 2);
+
+        let a2 = allocator.allocate(60).unwrap();
+        assert_eq!(a2.page_count, 2);
+
+        let a3 = allocator.allocate(65).unwrap();
+        assert_eq!(a3.page_count, 3);
+
+        assert!(a3.start_byte_offset != a2.start_byte_offset);
+        assert!(a3.start_byte_offset != a1.start_byte_offset);
+        assert!(a1.start_byte_offset != a3.start_byte_offset);
+    }
+
+    
+    #[test]
+    fn test_allocator_entire_allocator() {
+        let mut allocator = SubBufferAllocator::new(1024, 32);
+        let a1 = allocator.allocate(1024).unwrap();
+        assert_eq!(a1.page_count, allocator.pages.len());
+        assert_eq!(a1.byte_size, 1024);
+        
+        let should_fail = allocator.allocate(60);
+        assert!(should_fail.is_none());
+    }
+}
+
 struct PersistentChunkRenderer {
     pub vertex_buffer: buffer::Buffer,
     pub normals_buffer: buffer::Buffer,
@@ -716,9 +795,9 @@ impl PersistentChunkRenderer {
         // f : v ~ 2 : 1
         let total_indices = total_vertices*2*3; // one face is a triangle
 
-        let vertex_buffer = buffer::create_buffer(ctx, total_vertices, "vertex buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
-        let normals_buffer = buffer::create_buffer(ctx, total_vertices, "normal buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
-        let index_buffer = buffer::create_buffer(ctx, total_indices, "index buffer", vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
+        let vertex_buffer = buffer::create_buffer(ctx, total_vertices * VERTEX_STRIDE, "vertex buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
+        let normals_buffer = buffer::create_buffer(ctx, total_vertices * VERTEX_STRIDE, "normal buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
+        let index_buffer = buffer::create_buffer(ctx, total_indices * INDEX_STRIDE, "index buffer", vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
         let instances_buffer = buffer::create_buffer(ctx, size_of::<vk::DrawIndexedIndirectCommand>() * max_instances, "indirect instances draw buffer", vk::BufferUsageFlags::INDIRECT_BUFFER);
         
 
@@ -730,8 +809,8 @@ impl PersistentChunkRenderer {
             instances: Default::default(),
             instances_buffer,
             
-            sub_buffer_vertices_allocator: SubBufferAllocator::new(total_vertices, 4096),
-            sub_buffer_indices_allocator: SubBufferAllocator::new(total_vertices, 4096),
+            sub_buffer_vertices_allocator: SubBufferAllocator::new(total_vertices * VERTEX_STRIDE, VERTEX_STRIDE * 256),
+            sub_buffer_indices_allocator: SubBufferAllocator::new(total_indices * INDEX_STRIDE, INDEX_STRIDE * 1024),
         }
     }
 
@@ -743,6 +822,10 @@ impl PersistentChunkRenderer {
         let vertex_buffers_allocation = self.sub_buffer_vertices_allocator.allocate(vertices.len() * VERTEX_STRIDE).unwrap();
         buffer::write_with_scratch_buffer(ctx, cmd, scratchy, cast_slice(&normals.as_slice()), self.normals_buffer.buffer, vertex_buffers_allocation.start_byte_offset as u64);
         buffer::write_with_scratch_buffer(ctx, cmd, scratchy, cast_slice(&vertices.as_slice()), self.vertex_buffer.buffer, vertex_buffers_allocation.start_byte_offset as u64);
+
+        // the start byte offset MUST be aligned to the stride, otherwie our vertex_offset and first_index calculations start at unaligned bytes
+        assert!(vertex_buffers_allocation.start_byte_offset.is_multiple_of(VERTEX_STRIDE));
+        assert!(index_buffers_allocation.start_byte_offset.is_multiple_of(INDEX_STRIDE));        
         
         let instance = TmpInstance {
             vertex_offset: (vertex_buffers_allocation.start_byte_offset / VERTEX_STRIDE) as i32,

@@ -18,8 +18,11 @@ struct VertexOutput {
 };
 
 [shader("vertex")]
-VertexOutput vert_main(uint index: SV_VertexID, uint draw_index: SV_DrawIndex, uniform PushConstants pc) {
+VertexOutput vert_main(uint unoffsetted_vertex_index: SV_VertexID, int vertex_offset: SV_StartVertexLocation, uint draw_index: SV_DrawIndex, uniform PushConstants pc) {
     VertexOutput output;
+
+    // SV_VertexID does not have the base vertex offset already applied to it?
+    uint index = unoffsetted_vertex_index + vertex_offset;
 
     float3 world = pc.vertex_buffer_address[index];
     float3 normal = pc.normal_buffer_address[index];
