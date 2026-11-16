@@ -1,5 +1,5 @@
 use std::{
-    borrow::Cow, cell::{Cell, LazyCell, OnceCell, RefCell}, collections::HashMap, env, fs::{self, DirEntry, File}, io::Write, path::{Path, PathBuf}
+    borrow::Cow, cell::{Cell, LazyCell, OnceCell, RefCell}, collections::HashMap, env, ffi::CString, fs::{self, DirEntry, File}, io::Write, path::{Path, PathBuf}
 };
 
 use rayon::iter::{IntoParallelIterator, Once, ParallelIterator};
@@ -83,8 +83,11 @@ pub fn compile_required_shaders(panic_on_error: bool, pipelines: &[crate::pipeli
     log::info!("compiling slang shaders");
     let start = std::time::Instant::now();
 
+    // must use the absolute path for the search paths to pass to Slang, cannot use relative paths otherwise shader compilation fails when running the executable by itself
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+
     // visit all the files inside the shaders/other folders
-    let manifest_dir_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let manifest_dir_path = PathBuf::from(manifest_dir);
     let mut shaders_path = manifest_dir_path.clone();
     shaders_path.push("shaders");
 
@@ -120,13 +123,25 @@ pub fn compile_required_shaders(panic_on_error: bool, pipelines: &[crate::pipeli
             
             let target_desc = TargetDesc::default().format(CompileTarget::Spirv);
             let targets = [target_desc];
-
+            
             // TODO: replace with non-hard-coded version
-            let search_paths = [c"shaders".as_ptr(), c"shaders/utils".as_ptr(), c"shaders/utils/noises".as_ptr()];
+            let tmp_search_paths = ["shaders", "shaders/utils", "shaders/utils/noises"];
+            let search_paths_cstrings = tmp_search_paths.into_iter().map(|suffix| {
+                let mut path = PathBuf::new();
+                path.push(manifest_dir);
+                path.push(suffix);
+                
+                let string = path.to_string_lossy();
+                CString::new(string.into_owned()).unwrap()
+            }).collect::<Vec<_>>();
+            
+            let search_paths_ptrs = search_paths_cstrings.iter().map(|x| {
+                x.as_ptr() as *const i8
+            }).collect::<Vec<_>>();
 
             let session_desc = SessionDesc::default()
                 .targets(&targets)
-                .search_paths(&search_paths)
+                .search_paths(&search_paths_ptrs)
                 .options(&session_options);
 
             let session = global_session.create_session(&session_desc).unwrap();
