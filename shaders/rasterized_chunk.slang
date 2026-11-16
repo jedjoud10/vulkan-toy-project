@@ -14,7 +14,7 @@ struct VertexOutput {
     float3 normal;
     float3 colour;
     float4 sv_position : SV_Position;
-    uint draw_index;
+    uint draw_hash;
 };
 
 [shader("vertex")]
@@ -39,7 +39,7 @@ VertexOutput vert_main(uint unoffsetted_vertex_index: SV_VertexID, int vertex_of
     output.world_pos = world_position.xyz;
     output.colour = (snoise(world_position.xyz * 0.1) * 0.5 + 0.5);
     output.normal = normal;
-    output.draw_index = vertex_offset;
+    output.draw_hash = vertex_offset % 0xFFFF;
     return output;
 }
 
@@ -88,7 +88,7 @@ float4 frag_main(VertexOutput in_vert, uniform PushConstants pc) : SV_Target {
     let uniforms = load_per_frame_uniforms();
 
     if (is_bit_set(uniforms.toggles_bitmask, 1)) {
-        return float4(hash31((float)in_vert.draw_index * 123.456), 1);
+        return float4(hash31((float)(in_vert.draw_hash) * 123.8749), 1);
     }
 
     if (is_bit_set(uniforms.toggles_bitmask, 2)) {
