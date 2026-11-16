@@ -49,7 +49,7 @@ impl Movement {
         /* Create the bouncing ball. */
         let (ball_body_handle, _) = physics_world.insert(
             RigidBodyBuilder::dynamic().translation(Vector::new(0.0, 10.0, 0.0)),
-            ColliderBuilder::ball(0.5).restitution(0.7),
+            ColliderBuilder::ball(2.0).restitution(0.3),
         );
 
         Self {
@@ -194,15 +194,39 @@ impl Movement {
             self.local_velocity.x = -1f32;
         }
 
+        let sens = 1.0f32;
+        let summed_mouse_target = vek::Vec2::new(
+            input.get_axis(Axis::Mouse(MouseAxis::PositionX)) * 0.003 * sens,
+            input.get_axis(Axis::Mouse(MouseAxis::PositionY)) * -0.003 * sens,
+        );
+        self.summed_mouse = vek::Vec2::lerp(
+            self.summed_mouse,
+            summed_mouse_target,
+            (40f32 * delta).clamped01(),
+        );
+
+        if self.fixed_mode_snapshot_index.is_none() {
+            self.rotation = vek::Quaternion::rotation_y(self.summed_mouse.x) * vek::Quaternion::rotation_x(self.summed_mouse.y);
+        }
+
+                
+        let rot = vek::Mat4::from(self.rotation);
+        let forward = rot.mul_direction(-vek::Vec3::unit_z());
+        let right = rot.mul_direction(vek::Vec3::unit_x());
+        let up = rot.mul_direction(vek::Vec3::unit_y());
+
+        let velocity = (forward * self.local_velocity.y + right * self.local_velocity.x) * 200.0;
+        
         let body = physics_world.bodies.get_mut(self.handle).unwrap();
         
         body.reset_forces(true);
-        body.add_force(glam::vec3(self.local_velocity.x, 0f32, self.local_velocity.y), true);
+        body.add_force(glam::vec3(velocity.x, velocity.y, velocity.z), true);
 
         let v1 = body.position().translation;
         let v2 = vek::Vec3::<f32>::new(v1.x, v1.y, v1.z);
 
         self.position = v2;
+
     }
 
     pub fn update_camera(&mut self, ratio: f32) {

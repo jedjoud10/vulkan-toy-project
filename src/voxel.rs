@@ -22,6 +22,7 @@ pub const NUM_MULTI_CHUNKS: usize = 64;
 
 pub const ENABLED: bool = true;
 pub const FORCE_ONE_CHUNK_PER_MULTI_CHUNK: bool = false;
+pub const MAX_DEPTH: u32 = 8;
 
 // contains an 4x4x4 volume of chunks
 // indexed using utils::offset_to_index(offset, 4)
@@ -143,7 +144,7 @@ impl MultipleChunks {
             chunks: Default::default(),
             destruction: Default::default(),
             chunks_to_remove: Vec::new(),
-            octree: Octree::new(8, CHUNK_SIZE as u32),
+            octree: Octree::new(MAX_DEPTH, CHUNK_SIZE as u32),
             persistent_renderer: PersistentChunkRenderer::new(ctx),
         }
     }
@@ -195,7 +196,7 @@ impl MultipleChunks {
         }
     }
 
-    pub unsafe fn frame(&mut self, ctx: &GraphicsContext, scratchy: &mut buffer::ScratchBuffer, cmd: vk::CommandBuffer, data: &mut PerFrameChunkGenerationData, compute_pipelines: &crate::renderer::ComputePipelines) {
+    pub unsafe fn frame(&mut self, ctx: &GraphicsContext, physics_world: &mut rapier3d::prelude::PhysicsWorld, scratchy: &mut buffer::ScratchBuffer, cmd: vk::CommandBuffer, data: &mut PerFrameChunkGenerationData, compute_pipelines: &crate::renderer::ComputePipelines) {
         let vertex_buffer_barrier = vk::BufferMemoryBarrier2::default()
             .buffer(self.persistent_renderer.vertex_buffer.buffer)
             .size(vk::WHOLE_SIZE)
@@ -244,6 +245,10 @@ impl MultipleChunks {
         for chunk in self.destruction.drain(..) {
             let instance = chunk.pending_destruction.unwrap();
             self.persistent_renderer.free_instance(instance);
+            
+            if let Some(handle) = chunk.collider_handle{
+                physics_world.remove_collider(handle);
+            }
         }
         drop(allocator);
 
@@ -267,8 +272,19 @@ impl MultipleChunks {
             }
 
             if let Some(mesh) = mesh {
+                let vertices: Vec::<glam::Vec3> = mesh.vertices.iter().map(|v| glam::vec3(v.x,v.y,v.z)).collect();
+                let indices: Vec::<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+                
+                let collider_handle = (node.depth() == MAX_DEPTH).then(|| {
+                    let builder = rapier3d::prelude::ColliderBuilder::trimesh(vertices, indices).unwrap();
+                    let collider_handle = physics_world.insert_collider(builder, None);
+                    collider_handle
+                });
+
                 let instance = self.persistent_renderer.add_instance(ctx, cmd, scratchy, mesh);
-                let chunk = Chunk { key: instance, pending_destruction: None };
+
+
+                let chunk = Chunk { key: instance, pending_destruction: None, collider_handle };
                 self.chunks.insert(node, Some(chunk));
                 /*
                 let vertex_buffer = buffer::create_buffer_write_with_scratch_buffer(ctx, cmd, scratchy, cast_slice(vertices.as_slice()), "vertex buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
@@ -609,6 +625,7 @@ unsafe fn dispatch_multi_chunk_compute(ctx: &GraphicsContext<'_>, scratchy: &mut
 pub struct Chunk {    
     pub key: slotmap::DefaultKey,
     pub pending_destruction: Option<TmpInstance>,
+    pub collider_handle: Option<rapier3d::prelude::ColliderHandle>,
     /*
     pub vertex_buffer: buffer::Buffer,
     pub normals_buffer: buffer::Buffer,

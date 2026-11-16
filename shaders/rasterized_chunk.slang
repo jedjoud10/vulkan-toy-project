@@ -39,7 +39,7 @@ VertexOutput vert_main(uint unoffsetted_vertex_index: SV_VertexID, int vertex_of
     output.world_pos = world_position.xyz;
     output.colour = (snoise(world_position.xyz * 0.1) * 0.5 + 0.5);
     output.normal = normal;
-    output.draw_index = draw_index;
+    output.draw_index = vertex_offset;
     return output;
 }
 

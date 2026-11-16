@@ -1196,7 +1196,7 @@ impl InternalApp {
 
         
         self.multiple_chunks.stuff(self.movement.position);
-        self.multiple_chunks.frame(&mut ctx, scratch_buffer, cmd, chunk_generation, &self.compute_pipelines);
+        self.multiple_chunks.frame(&mut ctx, &mut self.physics_world, scratch_buffer, cmd, chunk_generation, &self.compute_pipelines);
 
         // self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, query_pool_statistics::ENTIRE_FRAME_QUERY_START);
         
