@@ -4,7 +4,7 @@ use gpu_allocator::vulkan::Allocator;
 
 use crate::{buffer, renderer::GraphicsContext};
 
-const DEBUG_TEXT_BUFFER_SIZE_BYTES: usize = 1024;
+const DEBUG_TEXT_BUFFER_SIZE_BYTES: usize = 1024*4;
 
 pub struct DebugText {
     pub buffer: buffer::Buffer,
@@ -21,6 +21,9 @@ impl DebugText {
     
     pub unsafe fn update_debug_text(&mut self, device: &ash::Device, cmd: vk::CommandBuffer) {
         let bytes = convert_string_to_debug_text_bytes(&self.text);
+        assert!(bytes.len() <= DEBUG_TEXT_BUFFER_SIZE_BYTES, "debug text buffer overrun");
+
+        // TODO: why not use the scratch buffer here?
         device.cmd_update_buffer(cmd, self.buffer.buffer, 0, &bytes);
         self.text.clear();
     }

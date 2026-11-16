@@ -927,6 +927,10 @@ impl InternalApp {
         dbgtext_writeln!(&mut self.debug_text, "requested: {}", self.multiple_chunks.chunks_requested);
         dbgtext_writeln!(&mut self.debug_text, "to remove: {}", self.multiple_chunks.chunks_to_remove.len());
 
+        dbgtext_writeln!(&mut self.debug_text, "vertex: {}", self.multiple_chunks.persistent_renderer.sub_buffer_vertices_allocator.stats());
+        dbgtext_writeln!(&mut self.debug_text, "index: {}", self.multiple_chunks.persistent_renderer.sub_buffer_indices_allocator.stats());
+
+
         /*
         dbgtext_writeln!(&mut self.debug_text, "chunks in use: {}", self.scene.chunks.iter().filter(|x| x.used).count());
         dbgtext_writeln!(&mut self.debug_text, "total primitives: {}", self.scene.primitive_flat_list.len());

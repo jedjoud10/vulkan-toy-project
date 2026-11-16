@@ -173,6 +173,23 @@ pub unsafe fn write_with_scratch_buffer(
     ctx.device.cmd_copy_buffer2(cmd, &copy_staging_buffer_to_buffer);
 }
 
+pub unsafe fn write_with_scratch_buffer_safer(
+    ctx: &GraphicsContext,
+    cmd: vk::CommandBuffer,
+    scratch_buffer: &mut ScratchBuffer,
+    bytes: &[u8],
+    buffer: &Buffer,
+    offset: u64,
+) {
+    if bytes.is_empty() {
+        return;
+    }
+
+    assert!((bytes.len() as u64 + offset) <= buffer.size as u64, "writing {} bytes at offset {} would overrun buffer of size {}", bytes.len(), offset, buffer.size);
+
+    write_with_scratch_buffer(ctx, cmd, scratch_buffer, bytes, buffer.buffer, offset);
+}
+
 // this either creates a staging buffer write or writes to the buffer through cmd_update_buffer
 // switches between both impls depending on the amount of data to write
 pub unsafe fn write_to_buffer(

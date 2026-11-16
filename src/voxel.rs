@@ -78,7 +78,7 @@ pub struct MultipleChunks {
     generate_data_chunks_queue: VecDeque<Node>,
     pub chunks_requested: usize,
     pub chunks_to_remove: Vec<Node>,
-    persistent_renderer: PersistentChunkRenderer,
+    pub persistent_renderer: PersistentChunkRenderer,
 }
 
 impl MultipleChunks {
@@ -143,7 +143,7 @@ impl MultipleChunks {
             chunks: Default::default(),
             destruction: Default::default(),
             chunks_to_remove: Vec::new(),
-            octree: Octree::new(5, CHUNK_SIZE as u32),
+            octree: Octree::new(8, CHUNK_SIZE as u32),
             persistent_renderer: PersistentChunkRenderer::new(ctx),
         }
     }
@@ -165,8 +165,10 @@ impl MultipleChunks {
 
         // when we generated all chunks and they are all visible, remove older ones that were pending for deletion
         for x in self.chunks_to_remove.drain(..) {
-            if let Some(chunk) = self.chunks.remove(&x).flatten() {
+            if let Some(mut chunk) = self.chunks.remove(&x).flatten() {
                 // chunk has been removed, put it pending for destruction (where we destroy its GPU data)
+                let instance = self.persistent_renderer.remove_instance(chunk.key);
+                chunk.pending_destruction = Some(instance);
                 self.destruction.push(chunk)
             }
         }
@@ -233,7 +235,8 @@ impl MultipleChunks {
 
         let mut allocator = ctx.allocator.lock().unwrap();
         for chunk in self.destruction.drain(..) {
-            // chunk.destroy(ctx.acceleration_structure_device, ctx.device, &mut allocator);
+            let instance = chunk.pending_destruction.unwrap();
+            self.persistent_renderer.free_instance(instance);
         }
         drop(allocator);
 
@@ -258,7 +261,7 @@ impl MultipleChunks {
 
             if let Some(mesh) = mesh {
                 let instance = self.persistent_renderer.add_instance(ctx, cmd, scratchy, mesh);
-                let chunk = Chunk { key: instance };
+                let chunk = Chunk { key: instance, pending_destruction: None };
                 self.chunks.insert(node, Some(chunk));
                 /*
                 let vertex_buffer = buffer::create_buffer_write_with_scratch_buffer(ctx, cmd, scratchy, cast_slice(vertices.as_slice()), "vertex buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
@@ -598,6 +601,7 @@ unsafe fn dispatch_multi_chunk_compute(ctx: &GraphicsContext<'_>, scratchy: &mut
 
 pub struct Chunk {    
     pub key: slotmap::DefaultKey,
+    pub pending_destruction: Option<TmpInstance>,
     /*
     pub vertex_buffer: buffer::Buffer,
     pub normals_buffer: buffer::Buffer,
@@ -620,7 +624,7 @@ impl Chunk {
     */
 }
 
-struct TmpInstance {
+pub struct TmpInstance {
     vertex_offset: i32,
     first_index: u32,
     index_count: u32,
@@ -637,19 +641,41 @@ struct Page {
 // when we do an allocation, we try to fit it into some contiguous "free" pages
 // this suffers from both internal and external fragmentation
 // always allocates in entire pages
-struct SubBufferAllocator {
+pub struct SubBufferAllocator {
     // TODO (OPTIMIZATION): use a bitmask to speed up page retrieval
     // TODO (OPTIMIZATION): use multiple layers / page sizes to reduce fragmentation
-    pub pages: Vec<Page>,
-    pub page_size: usize,
+    pages: Vec<Page>,
+    page_size: usize,
+    currently_allocated_bytes: usize,
+    total_buffer_size: usize,
 }
 
+pub struct SubBufferAllocatorStats {
+    total_buffer_size: usize,
+    total_allocated_bytes: usize,
+    internal_frag_bytes: usize,
+    pages_allocated: usize,
+    page_size: usize,
+}
+
+impl std::fmt::Display for SubBufferAllocatorStats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let total = bytesize::ByteSize::b(self.total_allocated_bytes as u64);
+        let wasted = bytesize::ByteSize::b(self.internal_frag_bytes as u64);
+        let pages = self.pages_allocated;
+        let unused = bytesize::ByteSize::b(self.total_buffer_size as u64 - self.total_allocated_bytes as u64);
+        let page_size = bytesize::ByteSize::b(self.page_size as u64);
+        
+        write!(f, "total: {total}, wasted (internal frag): {wasted}, unused: {unused}, pages: {pages}, page size: {page_size}")
+    }
+}
 struct AAllocation {
     start_byte_offset: usize,
     start_page: usize,
     page_count: usize,
     byte_size: usize
 }
+
 
 impl SubBufferAllocator {
     fn new(total_buffer_size: usize, page_size: usize) -> Self {
@@ -661,6 +687,8 @@ impl SubBufferAllocator {
         Self {
             pages: (0..num_pages).into_iter().map(|_| Page { in_use: false }).collect(),
             page_size,
+            total_buffer_size,
+            currently_allocated_bytes: 0,
         }
     }
 
@@ -668,7 +696,7 @@ impl SubBufferAllocator {
         let num_contiguous_pages_required = byte_size.div_ceil(self.page_size);
         let num_pages = self.pages.len();
 
-        // n search yep
+        // TODO (OPTIMIZATION): literally do anything BUT this. lmao
         for start_page in 0..num_pages {
             let end = (start_page+num_contiguous_pages_required);
 
@@ -684,6 +712,8 @@ impl SubBufferAllocator {
                 // set as used
                 slice.iter_mut().for_each(|x| x.in_use = true);
 
+                self.currently_allocated_bytes += byte_size; 
+
                 return Some(AAllocation {
                     start_byte_offset,
                     start_page,
@@ -696,10 +726,27 @@ impl SubBufferAllocator {
         None
     }
 
+    fn total_internal_fragmentation(&self) -> usize {
+        let num_pages_in_use = self.pages.iter().filter(|x| x.in_use).count();
+        let total_page_bytes = num_pages_in_use * self.page_size;
+        return total_page_bytes - self.currently_allocated_bytes;
+    }
+
+    pub fn stats(&self) -> SubBufferAllocatorStats {
+        SubBufferAllocatorStats {
+            total_buffer_size: self.total_buffer_size,
+            total_allocated_bytes: self.currently_allocated_bytes,
+            internal_frag_bytes: self.total_internal_fragmentation(),
+            pages_allocated: self.pages.iter().filter(|x| x.in_use).count(),
+            page_size: self.page_size,
+        }
+    }
+
     fn free(&mut self, alloc: AAllocation) {        
         let end = (alloc.start_page+alloc.page_count).min(self.pages.len());
         let slice = &mut self.pages[(alloc.start_page)..end]; 
         slice.iter_mut().for_each(|x| x.in_use = false);
+        self.currently_allocated_bytes -= alloc.byte_size;
     }
 }
 
@@ -774,7 +821,7 @@ mod tests {
     }
 }
 
-struct PersistentChunkRenderer {
+pub struct PersistentChunkRenderer {
     pub vertex_buffer: buffer::Buffer,
     pub normals_buffer: buffer::Buffer,
     pub index_buffer: buffer::Buffer,
@@ -786,19 +833,25 @@ struct PersistentChunkRenderer {
     pub sub_buffer_indices_allocator: SubBufferAllocator,
 }
 
+const TOTAL_VERTICES: usize = 1024*1024*64;
+const MAX_INSTANCES: usize = 1024*16;
+
+// Euler's formula for manifold meshes
+// f : v ~ 2 : 1
+const TOTAL_INDICES: usize = TOTAL_VERTICES*2*3; // one face is a triangle
+
+
+const VERTEX_BUFFER_BYTE_SIZE: usize = TOTAL_VERTICES * VERTEX_STRIDE;
+const INDEX_BUFFER_BYTE_SIZE: usize = TOTAL_INDICES * INDEX_STRIDE;
+
+
 impl PersistentChunkRenderer {
     unsafe fn new(ctx: &GraphicsContext<'_>) -> Self {
-        let total_vertices = 1024*1024*64;
-        let max_instances = 4096;
 
-        // Euler's formula for manifold meshes
-        // f : v ~ 2 : 1
-        let total_indices = total_vertices*2*3; // one face is a triangle
-
-        let vertex_buffer = buffer::create_buffer(ctx, total_vertices * VERTEX_STRIDE, "vertex buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
-        let normals_buffer = buffer::create_buffer(ctx, total_vertices * VERTEX_STRIDE, "normal buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
-        let index_buffer = buffer::create_buffer(ctx, total_indices * INDEX_STRIDE, "index buffer", vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
-        let instances_buffer = buffer::create_buffer(ctx, size_of::<vk::DrawIndexedIndirectCommand>() * max_instances, "indirect instances draw buffer", vk::BufferUsageFlags::INDIRECT_BUFFER);
+        let vertex_buffer = buffer::create_buffer(ctx, VERTEX_BUFFER_BYTE_SIZE, "vertex buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
+        let normals_buffer = buffer::create_buffer(ctx, VERTEX_BUFFER_BYTE_SIZE, "normal buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
+        let index_buffer = buffer::create_buffer(ctx, INDEX_BUFFER_BYTE_SIZE, "index buffer", vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
+        let instances_buffer = buffer::create_buffer(ctx, size_of::<vk::DrawIndexedIndirectCommand>() * MAX_INSTANCES, "indirect instances draw buffer", vk::BufferUsageFlags::INDIRECT_BUFFER);
         
 
         Self {
@@ -809,19 +862,19 @@ impl PersistentChunkRenderer {
             instances: Default::default(),
             instances_buffer,
             
-            sub_buffer_vertices_allocator: SubBufferAllocator::new(total_vertices * VERTEX_STRIDE, VERTEX_STRIDE * 256),
-            sub_buffer_indices_allocator: SubBufferAllocator::new(total_indices * INDEX_STRIDE, INDEX_STRIDE * 1024),
+            sub_buffer_vertices_allocator: SubBufferAllocator::new(VERTEX_BUFFER_BYTE_SIZE, VERTEX_STRIDE * 256),
+            sub_buffer_indices_allocator: SubBufferAllocator::new(INDEX_BUFFER_BYTE_SIZE, INDEX_STRIDE * 1024),
         }
     }
 
     unsafe fn add_instance(&mut self, ctx: &GraphicsContext, cmd: vk::CommandBuffer, scratchy: &mut buffer::ScratchBuffer, crate::mesher::MeshedChunk { vertices, normals, indices  }: crate::mesher::MeshedChunk) -> slotmap::DefaultKey {
         let index_buffers_allocation = self.sub_buffer_indices_allocator.allocate(indices.len() * INDEX_STRIDE).unwrap();
-        buffer::write_with_scratch_buffer(ctx, cmd, scratchy, cast_slice(indices.as_slice()), self.index_buffer.buffer, index_buffers_allocation.start_byte_offset as u64);
+        buffer::write_with_scratch_buffer_safer(ctx, cmd, scratchy, cast_slice(indices.as_slice()), &self.index_buffer, index_buffers_allocation.start_byte_offset as u64);
 
         // FIXME (HACK): we can only do this because the stride of normals is the same as the stride for position. ideally we would compute this in a separate sub-buffer allocator
         let vertex_buffers_allocation = self.sub_buffer_vertices_allocator.allocate(vertices.len() * VERTEX_STRIDE).unwrap();
-        buffer::write_with_scratch_buffer(ctx, cmd, scratchy, cast_slice(&normals.as_slice()), self.normals_buffer.buffer, vertex_buffers_allocation.start_byte_offset as u64);
-        buffer::write_with_scratch_buffer(ctx, cmd, scratchy, cast_slice(&vertices.as_slice()), self.vertex_buffer.buffer, vertex_buffers_allocation.start_byte_offset as u64);
+        buffer::write_with_scratch_buffer_safer(ctx, cmd, scratchy, cast_slice(&normals.as_slice()), &self.normals_buffer, vertex_buffers_allocation.start_byte_offset as u64);
+        buffer::write_with_scratch_buffer_safer(ctx, cmd, scratchy, cast_slice(&vertices.as_slice()), &self.vertex_buffer, vertex_buffers_allocation.start_byte_offset as u64);
 
         // the start byte offset MUST be aligned to the stride, otherwie our vertex_offset and first_index calculations start at unaligned bytes
         assert!(vertex_buffers_allocation.start_byte_offset.is_multiple_of(VERTEX_STRIDE));
@@ -866,7 +919,7 @@ impl PersistentChunkRenderer {
         let ptr = draw_indexed_indirect_commands.as_ptr() as *const u8;
         let data = &*std::ptr::slice_from_raw_parts(ptr, bytes);
 
-        buffer::write_with_scratch_buffer(ctx, cmd, scratchy, data, self.instances_buffer.buffer, 0);
+        buffer::write_with_scratch_buffer_safer(ctx, cmd, scratchy, data, &self.instances_buffer, 0);
     }
 
     pub unsafe fn render_all_chunks(&self, ctx: &GraphicsContext, cmd: vk::CommandBuffer, scratchy: &mut buffer::ScratchBuffer) {
