@@ -445,7 +445,9 @@ unsafe fn try_readback_gpu_voxels(ctx: &GraphicsContext<'_>, cmd: vk::CommandBuf
                     densities[j] = copy[multi_chunk_buffer_index];
                 }
 
-                meshing_request_tx.send(MeshingRequest { node, data: densities }).unwrap();
+                if let Err(err) = meshing_request_tx.send(MeshingRequest { node, data: densities }) {
+                    log::error!("send error: {err}");
+                }
             }
 
             let a = std::time::Instant::now();
