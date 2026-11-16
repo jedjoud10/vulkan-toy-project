@@ -23,6 +23,8 @@ fn default_fov() -> f32 {
 #[derive(Default)]
 pub struct Player {
     pub position: vek::Vec3<f32>,
+    pub last_position: vek::Vec3<f32>,
+    pub interpolated_position: vek::Vec3<f32>,
     
     pub body_rotation: vek::Quaternion<f32>,
     pub head_rotation_local: vek::Quaternion<f32>,
@@ -77,6 +79,8 @@ impl Player {
     }
 
     pub fn update_physics(&mut self, physics_world: &mut rapier3d::prelude::PhysicsWorld, physics_delta: f32) {
+        self.last_position = self.position;
+
         let rot = vek::Mat4::from(self.body_rotation);
         let forward = rot.mul_direction(-vek::Vec3::unit_z());
         let right = rot.mul_direction(vek::Vec3::unit_x());
@@ -128,6 +132,10 @@ impl Player {
         self.position = v2;
 
         self.grounded_last_frame = corrected.grounded;
+    }
+
+    pub fn update_frame(&mut self, interpolation_factor: f32) {
+        self.interpolated_position = vek::Vec3::lerp(self.last_position, self.position, interpolation_factor);
     }
 }
 

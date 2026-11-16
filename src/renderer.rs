@@ -597,15 +597,19 @@ impl InternalApp {
         self.player.update_input(&self.input);
 
         let physics_tick_delta = 1f32/60f32;
+        let mut interp = (self.ticker / physics_tick_delta).clamp(0f32, 1f32);
         if self.ticker > physics_tick_delta {
             self.ticker = 0f32;
+            interp = 0f32;
             self.physics_world.step();
             self.player.update_physics(&mut self.physics_world, physics_tick_delta);
         }
-        
+
+        self.player.update_frame(interp);
+
         self.ticker += delta;
         
-        self.camera.position = self.player.position + vek::Vec3::<f32>::new(0f32, 1.7, 0f32);
+        self.camera.position = self.player.interpolated_position + vek::Vec3::<f32>::new(0f32, 1.7, 0f32);
         self.camera.rotation = self.player.head_rotation_global;
         self.camera.update_camera(size.width / size.height);
 
