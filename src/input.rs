@@ -209,6 +209,20 @@ impl Input {
         B::get(button, self)
     }
 
+    pub fn create_axis<B: InputButtonId>(&self, positive: B, negative: B) -> f32 {
+        let n = B::get(negative, self).held();
+        let p = B::get(positive, self).held();
+        
+        if p {
+            1f32
+        } else if n {
+            -1f32
+        } else {
+            0f32
+        }
+    }
+
+
     /// Get the state of a unique axis or an axis mapping.
     pub fn get_axis<A: InputAxisId>(&self, axis: A) -> f32 {
         A::get(axis, self)
@@ -316,4 +330,7 @@ pub fn update(input: &mut Input) {
     if let Some(data) = input.axii.get_mut(&Axis::Mouse(MouseAxis::ScrollDelta)) {
         *data = 0f32;
     }
+
+    input.axii.insert(Axis::Mouse(MouseAxis::DeltaX), 0f32);
+    input.axii.insert(Axis::Mouse(MouseAxis::DeltaY), 0f32);
 }

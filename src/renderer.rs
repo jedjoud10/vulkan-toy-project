@@ -12,6 +12,7 @@ use rayon::iter::ParallelIterator;
 use smallvec::SmallVec;
 use crate::material::GpuMaterialInfo;
 use crate::model;
+use crate::movement::Camera;
 use crate::ray_tracing;
 use crate::scene;
 use crate::texture_3d;
@@ -20,7 +21,7 @@ use crate::debug_text;
 use crate::input::Button;
 use crate::input::Input;
 use crate::material::Material;
-use crate::movement::Movement;
+use crate::movement::Player;
 use crate::per_frame_data;
 use crate::physical_device::PhysicalDeviceAndScore;
 use crate::samplers;
@@ -187,7 +188,6 @@ pub struct InternalApp {
     pub window: Window,
     pub input: Input,    
     last_frame_cpu_cmd_record_duration: Duration,
-    movement: Movement,
     frame_count: u64,
     sun: vek::Vec3<f32>,
     args: crate::Args,
@@ -195,6 +195,9 @@ pub struct InternalApp {
 
     // physics
     physics_world: PhysicsWorld,
+    player: Player,
+    camera: Camera,
+    ticker: f32,
 }
 
 impl InternalApp {
@@ -448,9 +451,11 @@ impl InternalApp {
         /* Create the ground. */
         physics_world.insert_collider(ColliderBuilder::cuboid(100.0, 0.1, 100.0), None);
 
-        let movement = Movement::new(&mut physics_world);
+        let player = Player::new(&mut physics_world);
+        let camera = Camera::new();
 
         Self {
+            ticker: 0f32,
             tlas,
             counters_of_various_types,
 
@@ -465,7 +470,7 @@ impl InternalApp {
             frame_count: 0,
             click_type: 0,
             input: Default::default(),
-            movement,
+            player, camera,
             window,
             instance,
             entry,
@@ -589,13 +594,20 @@ impl InternalApp {
     pub unsafe fn pre_render(&mut self, delta: f32) -> ControlFlow<()> {
         let size = self.window.inner_size().cast::<f32>();
 
-        
-        self.physics_world.step();
-        
-        // self.movement.update(&self.input, delta);
-        self.movement.update_physics(&mut self.physics_world, &self.input, delta);
+        self.player.update_input(&self.input);
 
-        self.movement.update_camera(size.width / size.height);
+        let physics_tick_delta = 1f32/60f32;
+        if self.ticker > physics_tick_delta {
+            self.ticker = 0f32;
+            self.physics_world.step();
+            self.player.update_physics(&mut self.physics_world, physics_tick_delta);
+        }
+        
+        self.ticker += delta;
+        
+        self.camera.position = self.player.position + vek::Vec3::<f32>::new(0f32, 1.7, 0f32);
+        self.camera.rotation = self.player.head_rotation_global;
+        self.camera.update_camera(size.width / size.height);
 
         if self.input.get_button(KeyCode::F5).pressed() {
             if self.window.fullscreen().is_none() {
@@ -650,7 +662,7 @@ impl InternalApp {
             // log::debug!("{:?}", report);
         }
         if self.input.get_button(Button::Mouse(MouseButton::Middle)).held() {
-            self.sun = self.movement.forward();
+            self.sun = self.camera.forward();
         }
         if self.input.get_button(Button::Keyboard(KeyCode::KeyQ)).pressed() {
             return ControlFlow::Break(());
@@ -932,12 +944,12 @@ impl InternalApp {
 
         self.stats.add_to_debug_text(&mut self. debug_text);
 
-        dbgtext_writeln!(&mut self.debug_text, "pos: {:.2}", self.movement.position);
+        dbgtext_writeln!(&mut self.debug_text, "pos: {:.2}", self.camera.position);
         dbgtext_writeln!(&mut self.debug_text, "debug type: {}", self.debug_type);
         dbgtext_writeln!(&mut self.debug_text, "click type: {}", self.click_type);
         dbgtext_writeln!(&mut self.debug_text, "toggles bitmask: {:#032b}", self.toggles_bitmask);
         dbgtext_writeln!(&mut self.debug_text, "wireframe: {}", self.wireframe);
-        dbgtext_writeln!(&mut self.debug_text, "updating frustum: {}", self.movement.update_frustum);
+        dbgtext_writeln!(&mut self.debug_text, "updating frustum: {}", self.camera.update_frustum);
 
         let report = ctx.allocator.lock().unwrap().generate_report();
         let reserved_bytes = ByteSize::b(report.total_reserved_bytes).display().iec();
@@ -1044,17 +1056,17 @@ impl InternalApp {
         
 
         let uniform_per_frame_data = pipeline::PerFrameUniformData {
-            view_matrix: self.movement.view_matrix,
-            projection_matrix: self.movement.proj_matrix,
-            view_projection_matrix: self.movement.proj_matrix * self.movement.view_matrix,
-            inv_view_matrix: self.movement.view_matrix.inverted(),
-            inv_projection_matrix: self.movement.proj_matrix.inverted(),
+            view_matrix: self.camera.view_matrix,
+            projection_matrix: self.camera.proj_matrix,
+            view_projection_matrix: self.camera.proj_matrix * self.camera.view_matrix,
+            inv_view_matrix: self.camera.view_matrix.inverted(),
+            inv_projection_matrix: self.camera.proj_matrix.inverted(),
             screen_resolution: size_f32,
-            position: self.movement.position.with_w(0f32),
-            forward: self.movement.forward().with_w(0f32),
+            position: self.camera.position.with_w(0f32),
+            forward: self.camera.forward().with_w(0f32),
             
             sun: self.sun.normalized().with_w(0f32),
-            camera_frustum_planes: self.movement.camera_frustum_planes,
+            camera_frustum_planes: self.camera.camera_frustum_planes,
             debug_type: self.debug_type,
             time: elapsed,
             toggles_bitmask: self.toggles_bitmask,
@@ -1195,7 +1207,7 @@ impl InternalApp {
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
         
-        self.multiple_chunks.stuff(self.movement.position);
+        self.multiple_chunks.stuff(self.player.position);
         self.multiple_chunks.frame(&mut ctx, &mut self.physics_world, scratch_buffer, cmd, chunk_generation, &self.compute_pipelines);
 
         // self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, query_pool_statistics::ENTIRE_FRAME_QUERY_START);
