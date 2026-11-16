@@ -25,7 +25,9 @@ float fbm(float3 world) {
         world *= 2.5;
         amplitude *= 0.4;
 
-        float l = snoise(world) * amplitude;
+        float3 octave_offset = hash33(float3(i) * float3(12.345, 40.32, 50.543)) * 1000.0;
+
+        float l = snoise(world + octave_offset) * amplitude;
         // l = smoothstep(-1, 0, l) * amplitude;
 
         result += l;
@@ -53,16 +55,16 @@ void main(uint3 id: SV_DispatchThreadID, uniform PushConstants pc) {
     let chunk_position_and_size: float4 = pc.chunk_positions_and_sizes[chunk_index];
 
     float3 p = float3(local_id) * chunk_position_and_size.w + chunk_position_and_size.xyz;
-    p *= 0.05;
 
-    float d = fbm(p * 0.01 * float3(1,3,1));
-    d = smoothstep(-1, .3, d) * 10;
-    // d = min(d, snoise(p * 0.01 * float3(1,2,1)) * 50);
+    float3 warp_scale = float3(1, 3, 1) * 0.001;
+    float3 warp = float3(snoise(p * warp_scale), snoise(p * warp_scale + 43.23), snoise(p * warp_scale - 54.43435)) * 0.1;
 
-    d += p.y - 10;
+    float d = fbm(p * 0.0002 * float3(1,0,1) + warp);
+    d = smoothstep(-1, .8, d) * 200;
 
-    d += -cellular(p * 1.5).x * 0.1;
-    d += smoothstep(-0.1, 0.1, snoise(p * 1.5 * float3(1, 3, 1))) * 0.05;
+    d += p.y - 150;
+
+    // d += srdnoise(p.xz, 0).x * 1;
 
     // float d = snoise(p * 0.01 * float3(1,2,1) + 423.2342) * 10 + p.y;
     // d += snoise(p * 0.05 + snoise(p * 0.2) * 0.0) * 5;

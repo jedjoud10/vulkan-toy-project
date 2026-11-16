@@ -151,6 +151,13 @@ impl MultipleChunks {
     pub fn force_recompute(&mut self) {
         // FIXME: this is hideous lmfao
         self.octree.clear();
+
+        for (_, chunk) in self.chunks.drain() {
+            if let Some(c) = chunk {
+                let instance = self.persistent_renderer.remove_instance(c.key);
+                self.persistent_renderer.free_instance(instance);
+            }
+        }
     }
 
     pub fn stuff(&mut self, position: vek::Vec3<f32>) {

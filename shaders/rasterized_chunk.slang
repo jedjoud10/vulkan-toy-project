@@ -87,8 +87,12 @@ VertexOutput vert_main(uint index: SV_VertexID, uniform PushConstants pc) {
 float4 frag_main(VertexOutput in_vert, uniform PushConstants pc) : SV_Target {
     let uniforms = load_per_frame_uniforms();
 
-    if ((uniforms.toggles_bitmask & 8) == 8) {
+    if (is_bit_set(uniforms.toggles_bitmask, 1)) {
         return float4(hash31((float)in_vert.draw_index * 123.456), 1);
+    }
+
+    if (is_bit_set(uniforms.toggles_bitmask, 2)) {
+        return float4(saturate(in_vert.normal), 1);
     }
 
     /*
@@ -108,11 +112,10 @@ float4 frag_main(VertexOutput in_vert, uniform PushConstants pc) : SV_Target {
     // top layer
     let top_layer = BaseEmptyLayer();
     let with_sand = add_layer(top_layer, Material.load(6), 1.0);
-    let with_puddles = add_layer(with_sand, Material.load(3), smoothstep(0.0, 0.01, snoise(world * 0.01)));
 
     // combine bottom and top with normal
-    let combined = add_layer(with_rock, with_puddles, smoothstep(0.6, 0.96, normal.y));
-    Layer res = smush(combined, world*3, normal);
+    let combined = add_layer(with_rock, with_sand, smoothstep(0.9, 0.96, normal.y));
+    Layer res = smush(combined, world, normal);
     // construct PBR data
     PbrSurfaceData pbr_surface_data = PbrSurfaceData(world, res.diffuse, res.normal, AoRoughnessMetallic(res.arm));
     CameraData camera_data = CameraData(view);
