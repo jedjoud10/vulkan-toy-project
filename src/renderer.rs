@@ -43,6 +43,7 @@ use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::KeyCode;
 use winit::raw_window_handle::HasDisplayHandle;
 use winit::window::Window;
+use rapier3d::prelude::*;
 
 use crate::swapchain;
 use crate::pipeline;
@@ -191,6 +192,9 @@ pub struct InternalApp {
     sun: vek::Vec3<f32>,
     args: crate::Args,
     stats: QueryPoolStatistics,
+
+    // physics
+    physics_world: PhysicsWorld,
 }
 
 impl InternalApp {
@@ -437,9 +441,20 @@ impl InternalApp {
         let mut compute_pipelines: HashMap<&str, pipeline::GenericComputePipeline> = Default::default();
         recompiler.wait(&mut graphics_pipelines, &mut compute_pipelines);
 
+        // The world owns every structure needed by the simulation.
+        let mut physics_world = PhysicsWorld::new();
+        physics_world.gravity = Vector::new(0.0, -9.81, 0.0);
+
+        /* Create the ground. */
+        physics_world.insert_collider(ColliderBuilder::cuboid(100.0, 0.1, 100.0), None);
+
+        let movement = Movement::new(&mut physics_world);
+
         Self {
             tlas,
             counters_of_various_types,
+
+            physics_world,
 
             // scene,
 
@@ -450,7 +465,7 @@ impl InternalApp {
             frame_count: 0,
             click_type: 0,
             input: Default::default(),
-            movement: Movement::new(),
+            movement,
             window,
             instance,
             entry,
@@ -573,7 +588,15 @@ impl InternalApp {
 
     pub unsafe fn pre_render(&mut self, delta: f32) -> ControlFlow<()> {
         let size = self.window.inner_size().cast::<f32>();
-        self.movement.update(&self.input, size.width / size.height, delta);
+
+        
+        self.physics_world.step();
+        
+        // self.movement.update(&self.input, delta);
+        self.movement.update_physics(&mut self.physics_world, &self.input, delta);
+
+        self.movement.update_camera(size.width / size.height);
+
         if self.input.get_button(KeyCode::F5).pressed() {
             if self.window.fullscreen().is_none() {
                 self

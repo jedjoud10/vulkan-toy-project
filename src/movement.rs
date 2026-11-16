@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use vek::Clamp;
 use winit::keyboard::KeyCode;
+use rapier3d::prelude::*;
 
 const DEFAULT_STARTING_SNAPSHOT: Option<usize> = None;
 
@@ -36,11 +37,20 @@ pub struct Movement {
     fixed_mode_snapshot_index: Option<usize>,
     pub update_frustum: bool,
     snapshots: Vec<Snapshot>,
+
+    handle: RigidBodyHandle,
 }
 
 impl Movement {
-    pub fn new() -> Self {
+    pub fn new(physics_world: &mut rapier3d::prelude::PhysicsWorld) -> Self {
         let snapshots: Vec<Snapshot> = serde_json::from_str(include_str!("snapshots.json")).unwrap();
+
+        
+        /* Create the bouncing ball. */
+        let (ball_body_handle, _) = physics_world.insert(
+            RigidBodyBuilder::dynamic().translation(Vector::new(0.0, 10.0, 0.0)),
+            ColliderBuilder::ball(0.5).restitution(0.7),
+        );
 
         Self {
             fov: default_fov(),
@@ -49,10 +59,12 @@ impl Movement {
             fixed_mode_snapshot_index: DEFAULT_STARTING_SNAPSHOT,
             update_frustum: true,
             snapshots,
+            handle: ball_body_handle,
             ..Default::default()
         }
     }
-    pub fn update(&mut self, input: &Input, ratio: f32, delta: f32) {
+
+    pub fn update(&mut self, input: &Input, delta: f32) {
         self.local_velocity = vek::Vec2::<f32>::zero();
 
         let boosted = input.get_button(KeyCode::ShiftLeft).held();
@@ -157,11 +169,46 @@ impl Movement {
             self.rotation = self.snapshots[idx].rotation;
             self.fov = self.snapshots[idx].fov;
         }
-            
+    }
+
+    pub fn update_physics(&mut self, physics_world: &mut rapier3d::prelude::PhysicsWorld, input: &Input, delta: f32) {
+        self.local_velocity = vek::Vec2::<f32>::zero();
+
+        let boosted = input.get_button(KeyCode::ShiftLeft).held();
+
+        let speed = if boosted {
+            2f32.powf(self.boost)
+        } else {
+            1.0f32
+        };
+
+        if input.get_button(KeyCode::KeyW).held() {
+            self.local_velocity.y = 1f32;
+        } else if input.get_button(KeyCode::KeyS).held() {
+            self.local_velocity.y = -1f32;
+        }
+
+        if input.get_button(KeyCode::KeyA).held() {
+            self.local_velocity.x = 1f32;
+        } else if input.get_button(KeyCode::KeyD).held() {
+            self.local_velocity.x = -1f32;
+        }
+
+        let body = physics_world.bodies.get_mut(self.handle).unwrap();
         
+        body.reset_forces(true);
+        body.add_force(glam::vec3(self.local_velocity.x, 0f32, self.local_velocity.y), true);
+
+        let v1 = body.position().translation;
+        let v2 = vek::Vec3::<f32>::new(v1.x, v1.y, v1.z);
+
+        self.position = v2;
+    }
+
+    pub fn update_camera(&mut self, ratio: f32) {
         // recalculate projection matrices
         self.proj_matrix = vek::Mat4::<f32>::perspective_rh_no(horizontal_to_vertical(self.fov.clamp(0.0001f32, 180f32), ratio), ratio, 0.1f32, 10000.0f32);
-        self.view_matrix = vek::Mat4::look_at_rh(self.position, forward + self.position, up);
+        self.view_matrix = vek::Mat4::look_at_rh(self.position, self.forward() + self.position, self.up());
 
         // https://github.com/jedjoud10/cflake-engine/blob/3369199f0cfa8b220edc0363a76401b50c83fada/crates/math/src/bounds/frustum.rs#L47
         if self.update_frustum {
@@ -193,6 +240,10 @@ impl Movement {
     
     pub fn forward(&self) -> vek::Vec3<f32> {
         vek::Mat4::from(self.rotation).mul_direction(-vek::Vec3::unit_z())
+    }
+
+    pub fn up(&self) -> vek::Vec3<f32> {
+        vek::Mat4::from(self.rotation).mul_direction(vek::Vec3::unit_y())
     }
 }
 

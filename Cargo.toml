@@ -42,6 +42,7 @@ obvhs = "0.3.3"
 glam = "0.33.6"
 zip = "9.5.1"
 slotmap = "1.1.1"
+rapier3d = "0.36.1"
 
 [build-dependencies]
 shader-slang = { git = "https://github.com/FloatyMonkey/slang-rs.git" }
