@@ -139,7 +139,7 @@ fn create_skirt_sn_2d(data: &VertexSpawningData) -> Option<VertexToSpawn> {
         let d2 = densities[p2_offsetted_index];
 
         let n1 = normals_lookup[p1_offsetted_index];
-        let n2 = normals_lookup[p1_offsetted_index];        
+        let n2 = normals_lookup[p2_offsetted_index];        
         
         if (d1 < 0f32) ^ (d2 < 0f32) {
             let factor = utils::unlerp(0f32, d1, d2);

@@ -30,7 +30,7 @@ use crate::query_pool_statistics::QueryPoolStatistics;
 use crate::shader_compiler;
 use crate::utils::index_to_offset;
 use crate::utils::offset_to_index;
-use crate::voxel;
+use crate::terrain;
 use winit::event::MouseButton;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -167,7 +167,7 @@ pub struct InternalApp {
     tlas: ray_tracing::TopLevelAccelerationStructure,
 
     // scene: scene::Scene,
-    multiple_chunks: voxel::MultipleChunks,
+    terrain: terrain::Terrain,
     models: Vec<model::Model>,
 
     counters_of_various_types: buffer::Buffer,
@@ -379,7 +379,7 @@ impl InternalApp {
 
         let timestamp_period = physical_device_properties.properties.limits.timestamp_period;
 
-        let multiple_chunks = voxel::MultipleChunks::create(&mut ctx);
+        let terrain = terrain::Terrain::create(&mut ctx);
         
         let cmd = others::begin_recording(&mut ctx);
         let mut writer = buffer::begin_buffer_writer(&mut ctx);
@@ -514,7 +514,7 @@ impl InternalApp {
             uniform_buffer,
             acceleration_structure_device,
             host_image_copy_device,
-            multiple_chunks,
+            terrain,
             models,
             recompiler,
         }
@@ -661,7 +661,7 @@ impl InternalApp {
         }
 
         if self.input.get_button(Button::Keyboard(KeyCode::KeyK)).pressed() {
-            self.multiple_chunks.force_recompute(&mut self.physics_world);
+            self.terrain.force_recompute();
         }
 
 
@@ -911,7 +911,7 @@ impl InternalApp {
             */
         }
 
-        for chunk in self.multiple_chunks.chunks.values().filter_map(|x| x.as_ref()) {
+        // for chunk in self.multiple_chunks.chunks.values().filter_map(|x| x.as_ref()) {
             // dynamic_instances.push(chunk.instance);
             /*
             models_metadata_buffer_write.push(GpuModelMetadata {
@@ -919,7 +919,7 @@ impl InternalApp {
                 storage_buffers_base_index: 0,
             });
             */
-        }
+        // }
         // */
 
 
@@ -965,13 +965,15 @@ impl InternalApp {
         dbgtext_writeln!(&mut self.debug_text, "reserved bytes: {}", reserved_bytes);
         dbgtext_writeln!(&mut self.debug_text, "allocated bytes: {}", allocated_bytes);
 
-        dbgtext_writeln!(&mut self.debug_text, "chunks: {}", self.multiple_chunks.chunks.len());
-        dbgtext_writeln!(&mut self.debug_text, "nodes: {}", self.multiple_chunks.octree.nodes().len());
-        dbgtext_writeln!(&mut self.debug_text, "requested: {}", self.multiple_chunks.chunks_requested);
-        dbgtext_writeln!(&mut self.debug_text, "to remove: {}", self.multiple_chunks.chunks_to_remove.len());
+        let terrain_stats = self.terrain.stats();
 
-        dbgtext_writeln!(&mut self.debug_text, "vertex: {}", self.multiple_chunks.persistent_renderer.sub_buffer_vertices_allocator.stats());
-        dbgtext_writeln!(&mut self.debug_text, "index: {}", self.multiple_chunks.persistent_renderer.sub_buffer_indices_allocator.stats());
+        dbgtext_writeln!(&mut self.debug_text, "chunks: {}", terrain_stats.num_chunks);
+        dbgtext_writeln!(&mut self.debug_text, "nodes: {}", terrain_stats.num_nodes);
+        dbgtext_writeln!(&mut self.debug_text, "requested: {}", terrain_stats.num_chunks_requested);
+        dbgtext_writeln!(&mut self.debug_text, "to remove: {}", terrain_stats.num_chunks_to_remove);
+
+        dbgtext_writeln!(&mut self.debug_text, "vertex: {}", terrain_stats.persistent_renderer_stats.vertices_sub_buffer_allocator_stats);
+        dbgtext_writeln!(&mut self.debug_text, "index: {}", terrain_stats.persistent_renderer_stats.indices_sub_buffer_allocator_stats);
 
 
         /*
@@ -1215,8 +1217,8 @@ impl InternalApp {
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
         
-        self.multiple_chunks.stuff(self.player.interpolated_state.position);
-        self.multiple_chunks.frame(&mut ctx, &mut self.physics_world, scratch_buffer, cmd, chunk_generation, &self.compute_pipelines);
+        self.terrain.stuff(self.movement.position);
+        self.terrain.frame(&mut ctx, scratch_buffer, cmd, chunk_generation, &self.compute_pipelines);
 
         // self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, query_pool_statistics::ENTIRE_FRAME_QUERY_START);
         
@@ -1293,7 +1295,10 @@ impl InternalApp {
 
         self.device.cmd_dispatch(cmd, skybox::AMBIENT_SKYBOX_RESOLUTION.div_ceil(8), skybox::AMBIENT_SKYBOX_RESOLUTION.div_ceil(8), 6);
 
-        // let left = self.input.get_button(Button::Mouse(MouseButton::Left)).pressed();
+        let left = self.input.get_button(Button::Mouse(MouseButton::Left)).pressed();
+        if left {
+            self.terrain.edit(self.movement.position + self.movement.forward());
+        }
         // let right = self.input.get_button(Button::Mouse(MouseButton::Right)).pressed();
         
         /*
@@ -1724,8 +1729,8 @@ impl InternalApp {
         // self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_CHUNKS]);
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_CHUNKS]);
         // self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, polygon_mode);
-        self.multiple_chunks.render_all_chunks(&mut ctx, cmd, scratch_buffer, &self.materials);
-
+        self.terrain.render_all_chunks(&mut ctx, cmd, scratch_buffer, &self.materials);
+    
         self.device.cmd_end_rendering(cmd);
         // self.device.cmd_end_query(cmd, pipeline_statistics_query_pool, 0);
 
@@ -2003,7 +2008,7 @@ impl InternalApp {
         let mut allocator = self.allocator.lock().unwrap();
 
         // self.scene.destroy(&self.device, &self.acceleration_structure_device, &mut self.allocator);
-        self.multiple_chunks.destroy(&self.acceleration_structure_device, &self.device, &mut allocator);
+        self.terrain.destroy(&self.acceleration_structure_device, &self.device, &mut allocator);
         log::info!("destroyed scene");
 
         self.materials_buffer.destroy(&self.device, &mut allocator);

@@ -11,7 +11,7 @@ pub struct PerFrameData {
     pub pipeline_statistics_query_pool: vk::QueryPool,
     pub scratch_buffer: buffer::ScratchBuffer,
     pub readback_buffer: buffer::Buffer,
-    pub chunk_generation: crate::voxel::PerFrameChunkGenerationData,
+    pub chunk_generation: crate::terrain::PerFrameChunkGenerationData,
 }
 
 impl PerFrameData {
@@ -48,7 +48,7 @@ impl PerFrameData {
         let readback_buffer = buffer::create_buffer_with_location(ctx, size_of::<u32>() * 10, "debug readback buffer", vk::BufferUsageFlags::STORAGE_BUFFER, gpu_allocator::MemoryLocation::GpuToCpu);
 
         Self {
-            chunk_generation: crate::voxel::PerFrameChunkGenerationData::create(ctx),
+            chunk_generation: crate::terrain::PerFrameChunkGenerationData::create(ctx),
             present_complete_semaphore,
             end_fence,
             cmd,

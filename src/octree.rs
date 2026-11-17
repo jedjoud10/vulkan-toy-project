@@ -129,10 +129,8 @@ impl Octree {
         OctreeDelta { added, removed }
     }
 
-    // Iterate over the octree recursively using a "check" function
-    // The "check" function will be executed for PARENT nodes (so leaf nodes will not call it back)
     pub fn recurse(&self, mut callback: impl FnMut(&Node) -> bool) {
-        if !self.nodes.is_empty() {
+        if self.nodes.is_empty() {
             return;
         }
 
@@ -141,10 +139,9 @@ impl Octree {
         while let Some(i) = checking.pop() {
             let node = &self.nodes[i];
 
-            if let Some(base) = node.children() {
-                let recurse = callback(node);
-
-                if recurse {
+            let recurse = callback(node);
+            if recurse {
+                if let Some(base) = node.children() {
                     let base = base.get();
                     for x in 0..8 {
                         checking.push(x + base);

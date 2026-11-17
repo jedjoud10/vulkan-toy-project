@@ -27,9 +27,8 @@ mod ray_tracing;
 mod texture_3d;
 mod shader_compiler;
 mod scene;
-mod voxel;
+mod terrain;
 mod model;
-mod mesher;
 mod camera;
 mod vehicle;
 
