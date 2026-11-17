@@ -13,6 +13,7 @@ use smallvec::SmallVec;
 use crate::material::GpuMaterialInfo;
 use crate::model;
 use crate::movement::Camera;
+use crate::movement::Vehicle;
 use crate::ray_tracing;
 use crate::scene;
 use crate::texture_3d;
@@ -195,7 +196,7 @@ pub struct InternalApp {
 
     // physics
     physics_world: PhysicsWorld,
-    player: Player,
+    player: Vehicle,
     camera: Camera,
     ticker: f32,
 }
@@ -449,9 +450,9 @@ impl InternalApp {
         physics_world.gravity = Vector::new(0.0, -9.81, 0.0);
 
         /* Create the ground. */
-        physics_world.insert_collider(ColliderBuilder::cuboid(100.0, 0.1, 100.0), None);
+        physics_world.insert_collider(ColliderBuilder::cuboid(100.0, 5.0, 100.0), None);
 
-        let player = Player::new(&mut physics_world);
+        let player = Vehicle::new(&mut physics_world);
         let camera = Camera::new();
 
         Self {
@@ -605,11 +606,14 @@ impl InternalApp {
             self.player.update_physics(&mut self.physics_world, physics_tick_delta);
         }
 
-        self.player.update_frame(interp);
+        self.player.update_frame(interp, delta);
 
         self.ticker += delta;
         
+        self.camera.position = self.player.camera_position;
+        /*
         self.camera.position = self.player.interpolated_position + vek::Vec3::<f32>::new(0f32, 1.7, 0f32);
+        */
         self.camera.rotation = self.player.head_rotation_global;
         self.camera.update_camera(size.width / size.height);
 
@@ -1690,6 +1694,8 @@ impl InternalApp {
         for (_, model) in self.models.iter().enumerate() {
             model.render(cmd, &self.device, self.main_pipeline_layout, &self.materials);
         }
+        let model = self.models.last().unwrap();
+        model.render_at(cmd, &self.device, self.main_pipeline_layout, &self.materials, (self.player.interpolated_position, self.player.interpolated_rotation));
         
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_INSTANCED]);
         let model = self.models.last().unwrap();
@@ -1703,13 +1709,14 @@ impl InternalApp {
         } 
         model.render_instanced(cmd, &self.device, self.main_pipeline_layout, &self.materials, &instances, scratch_buffer);
         
-
+        
+    
         // render chunks
         // self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_MS_CHUNKS]);
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_CHUNKS]);
         // self.extended_dynamic_state3_device.cmd_set_polygon_mode(cmd, polygon_mode);
         self.multiple_chunks.render_all_chunks(&mut ctx, cmd, scratch_buffer, &self.materials);
-    
+
         self.device.cmd_end_rendering(cmd);
         // self.device.cmd_end_query(cmd, pipeline_statistics_query_pool, 0);
 
