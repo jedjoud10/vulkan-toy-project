@@ -198,8 +198,7 @@ impl Model {
     }
 
     
-    pub unsafe fn render_at(&self, cmd: vk::CommandBuffer, device: &ash::Device, pipeline_layout: vk::PipelineLayout, materials: &[Material], transform: (vek::Vec3<f32>, vek::Quaternion<f32>)) {
-        let scale = 3f32;
+    pub unsafe fn render_at(&self, cmd: vk::CommandBuffer, device: &ash::Device, pipeline_layout: vk::PipelineLayout, materials: &[Material], transform: (vek::Vec3<f32>, vek::Quaternion<f32>), scale: f32) {
         let matrix = vek::Mat4::from(transform.1).scaled_3d(scale).translated_3d(transform.0);
         let object_to_world = matrix;
 

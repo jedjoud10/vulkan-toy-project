@@ -5,7 +5,7 @@ mod debug;
 mod device;
 mod input;
 mod instance;
-mod movement;
+mod player;
 mod physical_device;
 mod pipeline;
 mod swapchain;
@@ -30,6 +30,8 @@ mod scene;
 mod voxel;
 mod model;
 mod mesher;
+mod camera;
+mod vehicle;
 
 use clap::Parser;
 use std::ops::ControlFlow;

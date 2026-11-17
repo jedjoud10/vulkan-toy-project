@@ -12,8 +12,9 @@ use rayon::iter::ParallelIterator;
 use smallvec::SmallVec;
 use crate::material::GpuMaterialInfo;
 use crate::model;
-use crate::movement::Camera;
-use crate::movement::Vehicle;
+use crate::camera::Camera;
+use crate::vehicle::Vehicle;
+use crate::player::Player;
 use crate::ray_tracing;
 use crate::scene;
 use crate::texture_3d;
@@ -22,7 +23,6 @@ use crate::debug_text;
 use crate::input::Button;
 use crate::input::Input;
 use crate::material::Material;
-use crate::movement::Player;
 use crate::per_frame_data;
 use crate::physical_device::PhysicalDeviceAndScore;
 use crate::samplers;
@@ -598,14 +598,14 @@ impl InternalApp {
         self.player.update_input(&self.input);
 
         let physics_tick_delta = 1f32/60f32;
-        let mut interp = (self.ticker / physics_tick_delta).clamp(0f32, 1f32);
-        if self.ticker > physics_tick_delta {
-            self.ticker = 0f32;
-            interp = 0f32;
+        while self.ticker > physics_tick_delta {
+            self.ticker -= physics_tick_delta;
+            self.player.last_state = self.player.current_state.clone();
             self.physics_world.step();
             self.player.update_physics(&mut self.physics_world, physics_tick_delta);
         }
-
+        
+        let interp = (self.ticker / physics_tick_delta).clamp(0f32, 1f32);
         self.player.update_frame(interp, delta);
 
         self.ticker += delta;
@@ -661,7 +661,7 @@ impl InternalApp {
         }
 
         if self.input.get_button(Button::Keyboard(KeyCode::KeyK)).pressed() {
-            self.multiple_chunks.force_recompute();
+            self.multiple_chunks.force_recompute(&mut self.physics_world);
         }
 
 
@@ -1215,7 +1215,7 @@ impl InternalApp {
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
         
-        self.multiple_chunks.stuff(self.player.position);
+        self.multiple_chunks.stuff(self.player.interpolated_state.position);
         self.multiple_chunks.frame(&mut ctx, &mut self.physics_world, scratch_buffer, cmd, chunk_generation, &self.compute_pipelines);
 
         // self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, query_pool_statistics::ENTIRE_FRAME_QUERY_START);
@@ -1695,8 +1695,17 @@ impl InternalApp {
             model.render(cmd, &self.device, self.main_pipeline_layout, &self.materials);
         }
         let model = self.models.last().unwrap();
-        model.render_at(cmd, &self.device, self.main_pipeline_layout, &self.materials, (self.player.interpolated_position, self.player.interpolated_rotation));
+
+        // render car
+        model.render_at(cmd, &self.device, self.main_pipeline_layout, &self.materials, (self.player.interpolated_state.position, self.player.interpolated_state.rotation), 1.0);
         
+        // render car wheels
+        for crate::vehicle::WheelState { position, rotation } in &self.player.interpolated_state.wheels {
+            let base = self.player.interpolated_state.rotation;
+            let local = vek::Quaternion::<f32>::rotation_z(-rotation);
+            model.render_at(cmd, &self.device, self.main_pipeline_layout, &self.materials, (*position, base * local), 0.45);
+        }
+
         self.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, *self.graphics_pipelines[RASTERIZED_INSTANCED]);
         let model = self.models.last().unwrap();
         

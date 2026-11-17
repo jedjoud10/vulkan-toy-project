@@ -149,7 +149,7 @@ impl MultipleChunks {
         }
     }
 
-    pub fn force_recompute(&mut self) {
+    pub fn force_recompute(&mut self, physics_world: &mut rapier3d::prelude::PhysicsWorld) {
         // FIXME: this is hideous lmfao
         self.octree.clear();
 
@@ -157,6 +157,10 @@ impl MultipleChunks {
             if let Some(c) = chunk {
                 let instance = self.persistent_renderer.remove_instance(c.key);
                 self.persistent_renderer.free_instance(instance);
+
+                if let Some(handle) = c.collider_handle {
+                    physics_world.remove_collider(handle);
+                }
             }
         }
     }
