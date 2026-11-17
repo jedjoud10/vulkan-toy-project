@@ -66,13 +66,41 @@ struct MeshingRequest {
 
 struct GeneratedChunk {
     node: Node,
+    data: Vec<f32>,
     mesh: Option<crate::mesher::MeshedChunk>
+}
+
+
+pub struct Chunk {    
+    pub persistent_mesh_instance_key: Option<slotmap::DefaultKey>,
+    pub pending_destruction: Option<TmpInstance>,
+    /*
+    pub vertex_buffer: buffer::Buffer,
+    pub normals_buffer: buffer::Buffer,
+    pub index_buffer: buffer::Buffer,
+
+    pub blas: ray_tracing::AccelerationStructureData,
+    pub instance: vk::AccelerationStructureInstanceKHR,
+    pub index_count: u32,
+    */
+    pub data: Option<Vec<f32>>,
+}
+
+impl Chunk {
+    /*
+    pub unsafe fn destroy(self, acceleration_structure_device: &ash::khr::acceleration_structure::Device, device: &ash::Device, allocator: &mut Allocator) {
+        self.index_buffer.destroy(device, allocator);
+        self.normals_buffer.destroy(device, allocator);
+        self.vertex_buffer.destroy(device, allocator);
+        self.blas.destroy(acceleration_structure_device, device, allocator);
+    } 
+    */
 }
 
 pub struct MultipleChunks {
     pub octree: Octree,
     pub destruction: Vec<Chunk>,
-    pub chunks: HashMap<Node, Option<Chunk>>,
+    pub chunks: HashMap<Node, Chunk>,
     meshing_request_tx: crossbeam::channel::Sender<MeshingRequest>,
     meshing_result_rx: Receiver<GeneratedChunk>,
     generate_data_chunks_queue: VecDeque<Node>,
@@ -104,6 +132,7 @@ impl MultipleChunks {
                         }
 
                         let mut chunk = GeneratedChunk {
+                            data,
                             mesh: None,
                             node,
                         };
@@ -116,7 +145,7 @@ impl MultipleChunks {
                             let chunk_size = node.size();
                             let chunk_scale = (chunk_size as f32 / CHUNK_SIZE as f32);
                     
-                            let mesh = crate::mesher::mesh_chunk(&data, chunk_position, chunk_scale);
+                            let mesh = crate::mesher::mesh_chunk(&chunk.data, chunk_position, chunk_scale);
                             log::trace!("TID: {thread_id}. vert count: {}. index count: {}", mesh.vertices.len(), mesh.indices.len());
 
                             if !mesh.vertices.is_empty() && !mesh.indices.is_empty() {
@@ -153,8 +182,8 @@ impl MultipleChunks {
         self.octree.clear();
 
         for (_, chunk) in self.chunks.drain() {
-            if let Some(c) = chunk {
-                let instance = self.persistent_renderer.remove_instance(c.key);
+            if let Some(key) = chunk.persistent_mesh_instance_key {
+                let instance = self.persistent_renderer.remove_instance(key);
                 self.persistent_renderer.free_instance(instance);
             }
         }
@@ -172,10 +201,9 @@ impl MultipleChunks {
 
         // when we generated all chunks and they are all visible, remove older ones that were pending for deletion
         for x in self.chunks_to_remove.drain(..) {
-            if let Some(mut chunk) = self.chunks.remove(&x).flatten() {
+            if let Some(mut chunk) = self.chunks.remove(&x) {
                 // chunk has been removed, put it pending for destruction (where we destroy its GPU data)
-                let instance = self.persistent_renderer.remove_instance(chunk.key);
-                chunk.pending_destruction = Some(instance);
+                chunk.pending_destruction = chunk.persistent_mesh_instance_key.take().map(|key| self.persistent_renderer.remove_instance(key));
                 self.destruction.push(chunk)
             }
         }
@@ -189,7 +217,11 @@ impl MultipleChunks {
         for added in added {
             if added.leaf() {
                 self.generate_data_chunks_queue.push_back(added);
-                self.chunks.insert(added, None);
+                self.chunks.insert(added, Chunk {
+                    persistent_mesh_instance_key: None,
+                    pending_destruction: None,
+                    data: None,
+                });
                 self.chunks_requested += 1;
             }
         }
@@ -242,8 +274,9 @@ impl MultipleChunks {
 
         let mut allocator = ctx.allocator.lock().unwrap();
         for chunk in self.destruction.drain(..) {
-            let instance = chunk.pending_destruction.unwrap();
-            self.persistent_renderer.free_instance(instance);
+            if let Some(instance) = chunk.pending_destruction {
+                self.persistent_renderer.free_instance(instance);
+            }
         }
         drop(allocator);
 
@@ -259,17 +292,29 @@ impl MultipleChunks {
             dispatch_multi_chunk_compute(ctx, scratchy, cmd, data, compute_pipelines, popped);
         }
 
-        for GeneratedChunk { node, mesh } in self.meshing_result_rx.try_iter() {
-            self.chunks_requested -= 1;
+        for GeneratedChunk { node, mesh, data } in self.meshing_result_rx.try_iter() {
+            log::debug!("fetch meshing result on main thread");
+            self.chunks_requested = self.chunks_requested.checked_sub(1).expect("chunks requested zero. implies that it was not incremented when creating meshing request");
             
             if !self.chunks.contains_key(&node) {
                 continue;
             }
 
+            // must exist in the scene, it might just have no mesh
+            let chunk = self.chunks.get_mut(&node).unwrap();
+            
+            // we temporarily "took" away the owned ref to chunk data. give it back to the chunk
+            chunk.data = Some(data);
+
+            // possible that the chunk was already generated and this is a re-mesh
+            // remove old chunk mesh and free it
+            // TODO: add a removal queue just for instance keys
+            chunk.persistent_mesh_instance_key.take().map(|key| self.persistent_renderer.remove_instance(key)).map(|instance| self.persistent_renderer.free_instance(instance));
+            
             if let Some(mesh) = mesh {
-                let instance = self.persistent_renderer.add_instance(ctx, cmd, scratchy, mesh);
-                let chunk = Chunk { key: instance, pending_destruction: None };
-                self.chunks.insert(node, Some(chunk));
+                let instance_key = self.persistent_renderer.add_instance(ctx, cmd, scratchy, mesh);
+                chunk.persistent_mesh_instance_key = Some(instance_key);    
+
                 /*
                 let vertex_buffer = buffer::create_buffer_write_with_scratch_buffer(ctx, cmd, scratchy, cast_slice(vertices.as_slice()), "vertex buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
                 let normals_buffer = buffer::create_buffer_write_with_scratch_buffer(ctx, cmd, scratchy, cast_slice(normals.as_slice()), "normals buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
@@ -418,6 +463,58 @@ impl MultipleChunks {
     }
 }
 
+impl MultipleChunks {
+    pub fn edit(&mut self, position: vek::Vec3<f32>) {
+        let mut leafs = Vec::<Node>::new();
+        let editing_aabb = vek::Aabb {
+            min: position - 3.0f32,
+            max: position + 3.0f32,
+        };
+
+        self.octree.recurse(|node| {
+            let aabb = vek::Aabb {
+                min: node.position().as_::<f32>(),
+                max: node.position().as_::<f32>() + node.size() as f32
+            };
+
+            if node.leaf() {
+                leafs.push(node.clone());
+            }
+
+            aabb.collides_with_aabb(editing_aabb) || aabb.contains_aabb(editing_aabb)
+        });
+
+        log::debug!("{}", leafs.len());
+
+        for leaf in leafs {
+            if let Some(chunk) = self.chunks.get_mut(&leaf) {
+                if let Some(mut data) = chunk.data.take() {
+                    let chunk_position_scale = get_chunk_world_position_and_scale(&leaf);
+
+                    for x in 0..CHUNK_SIZE_WITH_PADDING {
+                        for y in 0..CHUNK_SIZE_WITH_PADDING {
+                            for z in 0..CHUNK_SIZE_WITH_PADDING {
+                                let local = vek::Vec3::new(x,y,z);
+                                let i = crate::utils::offset_to_index(local, CHUNK_SIZE_WITH_PADDING);
+                                let world = local.as_::<f32>() * chunk_position_scale.w + chunk_position_scale.xyz();
+                                let sphere = world.distance(position) - 3f32;
+
+                                if sphere < 0f32 {
+                                    data[i] = -sphere;
+                                }
+                            }
+                        }   
+                    }
+                    
+                    self.chunks_requested += 1;
+                    if let Err(err) = self.meshing_request_tx.send(MeshingRequest { node: leaf, data: data }) {
+                        log::error!("send error: {err}");
+                    }
+                }
+            }
+        }
+    }
+}
 
 unsafe fn try_readback_gpu_voxels(ctx: &GraphicsContext<'_>, cmd: vk::CommandBuffer, data: &mut PerFrameChunkGenerationData, meshing_request_tx: &crossbeam::channel::Sender<MeshingRequest>) {
     if let Some(nodes) = data.pending_chunk_node_requests.take() {
@@ -504,10 +601,7 @@ unsafe fn dispatch_multi_chunk_compute(ctx: &GraphicsContext<'_>, scratchy: &mut
     ctx.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, compute_pipelines[crate::renderer::COMPUTE_VOXELS].entry_points["main"].pipeline);
         
     let chunk_positions_and_scales = popped.iter().map(|node| {
-        let chunk_position = node.position().as_::<f32>();
-        let chunk_size = node.size();
-        let chunk_scale = (chunk_size as f32 / CHUNK_SIZE as f32);
-        let chunk_position_and_scale = chunk_position.with_w(chunk_scale);
+        let chunk_position_and_scale = get_chunk_world_position_and_scale(node);
         chunk_position_and_scale 
     }).collect::<Vec<_>>();
 
@@ -608,29 +702,14 @@ unsafe fn dispatch_multi_chunk_compute(ctx: &GraphicsContext<'_>, scratchy: &mut
     data.pending_chunk_node_requests = Some(popped);
 }
 
-pub struct Chunk {    
-    pub key: slotmap::DefaultKey,
-    pub pending_destruction: Option<TmpInstance>,
-    /*
-    pub vertex_buffer: buffer::Buffer,
-    pub normals_buffer: buffer::Buffer,
-    pub index_buffer: buffer::Buffer,
-
-    pub blas: ray_tracing::AccelerationStructureData,
-    pub instance: vk::AccelerationStructureInstanceKHR,
-    pub index_count: u32,
-    */
-}
-
-impl Chunk {
-    /*
-    pub unsafe fn destroy(self, acceleration_structure_device: &ash::khr::acceleration_structure::Device, device: &ash::Device, allocator: &mut Allocator) {
-        self.index_buffer.destroy(device, allocator);
-        self.normals_buffer.destroy(device, allocator);
-        self.vertex_buffer.destroy(device, allocator);
-        self.blas.destroy(acceleration_structure_device, device, allocator);
-    } 
-    */
+// xyz is position, w is scale
+// local to world: `p*r.w + r.xyz` where `r` is the result and `p` is the local voxel
+fn get_chunk_world_position_and_scale(node: &Node) -> vek::Vec4<f32> {
+    let chunk_position = node.position().as_::<f32>();
+    let chunk_size = node.size();
+    let chunk_scale = chunk_size as f32 / CHUNK_SIZE as f32;
+    let chunk_position_and_scale = chunk_position.with_w(chunk_scale);
+    chunk_position_and_scale
 }
 
 pub struct TmpInstance {

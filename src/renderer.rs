@@ -868,7 +868,7 @@ impl InternalApp {
             */
         }
 
-        for chunk in self.multiple_chunks.chunks.values().filter_map(|x| x.as_ref()) {
+        // for chunk in self.multiple_chunks.chunks.values().filter_map(|x| x.as_ref()) {
             // dynamic_instances.push(chunk.instance);
             /*
             models_metadata_buffer_write.push(GpuModelMetadata {
@@ -876,7 +876,7 @@ impl InternalApp {
                 storage_buffers_base_index: 0,
             });
             */
-        }
+        // }
         // */
 
 
@@ -1250,7 +1250,10 @@ impl InternalApp {
 
         self.device.cmd_dispatch(cmd, skybox::AMBIENT_SKYBOX_RESOLUTION.div_ceil(8), skybox::AMBIENT_SKYBOX_RESOLUTION.div_ceil(8), 6);
 
-        // let left = self.input.get_button(Button::Mouse(MouseButton::Left)).pressed();
+        let left = self.input.get_button(Button::Mouse(MouseButton::Left)).pressed();
+        if left {
+            self.multiple_chunks.edit(self.movement.position + self.movement.forward());
+        }
         // let right = self.input.get_button(Button::Mouse(MouseButton::Right)).pressed();
         
         /*
