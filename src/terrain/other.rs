@@ -12,6 +12,7 @@ pub struct Chunk {
     pub persistent_mesh_instance_key: Option<slotmap::DefaultKey>,
     pub pending_destruction: Option<super::PersistentChunkRendererInstance>,
     pub data: Option<Vec<f32>>,
+    pub collider_handle: Option<rapier3d::prelude::ColliderHandle>,
 }
 
 // xyz is position, w is scale

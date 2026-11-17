@@ -41,12 +41,12 @@ impl Terrain {
             chunks: Default::default(),
             destruction: Default::default(),
             chunks_to_remove: Vec::new(),
-            octree: Octree::new(8, super::CHUNK_SIZE as u32),
+            octree: Octree::new(super::MAX_DEPTH, super::CHUNK_SIZE as u32),
             persistent_renderer: PersistentChunkRenderer::new(ctx),
         }
     }
 
-    pub fn force_recompute(&mut self) {
+    pub fn force_recompute(&mut self, physics_world: &mut rapier3d::prelude::PhysicsWorld) {
         // FIXME: this is hideous lmfao
         self.octree.clear();
 
@@ -54,6 +54,10 @@ impl Terrain {
             if let Some(key) = chunk.persistent_mesh_instance_key {
                 let instance = self.persistent_renderer.remove_instance(key);
                 self.persistent_renderer.free_instance(instance);
+
+                if let Some(handle) = chunk.collider_handle {
+                    physics_world.remove_collider(handle);
+                }
             }
         }
     }
@@ -90,19 +94,19 @@ impl Terrain {
                     persistent_mesh_instance_key: None,
                     pending_destruction: None,
                     data: None,
+                    collider_handle: None,
                 });
                 self.chunks_requested += 1;
             }
         }
     }
 
-    pub unsafe fn frame(&mut self, ctx: &GraphicsContext, scratchy: &mut buffer::ScratchBuffer, cmd: vk::CommandBuffer, data: &mut PerFrameChunkGenerationData, compute_pipelines: &crate::renderer::ComputePipelines) {
+    pub unsafe fn frame(&mut self, ctx: &GraphicsContext, physics_world: &mut rapier3d::prelude::PhysicsWorld, scratchy: &mut buffer::ScratchBuffer, cmd: vk::CommandBuffer, data: &mut PerFrameChunkGenerationData, compute_pipelines: &crate::renderer::ComputePipelines) {
         self.persistent_renderer.pre_instance_creation_barriers(ctx, cmd);
 
         for chunk in self.destruction.drain(..) {
-            if let Some(instance) = chunk.pending_destruction {
-                self.persistent_renderer.free_instance(instance);
-            }
+            chunk.pending_destruction.map(|instance| self.persistent_renderer.free_instance(instance));
+            chunk.collider_handle.map(|handle| physics_world.remove_collider(handle));
         }
 
         try_readback_gpu_voxels(data, &mut self.async_mesher);
@@ -119,7 +123,6 @@ impl Terrain {
 
 
         for GeneratedChunk { node, mesh, data } in self.async_mesher.meshing_result_rx.try_iter() {
-            log::debug!("fetch meshing result on main thread");
             self.chunks_requested = self.chunks_requested.checked_sub(1).expect("chunks requested zero. implies that it was not incremented when creating meshing request");
             
             if !self.chunks.contains_key(&node) {
@@ -136,8 +139,18 @@ impl Terrain {
             // remove old chunk mesh and free it
             // TODO: add a removal queue just for instance keys
             chunk.persistent_mesh_instance_key.take().map(|key| self.persistent_renderer.remove_instance(key)).map(|instance| self.persistent_renderer.free_instance(instance));
-            
+            chunk.collider_handle.take().map(|handle| physics_world.remove_collider(handle));
+
             if let Some(mesh) = mesh {
+                // recreate mesh chunk collider if this chunk is at max depth (implying closest to player)
+                chunk.collider_handle = (node.depth() == MAX_DEPTH).then(|| {
+                    let vertices: Vec::<glam::Vec3> = mesh.vertices.iter().map(|v| glam::vec3(v.x,v.y,v.z)).collect();
+                    let indices: Vec::<[u32; 3]> = mesh.indices.as_chunks::<3>().0.to_vec();
+                    let builder = rapier3d::prelude::ColliderBuilder::trimesh(vertices, indices).unwrap();
+                    let collider_handle = physics_world.insert_collider(builder, None);
+                    collider_handle
+                });
+
                 let instance_key = self.persistent_renderer.add_instance(ctx, cmd, scratchy, mesh);
                 chunk.persistent_mesh_instance_key = Some(instance_key);   
             }

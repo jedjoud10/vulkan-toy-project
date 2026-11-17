@@ -661,7 +661,7 @@ impl InternalApp {
         }
 
         if self.input.get_button(Button::Keyboard(KeyCode::KeyK)).pressed() {
-            self.terrain.force_recompute();
+            self.terrain.force_recompute(&mut self.physics_world);
         }
 
 
@@ -1217,8 +1217,8 @@ impl InternalApp {
         self.device.cmd_pipeline_barrier2(cmd, &dep);
 
         
-        self.terrain.stuff(self.movement.position);
-        self.terrain.frame(&mut ctx, scratch_buffer, cmd, chunk_generation, &self.compute_pipelines);
+        self.terrain.stuff(self.player.current_state.position);
+        self.terrain.frame(&mut ctx, &mut self.physics_world, scratch_buffer, cmd, chunk_generation, &self.compute_pipelines);
 
         // self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, query_pool, query_pool_statistics::ENTIRE_FRAME_QUERY_START);
         
@@ -1297,7 +1297,7 @@ impl InternalApp {
 
         let left = self.input.get_button(Button::Mouse(MouseButton::Left)).pressed();
         if left {
-            self.terrain.edit(self.movement.position + self.movement.forward());
+            self.terrain.edit(self.player.current_state.position);
         }
         // let right = self.input.get_button(Button::Mouse(MouseButton::Right)).pressed();
         

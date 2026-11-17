@@ -13,6 +13,8 @@ pub const NUM_MULTI_CHUNKS: usize = 64;
 pub const ENABLED: bool = true;
 pub const FORCE_ONE_CHUNK_PER_MULTI_CHUNK: bool = false;
 
+pub const MAX_DEPTH: u32 = 8;
+
 mod mesher;
 mod other;
 mod per_frame_data;
