@@ -92,7 +92,7 @@ float4 frag_main(VertexOutput in_vert, uniform PushConstants pc) : SV_Target {
     }
 
     if (is_bit_set(uniforms.toggles_bitmask, 2)) {
-        return float4(saturate(in_vert.normal), 1);
+        return float4(sin(normalize(in_vert.normal)*100), 1);
     }
 
     /*
