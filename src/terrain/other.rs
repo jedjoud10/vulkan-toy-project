@@ -10,7 +10,7 @@ use crate::{buffer, octree::{Node, Octree, OctreeDelta}, others, ray_tracing, re
 
 pub struct Chunk {    
     pub persistent_mesh_instance_key: Option<slotmap::DefaultKey>,
-    pub pending_destruction: Option<super::TmpInstance>,
+    pub pending_destruction: Option<super::PersistentChunkRendererInstance>,
     pub data: Option<Vec<f32>>,
 }
 

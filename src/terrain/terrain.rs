@@ -15,8 +15,7 @@ pub struct TerrainStats {
     pub num_nodes: usize,
     pub num_chunks_requested: usize,
     pub num_chunks_to_remove: usize,
-    pub vertices_sub_buffer_allocator_stats: SubBufferAllocatorStats,
-    pub indices_sub_buffer_allocator_stats: SubBufferAllocatorStats,
+    pub persistent_renderer_stats: PersistentChunkRendererStats,
 }
 
 pub struct Terrain {
@@ -98,48 +97,7 @@ impl Terrain {
     }
 
     pub unsafe fn frame(&mut self, ctx: &GraphicsContext, scratchy: &mut buffer::ScratchBuffer, cmd: vk::CommandBuffer, data: &mut PerFrameChunkGenerationData, compute_pipelines: &crate::renderer::ComputePipelines) {
-        let vertex_buffer_barrier = vk::BufferMemoryBarrier2::default()
-            .buffer(self.persistent_renderer.vertex_buffer.buffer)
-            .size(vk::WHOLE_SIZE)
-            .src_stage_mask(vk::PipelineStageFlags2::NONE)
-            .src_access_mask(vk::AccessFlags2::NONE)
-            .dst_stage_mask(vk::PipelineStageFlags2::COPY)
-            .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-            .src_queue_family_index(ctx.queue_family_index)
-            .dst_queue_family_index(ctx.queue_family_index);
-        
-        let normal_buffer_barrier = vk::BufferMemoryBarrier2::default()
-            .buffer(self.persistent_renderer.normals_buffer.buffer)
-            .size(vk::WHOLE_SIZE)
-            .src_stage_mask(vk::PipelineStageFlags2::NONE)
-            .src_access_mask(vk::AccessFlags2::NONE)
-            .dst_stage_mask(vk::PipelineStageFlags2::COPY)
-            .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-            .src_queue_family_index(ctx.queue_family_index)
-            .dst_queue_family_index(ctx.queue_family_index);
-
-        let index_buffer_barrier = vk::BufferMemoryBarrier2::default()
-            .buffer(self.persistent_renderer.index_buffer.buffer)
-            .size(vk::WHOLE_SIZE)
-            .src_stage_mask(vk::PipelineStageFlags2::NONE)
-            .src_access_mask(vk::AccessFlags2::NONE)
-            .dst_stage_mask(vk::PipelineStageFlags2::COPY)
-            .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-            .src_queue_family_index(ctx.queue_family_index)
-            .dst_queue_family_index(ctx.queue_family_index);
-    
-        let instance_buffer_barrier = vk::BufferMemoryBarrier2::default()
-            .buffer(self.persistent_renderer.instances_buffer.buffer)
-            .size(vk::WHOLE_SIZE)
-            .src_stage_mask(vk::PipelineStageFlags2::NONE)
-            .src_access_mask(vk::AccessFlags2::NONE)
-            .dst_stage_mask(vk::PipelineStageFlags2::COPY)
-            .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-            .src_queue_family_index(ctx.queue_family_index)
-            .dst_queue_family_index(ctx.queue_family_index);
-        
-        let buffer_memory_barriers = [vertex_buffer_barrier, normal_buffer_barrier, index_buffer_barrier, instance_buffer_barrier];
-        ctx.device.cmd_pipeline_barrier2(cmd, &vk::DependencyInfo::default().buffer_memory_barriers(&buffer_memory_barriers));
+        self.persistent_renderer.pre_instance_creation_barriers(ctx, cmd);
 
         for chunk in self.destruction.drain(..) {
             if let Some(instance) = chunk.pending_destruction {
@@ -147,7 +105,7 @@ impl Terrain {
             }
         }
 
-        try_readback_gpu_voxels(ctx, cmd, data, &self.async_mesher.meshing_request_tx);
+        try_readback_gpu_voxels(data, &mut self.async_mesher);
 
         let popped = if FORCE_ONE_CHUNK_PER_MULTI_CHUNK {
             if let Some(p) = self.generate_data_chunks_queue.pop_front() { vec![p] } else { Vec::new() }
@@ -158,6 +116,7 @@ impl Terrain {
         if !popped.is_empty() {
             dispatch_multi_chunk_compute(ctx, scratchy, cmd, data, compute_pipelines, popped);
         }
+
 
         for GeneratedChunk { node, mesh, data } in self.async_mesher.meshing_result_rx.try_iter() {
             log::debug!("fetch meshing result on main thread");
@@ -180,110 +139,13 @@ impl Terrain {
             
             if let Some(mesh) = mesh {
                 let instance_key = self.persistent_renderer.add_instance(ctx, cmd, scratchy, mesh);
-                chunk.persistent_mesh_instance_key = Some(instance_key);    
-
-                /*
-                let vertex_buffer = buffer::create_buffer_write_with_scratch_buffer(ctx, cmd, scratchy, cast_slice(vertices.as_slice()), "vertex buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
-                let normals_buffer = buffer::create_buffer_write_with_scratch_buffer(ctx, cmd, scratchy, cast_slice(normals.as_slice()), "normals buffer", vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
-                let index_buffer = buffer::create_buffer_write_with_scratch_buffer(ctx, cmd, scratchy, cast_slice(indices.as_slice()), "index buffer", vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR);
-                
-                let vertex_buffer_barrier = vk::BufferMemoryBarrier2::default()
-                    .buffer(vertex_buffer.buffer)
-                    .src_stage_mask(vk::PipelineStageFlags2::COPY)
-                    .dst_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR | vk::PipelineStageFlags2::VERTEX_SHADER)
-                    .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-                    .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR | vk::AccessFlags2::SHADER_READ)
-                    .size(vertex_buffer.size as u64)
-                    .offset(0)
-                    .src_queue_family_index(ctx.queue_family_index)
-                    .dst_queue_family_index(ctx.queue_family_index);
-                let index_buffer_barrier = vk::BufferMemoryBarrier2::default()
-                    .buffer(index_buffer.buffer)
-                    .src_stage_mask(vk::PipelineStageFlags2::COPY)
-                    .dst_stage_mask(vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR | vk::PipelineStageFlags2::VERTEX_SHADER | vk::PipelineStageFlags2::INDEX_INPUT)
-                    .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-                    .dst_access_mask(vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR | vk::AccessFlags2::INDEX_READ | vk::AccessFlags2::SHADER_READ)
-                    .size(index_buffer.size as u64)
-                    .offset(0)
-                    .src_queue_family_index(ctx.queue_family_index)
-                    .dst_queue_family_index(ctx.queue_family_index);
-                let buffer_memory_barriers = [vertex_buffer_barrier, index_buffer_barrier];
-                let dep = vk::DependencyInfo::default()
-                    .buffer_memory_barriers(&buffer_memory_barriers);
-                ctx.device.cmd_pipeline_barrier2(cmd, &dep);
-
-                let blas = ray_tracing::create_blas(ctx, cmd, ray_tracing::BlasGeometry::Triangles {
-                    vertex_count: vertices.len(),
-                    vertex_offset: 0,
-                    vertex_stride: VERTEX_STRIDE,
-                    index_count: indices.len(),
-                    index_offset: 0,
-                    index_stride: INDEX_STRIDE,
-                    vertex_buffer_address: vertex_buffer.address,
-                    index_buffer_address: index_buffer.address
-                });
-
-                let instance = ray_tracing::instantiate_blas(vek::Quaternion::identity(), vek::Vec3::zero(), vek::Vec3::one(), &blas, 0, 0xFF);
-
-                let chunk = Chunk {
-                    vertex_buffer,
-                    index_buffer,
-                    normals_buffer,
-                    blas,
-                    instance,
-                    index_count: indices.len() as u32,
-                };
-
-                self.chunks.insert(node, Some(chunk));
-                */
+                chunk.persistent_mesh_instance_key = Some(instance_key);   
             }
         }
 
         
         self.persistent_renderer.update_instance_buffer(ctx, cmd, scratchy);
-
-        let vertex_buffer_barrier = vk::BufferMemoryBarrier2::default()
-            .buffer(self.persistent_renderer.vertex_buffer.buffer)
-            .size(vk::WHOLE_SIZE)
-            .src_stage_mask(vk::PipelineStageFlags2::COPY)
-            .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-            .dst_stage_mask(vk::PipelineStageFlags2::VERTEX_INPUT | vk::PipelineStageFlags2::VERTEX_SHADER)
-            .dst_access_mask(vk::AccessFlags2::VERTEX_ATTRIBUTE_READ | vk::AccessFlags2::SHADER_READ)
-            .src_queue_family_index(ctx.queue_family_index)
-            .dst_queue_family_index(ctx.queue_family_index);
-        
-        let normal_buffer_barrier = vk::BufferMemoryBarrier2::default()
-            .buffer(self.persistent_renderer.normals_buffer.buffer)
-            .size(vk::WHOLE_SIZE)
-            .src_stage_mask(vk::PipelineStageFlags2::COPY)
-            .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-            .dst_stage_mask(vk::PipelineStageFlags2::VERTEX_INPUT | vk::PipelineStageFlags2::VERTEX_SHADER)
-            .dst_access_mask(vk::AccessFlags2::VERTEX_ATTRIBUTE_READ | vk::AccessFlags2::SHADER_READ)
-            .src_queue_family_index(ctx.queue_family_index)
-            .dst_queue_family_index(ctx.queue_family_index);
-
-        let index_buffer_barrier = vk::BufferMemoryBarrier2::default()
-            .buffer(self.persistent_renderer.index_buffer.buffer)
-            .size(vk::WHOLE_SIZE)
-            .src_stage_mask(vk::PipelineStageFlags2::COPY)
-            .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-            .dst_stage_mask(vk::PipelineStageFlags2::INDEX_INPUT)
-            .dst_access_mask(vk::AccessFlags2::INDEX_READ)
-            .src_queue_family_index(ctx.queue_family_index)
-            .dst_queue_family_index(ctx.queue_family_index);
-    
-        let instance_buffer_barrier = vk::BufferMemoryBarrier2::default()
-            .buffer(self.persistent_renderer.instances_buffer.buffer)
-            .size(vk::WHOLE_SIZE)
-            .src_stage_mask(vk::PipelineStageFlags2::COPY)
-            .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-            .dst_stage_mask(vk::PipelineStageFlags2::DRAW_INDIRECT | vk::PipelineStageFlags2::COPY)
-            .dst_access_mask(vk::AccessFlags2::INDIRECT_COMMAND_READ | vk::AccessFlags2::TRANSFER_WRITE)
-            .src_queue_family_index(ctx.queue_family_index)
-            .dst_queue_family_index(ctx.queue_family_index);
-        
-        let buffer_memory_barriers = [vertex_buffer_barrier, normal_buffer_barrier, index_buffer_barrier, instance_buffer_barrier];
-        ctx.device.cmd_pipeline_barrier2(cmd, &vk::DependencyInfo::default().buffer_memory_barriers(&buffer_memory_barriers));
+        self.persistent_renderer.pre_render_barriers(ctx, cmd);
     }
     
     pub unsafe fn destroy(self, acceleration_structure_device: &ash::khr::acceleration_structure::Device, device: &ash::Device, allocator: &mut Allocator) {
@@ -297,10 +159,11 @@ impl Terrain {
 
 impl Terrain {
     pub fn edit(&mut self, position: vek::Vec3<f32>) {
+        let radius = 5f32;
         let mut leafs = Vec::<Node>::new();
         let editing_aabb = vek::Aabb {
-            min: position - 3.0f32,
-            max: position + 3.0f32,
+            min: position - radius,
+            max: position + radius,
         };
 
         self.octree.recurse(|node| {
@@ -329,7 +192,7 @@ impl Terrain {
                                 let local = vek::Vec3::new(x,y,z);
                                 let i = crate::utils::offset_to_index(local, CHUNK_SIZE_WITH_PADDING);
                                 let world = local.as_::<f32>() * chunk_position_scale.w + chunk_position_scale.xyz();
-                                let sphere = world.distance(position) - 3f32;
+                                let sphere = world.distance(position) - radius;
 
                                 if sphere < 0f32 {
                                     data[i] = -sphere;
@@ -353,13 +216,12 @@ impl Terrain {
             num_nodes: self.octree.nodes().len(),
             num_chunks_requested: self.chunks_requested,
             num_chunks_to_remove: self.chunks_to_remove.len(),
-            vertices_sub_buffer_allocator_stats: self.persistent_renderer.sub_buffer_vertices_allocator.stats(),
-            indices_sub_buffer_allocator_stats: self.persistent_renderer.sub_buffer_indices_allocator.stats()
+            persistent_renderer_stats: self.persistent_renderer.stats(),
         }
     }
 }
 
-unsafe fn try_readback_gpu_voxels(ctx: &GraphicsContext<'_>, cmd: vk::CommandBuffer, data: &mut PerFrameChunkGenerationData, meshing_request_tx: &crossbeam::channel::Sender<MeshingRequest>) {
+unsafe fn try_readback_gpu_voxels(data: &mut PerFrameChunkGenerationData, async_mesher: &mut AsyncMesher) {
     if let Some(nodes) = data.pending_chunk_node_requests.take() {
         // fetch data from buffer which was copied into last time
         // by now, the compute and copy should have finished
@@ -368,7 +230,7 @@ unsafe fn try_readback_gpu_voxels(ctx: &GraphicsContext<'_>, cmd: vk::CommandBuf
         assert_eq!(multi_chunk_densities.len(), MULTI_CHUNK_TEXTURE_VOLUME as usize); 
         let chunk_count = nodes.len();
         let copy = multi_chunk_densities.to_owned();
-        let meshing_request_tx = meshing_request_tx.clone();
+        let meshing_request_tx = async_mesher.meshing_request_tx.clone();
 
         rayon::spawn(move || {
            
@@ -443,10 +305,7 @@ unsafe fn dispatch_multi_chunk_compute(ctx: &GraphicsContext<'_>, scratchy: &mut
     // execute compute shader and do image->buffer copy
     ctx.device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, compute_pipelines[crate::renderer::COMPUTE_VOXELS].entry_points["main"].pipeline);
         
-    let chunk_positions_and_scales = popped.iter().map(|node| {
-        let chunk_position_and_scale = get_chunk_world_position_and_scale(node);
-        chunk_position_and_scale 
-    }).collect::<Vec<_>>();
+    let chunk_positions_and_scales = popped.iter().map(get_chunk_world_position_and_scale).collect::<Vec<_>>();
 
     let bytes = cast_slice(&chunk_positions_and_scales);
     buffer::write_with_scratch_buffer(ctx, cmd, scratchy, bytes, data.multi_chunk_buffer.buffer, 0);

@@ -929,8 +929,8 @@ impl InternalApp {
         dbgtext_writeln!(&mut self.debug_text, "requested: {}", terrain_stats.num_chunks_requested);
         dbgtext_writeln!(&mut self.debug_text, "to remove: {}", terrain_stats.num_chunks_to_remove);
 
-        dbgtext_writeln!(&mut self.debug_text, "vertex: {}", terrain_stats.vertices_sub_buffer_allocator_stats);
-        dbgtext_writeln!(&mut self.debug_text, "index: {}", terrain_stats.indices_sub_buffer_allocator_stats);
+        dbgtext_writeln!(&mut self.debug_text, "vertex: {}", terrain_stats.persistent_renderer_stats.vertices_sub_buffer_allocator_stats);
+        dbgtext_writeln!(&mut self.debug_text, "index: {}", terrain_stats.persistent_renderer_stats.indices_sub_buffer_allocator_stats);
 
 
         /*
