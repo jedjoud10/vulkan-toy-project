@@ -65,7 +65,8 @@ impl Vehicle {
         // The tuning shared by the wheels: the suspension and the grip.
         let tuning = WheelTuning {
             suspension_stiffness: 50.0,
-            suspension_damping: 2.0,
+            suspension_damping: 6.0,
+            max_suspension_travel: 1f32,
             ..WheelTuning::default()
         };      
 
@@ -81,7 +82,7 @@ impl Vehicle {
         for position in wheel_positions {
             // The position of the wheel, the direction its suspension pushes along, its axle, the
             // rest length of its suspension, and its radius; all in the local frame of the chassis.
-            vehicle.add_wheel(position, -Vector::Y, Vector::Z, hh, wheel_radius, &tuning);
+            vehicle.add_wheel(position, -Vector::Y, Vector::Z, hh*3.0, wheel_radius, &tuning);
         }
         
         Self {
