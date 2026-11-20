@@ -1,0 +1,245 @@
+
+use ash::vk;
+use gpu_allocator::vulkan::{Allocation, Allocator};
+use crate::renderer::GraphicsContext;
+
+// acceleration structure scratch buffer requires alignment to be at least 256
+// of course we can pass a flag to state that we are allocating an acceleration structure scratch buffer
+// but it is easier to simply set this as the min alignment for all buffers
+pub const MIN_BUFFER_ALIGNMENT: u64 = 256;
+
+pub struct Buffer {
+    pub buffer: vk::Buffer,
+    pub allocation: Allocation,
+    pub address: u64,
+    pub size: usize,
+}
+
+impl Buffer {
+    pub unsafe fn destroy(self, device: &ash::Device, allocator: &mut Allocator) {
+        device.destroy_buffer(self.buffer, None);
+        allocator.free(self.allocation).unwrap();
+    }
+    
+    pub fn null() -> Buffer {
+        Self {
+            buffer: vk::Buffer::null(),
+            allocation: Allocation::default(),
+            address: 0,
+            size: 0,
+        }
+    }
+}
+
+pub unsafe fn create_buffer_with_location_with_flags(
+    ctx: &GraphicsContext,
+    size: usize,
+    name: &str,
+    flags: vk::BufferUsageFlags,
+    location: gpu_allocator::MemoryLocation
+) -> Buffer {
+    let bytes_formatted = bytesize::ByteSize::b(size as u64);
+    log::trace!("creating buffer '{}' ({})", name, bytes_formatted.display().si());
+    let buffer_create_info = vk::BufferCreateInfo::default()
+        .flags(vk::BufferCreateFlags::DEVICE_ADDRESS_CAPTURE_REPLAY)
+        .usage(flags)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .size(size as u64);
+
+    // TODO: use a user-side sub-allocator for buffers to avoid doing the expensive API call
+    let buffer = ctx.device.create_buffer(&buffer_create_info, None).unwrap();
+
+    let mut requirements = ctx.device.get_buffer_memory_requirements(buffer);
+    requirements.alignment = requirements.alignment.max(MIN_BUFFER_ALIGNMENT); 
+
+    let mut allocator = ctx.allocator.lock().unwrap();
+
+    let allocation = allocator
+        .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
+            name: &format!("{name} allocation"),
+            requirements,
+            linear: true,
+            allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
+            location,
+        })
+        .unwrap();
+
+    crate::debug::set_object_name(buffer, ctx.debug_marker, name);
+    
+    let device_memory = allocation.memory();
+    ctx.device.bind_buffer_memory(buffer, device_memory, allocation.offset()).unwrap();
+    
+    log::trace!("created buffer '{}' of size {}", name, bytes_formatted.display().si());
+
+    
+    let info = vk::BufferDeviceAddressInfo::default()
+        .buffer(buffer);
+    let address = ctx.device.get_buffer_device_address(&info);
+
+    Buffer {
+        buffer, allocation, address, size
+    }
+}
+
+pub unsafe fn create_buffer_with_location_with_flags_super(
+    ctx: &GraphicsContext,
+    size: usize,
+    name: &str,
+    flags: vk::BufferUsageFlags,
+    location: gpu_allocator::MemoryLocation
+) -> Buffer {
+    let default_flags: vk::BufferUsageFlags = vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::STORAGE_BUFFER;
+    create_buffer_with_location_with_flags(ctx, size, name, flags | default_flags, location)
+}
+
+pub unsafe fn create_buffer_gpu_default_flags(
+    ctx: &GraphicsContext,
+    size: usize,
+    name: &str,
+) -> Buffer {
+    create_buffer_with_location_with_flags_super(ctx, size, name, vk::BufferUsageFlags::empty(), gpu_allocator::MemoryLocation::GpuOnly)
+}
+
+
+pub unsafe fn create_buffer_gpu_with_flags_super(
+    ctx: &GraphicsContext,
+    size: usize,
+    name: &str,
+    flags: vk::BufferUsageFlags,
+) -> Buffer {
+    create_buffer_with_location_with_flags_super(ctx, size, name, flags, gpu_allocator::MemoryLocation::GpuOnly)
+}
+
+/*
+pub unsafe fn create_buffer_with(
+    ctx: &GraphicsContext,
+    bytes: &[u8],
+    name: &str,
+    flags: vk::BufferUsageFlags,
+) -> Buffer {
+    let buffer = create_buffer(ctx, bytes.len(), name, flags);
+    write_to_buffer(ctx, buffer.buffer, bytes);
+    buffer
+}
+*/
+
+/*
+// this either creates a staging buffer write or writes to the buffer through cmd_update_buffer
+// switches between both impls depending on the amount of data to write
+pub unsafe fn write_to_buffer(
+    ctx: &GraphicsContext,
+    dst_buffer: vk::Buffer,
+    bytes: &[u8]
+) {
+    write_to_buffer_with_offset(ctx, dst_buffer, bytes, 0);
+}
+
+pub unsafe fn write_to_buffer_with_offset(
+    ctx: &GraphicsContext,
+    dst_buffer: vk::Buffer,
+    bytes: &[u8],
+    dst_offset: u64,
+) {
+    if bytes.is_empty() {
+        return;
+    }
+
+    let device = ctx.device;
+    let pool = ctx.pool;
+    let queue = ctx.queue;
+    let mut allocator = ctx.allocator.lock().unwrap();
+
+    let start = std::time::Instant::now();
+    let cmd_buffer_create_info = vk::CommandBufferAllocateInfo::default()
+        .command_buffer_count(1)
+        .level(vk::CommandBufferLevel::PRIMARY)
+        .command_pool(pool);
+    let cmd = device
+        .allocate_command_buffers(&cmd_buffer_create_info)
+        .unwrap()[0];
+    device.begin_command_buffer(cmd, &Default::default()).unwrap();
+
+    let bytes_formatted = bytesize::ByteSize::b(bytes.len() as u64);
+    let staging_buffer_opt = if bytes.len() < BUFFER_WRITE_INLINE_MAX_BYTES_THRESHOLD {
+        // inline (command buffer write) impl
+        log::info!("writing {} to buffer, using inline path", bytes_formatted.display().si());
+        device.cmd_update_buffer(cmd, dst_buffer, dst_offset, bytes);
+        None
+    } else {
+        log::info!("writing {} to buffer, using staging buffer path", bytes_formatted.display().si());
+        let (staging_buffer, allocation) = create_staging_buffer(device, &mut allocator, bytes);
+
+        let region = vk::BufferCopy2::default()
+            .dst_offset(dst_offset)
+            .size(bytes.len() as u64)
+            .src_offset(0);
+
+        let regions = [region];
+        let copy_staging_buffer_to_buffer = vk::CopyBufferInfo2::default()
+            .dst_buffer(dst_buffer)
+            .regions(&regions)
+            .src_buffer(staging_buffer);
+
+        device.cmd_copy_buffer2(cmd, &copy_staging_buffer_to_buffer);
+        Some((staging_buffer, allocation))
+    };
+
+    
+    device.end_command_buffer(cmd).unwrap();
+
+    let buffers = [cmd];
+    let submit = vk::SubmitInfo::default()
+        .command_buffers(&buffers);
+
+    device.queue_submit(queue, & [submit], vk::Fence::null()).unwrap();
+
+    // TODO: definitely don't do this if we want to optimize, but for now it's ok
+    device.device_wait_idle().unwrap();
+
+    // destroy staging buffer if we used it
+    if let Some((staging_buffer, allocation)) = staging_buffer_opt {
+        allocator.free(allocation).unwrap();
+        device.destroy_buffer(staging_buffer, None);
+    }
+
+    let end = std::time::Instant::now();
+    log::trace!("buffer write took {}μs", (end-start).as_micros());
+}
+
+pub unsafe fn create_staging_buffer(device: &ash::Device, allocator: &mut Allocator, bytes: &[u8]) -> (vk::Buffer, Allocation) {
+    log::trace!("created staging buffer for {}", bytesize::ByteSize::b(bytes.len() as u64).display().si());
+    let staging_buffer_create_info = vk::BufferCreateInfo::default()
+        .flags(vk::BufferCreateFlags::empty())
+        .usage(vk::BufferUsageFlags::TRANSFER_SRC)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .size(bytes.len() as u64);
+
+    let staging_buffer = device.create_buffer(&staging_buffer_create_info, None).unwrap();
+
+    let requirements = device.get_buffer_memory_requirements(staging_buffer);
+    let mut allocation = allocator
+        .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
+            name: "Staging Buffer",
+            requirements,
+            linear: true,
+            allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
+            location: gpu_allocator::MemoryLocation::CpuToGpu,
+        })
+        .unwrap();
+
+    device.bind_buffer_memory(staging_buffer, allocation.memory(), allocation.offset()).unwrap();
+        
+    let dst_slice = allocation.mapped_slice_mut().unwrap();
+
+    // FIXME: for some reason on nvidia the slice has different size? shouldn't gpu_allocator handle this type of stuff...
+    dst_slice[..(bytes.len())].copy_from_slice(bytes);
+    (staging_buffer, allocation)
+}
+*/
+
+pub unsafe fn create_counter_buffer(
+    ctx: &GraphicsContext,
+    name: &str,
+) -> Buffer {
+    create_buffer_gpu_with_flags_super(ctx, size_of::<u32>(), name, vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST)
+}

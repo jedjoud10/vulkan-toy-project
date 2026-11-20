@@ -45,7 +45,7 @@ impl PerFrameData {
         let query_pool = query_pool_statistics::create_query_pool(&ctx.device);
         let pipeline_statistics_query_pool = others::create_pipeline_stats_pool(&ctx.device);
 
-        let readback_buffer = buffer::create_buffer_with_location(ctx, size_of::<u32>() * 10, "debug readback buffer", vk::BufferUsageFlags::STORAGE_BUFFER, gpu_allocator::MemoryLocation::GpuToCpu);
+        let readback_buffer = buffer::create_buffer_with_location_with_flags_super(ctx, size_of::<u32>() * 10, "debug readback buffer", vk::BufferUsageFlags::STORAGE_BUFFER, gpu_allocator::MemoryLocation::GpuToCpu);
 
         Self {
             chunk_generation: crate::terrain::PerFrameChunkGenerationData::create(ctx),
