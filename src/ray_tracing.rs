@@ -215,8 +215,8 @@ pub unsafe fn create_blas(
     ctx.acceleration_structure_device.get_acceleration_structure_build_sizes(vk::AccelerationStructureBuildTypeKHR::DEVICE, &acceleration_structure_build_geometry_info, &max_primitive_counts, &mut sizes);
     
 
-    let backing_buffer = buffer::create_buffer(ctx, sizes.acceleration_structure_size as usize, "AS backing buffer", vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR);
-    let scratch_buffer = buffer::create_buffer(ctx, sizes.build_scratch_size as usize, "AS scratch buffer", vk::BufferUsageFlags::empty());
+    let backing_buffer = buffer::create_buffer_gpu_with_flags_super(ctx, sizes.acceleration_structure_size as usize, "AS backing buffer", vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR);
+    let scratch_buffer = buffer::create_buffer_gpu_with_flags_super(ctx, sizes.build_scratch_size as usize, "AS scratch buffer", vk::BufferUsageFlags::empty());
 
     let create_info = vk::AccelerationStructureCreateInfoKHR::default()
         .buffer(backing_buffer.buffer)
@@ -305,8 +305,8 @@ pub unsafe fn pre_create_tlas(
     let mut sizes = vk::AccelerationStructureBuildSizesInfoKHR::default();
     ctx.acceleration_structure_device.get_acceleration_structure_build_sizes(vk::AccelerationStructureBuildTypeKHR::DEVICE, &acceleration_structure_build_geometry_info, &max_primitive_counts, &mut sizes);
 
-    let backing_buffer = buffer::create_buffer(ctx, sizes.acceleration_structure_size as usize, "TLAS backing buffer", vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR);
-    let scratch_buffer = buffer::create_buffer(ctx, sizes.build_scratch_size as usize, "TLAS scratch buffer", vk::BufferUsageFlags::empty());
+    let backing_buffer = buffer::create_buffer_gpu_with_flags_super(ctx, sizes.acceleration_structure_size as usize, "TLAS backing buffer", vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR);
+    let scratch_buffer = buffer::create_buffer_gpu_with_flags_super(ctx, sizes.build_scratch_size as usize, "TLAS scratch buffer", vk::BufferUsageFlags::empty());
 
     let create_info = vk::AccelerationStructureCreateInfoKHR::default()
         .buffer(backing_buffer.buffer)

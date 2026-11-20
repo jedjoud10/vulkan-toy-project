@@ -195,7 +195,7 @@ impl Scene {
         
         let tlas = ray_tracing::pre_create_tlas(&mut ctx);
         
-        let gpu_packed_aabbs_buffer = buffer::create_buffer_default_flags(&mut ctx, size_of::<GpuAabb>() * 1000, "scene BLAS AABBs buffer");
+        let gpu_packed_aabbs_buffer = buffer::create_buffer_gpu_default_flags(&mut ctx, size_of::<GpuAabb>() * 1000, "scene BLAS AABBs buffer");
         let aabbs = vec![];
 
         let blases = Vec::new();
@@ -204,22 +204,22 @@ impl Scene {
         // create the buffer that contains the primitives
         // primitives are just an enum (representing their SDF type) and an index which points to the transforms buffer
         let primitive_flat_list = Vec::<Node>::new();
-        let primitive_flat_buffer = buffer::create_buffer_default_flags(ctx, size_of::<Node>() * MAX_PRIMITIVES, "primitive flat buffer");     
+        let primitive_flat_buffer = buffer::create_buffer_gpu_default_flags(ctx, size_of::<Node>() * MAX_PRIMITIVES, "primitive flat buffer");     
 
         // transforms buffer of pre-computed inverted f32 mat3x4 matrices
         let transforms = Vec::<Transform>::new();
-        let inverse_transforms_buffer = buffer::create_buffer_default_flags(ctx, size_of::<PackedTransform>() * MAX_PRIMITIVES, "transforms buffer");     
+        let inverse_transforms_buffer = buffer::create_buffer_gpu_default_flags(ctx, size_of::<PackedTransform>() * MAX_PRIMITIVES, "transforms buffer");     
 
         // chunk buffer simply stores u32s as an indirection step to the target sampler image texture index
-        let chunk_buffer_lookup = buffer::create_buffer_default_flags(ctx, size_of::<u32>() * MAX_CHUNKS, "chunk buffer");     
+        let chunk_buffer_lookup = buffer::create_buffer_gpu_default_flags(ctx, size_of::<u32>() * MAX_CHUNKS, "chunk buffer");     
 
         // mega lookup texture
         let chunk_lookup_texture_bruh = texture_3d::create_texture_3d(ctx, vek::Extent3::broadcast(CHUNK_LOOKUP_TEXTURE_SIZE), vk::Format::R32_UINT, None, "chunk lookup texture");
         let chunk_lookup_texture_r32_cpu = vec![0u32; CHUNK_LOOKUP_TEXTURE_VOLUME as usize];
         
         // bvh buffer (I <3 obvh crate)
-        let bvh_nodes = buffer::create_buffer_default_flags(ctx, size_of::<obvhs::bvh2::node::Bvh2Node>() * MAX_BVH_NODES, "packed BVH nodes buffer");     
-        let bvh_primitive_indices_lookup = buffer::create_buffer_default_flags(ctx, size_of::<u32>() * MAX_PRIMITIVES, "BVH index lookup buffer");     
+        let bvh_nodes = buffer::create_buffer_gpu_default_flags(ctx, size_of::<obvhs::bvh2::node::Bvh2Node>() * MAX_BVH_NODES, "packed BVH nodes buffer");     
+        let bvh_primitive_indices_lookup = buffer::create_buffer_gpu_default_flags(ctx, size_of::<u32>() * MAX_PRIMITIVES, "BVH index lookup buffer");     
         
         let chunks = Vec::<Chunk>::new();
         

@@ -401,7 +401,7 @@ impl InternalApp {
             device.create_semaphore(&Default::default(), None).unwrap()
         }).collect::<SmallVec<[vk::Semaphore; swapchain::SWAPCHAIN_IMAGES]>>();
 
-        let uniform_buffer = buffer::create_buffer(
+        let uniform_buffer = buffer::create_buffer_gpu_with_flags_super(
             &mut ctx,
             size_of::<pipeline::PerFrameUniformData>(),
             "per frame uniform buffer",
@@ -409,7 +409,7 @@ impl InternalApp {
         );
 
         // let scene = scene::Scene::new(&mut ctx);
-        let counters_of_various_types = buffer::create_buffer_default_flags(&mut ctx, size_of::<u32>() * 100, "counters");
+        let counters_of_various_types = buffer::create_buffer_gpu_default_flags(&mut ctx, size_of::<u32>() * 100, "counters");
 
 
         // this call can fail on x11
@@ -428,7 +428,7 @@ impl InternalApp {
         materials.par_extend(material_names.into_par_iter().map(|name| Material::new(&ctx, name)));
         materials.par_extend(zipped_material_names.into_par_iter().map(|name| Material::new_packed_zip(&ctx, name)));
 
-        let materials_buffer = buffer::create_buffer(&mut ctx, materials.len() * size_of::<GpuMaterialInfo>(), "gpu materials buffer", vk::BufferUsageFlags::TRANSFER_DST);
+        let materials_buffer = buffer::create_buffer_gpu_with_flags_super(&mut ctx, materials.len() * size_of::<GpuMaterialInfo>(), "gpu materials buffer", vk::BufferUsageFlags::TRANSFER_DST);
         let debug_text = debug_text::DebugText::new(&mut ctx);
 
 

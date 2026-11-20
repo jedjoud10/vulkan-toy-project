@@ -26,8 +26,8 @@ impl PerFrameChunkGenerationData {
         };
 
         let readback_voxel_image = crate::texture_3d::create_texture_3d(ctx, extent, vk::Format::R32_SFLOAT, None, "");
-        let readback_voxel_buffer = crate::buffer::create_buffer_with_location(ctx, size_of::<f32>() * super::MULTI_CHUNK_TEXTURE_VOLUME as usize, "", vk::BufferUsageFlags::STORAGE_BUFFER, gpu_allocator::MemoryLocation::GpuToCpu);
-        let multi_chunk_buffer = crate::buffer::create_buffer_default_flags(ctx, size_of::<vek::Vec4<f32>>() * super::NUM_MULTI_CHUNKS, "");
+        let readback_voxel_buffer = crate::buffer::create_buffer_with_location_with_flags_super(ctx, size_of::<f32>() * super::MULTI_CHUNK_TEXTURE_VOLUME as usize, "", vk::BufferUsageFlags::STORAGE_BUFFER, gpu_allocator::MemoryLocation::GpuToCpu);
+        let multi_chunk_buffer = crate::buffer::create_buffer_gpu_default_flags(ctx, size_of::<vek::Vec4<f32>>() * super::NUM_MULTI_CHUNKS, "");
 
         Self {
             readback_voxel_image,
