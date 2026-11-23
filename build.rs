@@ -56,7 +56,6 @@ fn visit_dirs(dir: &Path, list: &mut Vec<DirEntry>) {
 
 // TODO: optimize. this will re-compile all shaders, even if only one of them was modified
 fn main() {
-    /*
     println!("cargo:rerun-if-changed=shaders");
     let global_session = GlobalSession::new().unwrap();
 
@@ -105,5 +104,4 @@ fn main() {
         let file_name = file_name.split(".").next().unwrap();
         load_module(&session, file_name, &compiled_shaders_path);
     }
-    */
 }

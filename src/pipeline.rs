@@ -567,7 +567,7 @@ unsafe fn compile_pipelines(
     compiler: &PipelineCompilationContext,
     first_time: bool,
 ) -> Option<PipelineCompilationResult> {
-    let compiled = crate::shader_compiler::compile_required_shaders(first_time, &settings);
+    let compiled = crate::shader_compiler::compiler::compile_required_shaders(first_time, &settings);
 
     let crate::shader_compiler::ShaderCompilationResult {
         compiled,
